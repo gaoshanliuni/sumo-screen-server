@@ -1,0 +1,39 @@
+# Node dependencies
+**/node_modules/
+
+# Runtime/config secrets
+backend/.env
+*.local
+
+# Logs and temp
+*.log
+*.out
+*.err
+monitor_out.log
+mon*_out.log
+mon*_err.log
+live_serial.log
+rolling_boot.log
+serial_*.log
+after_fix_boot.log
+autostart_check.log
+now_boot.log
+
+# Build caches
+.cache/
+.tmp/
+*.tmp
+frontend-vue/.vite/
+
+# PlatformIO / embedded build artifacts
+**/.pio/
+**/.vscode/
+**/.idea/
+**/*.elf
+**/*.bin
+**/*.map
+
+# Python
+__pycache__/
+*.pyc
+

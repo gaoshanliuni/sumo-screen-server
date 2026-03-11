@@ -1,0 +1,377 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>用户端 - 智能墨水屏平台</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&family=Noto+Sans+SC:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/assets/style.css" />
+  </head>
+  <body>
+    <main class="shell layout">
+      <aside class="sidebar">
+        <div>
+          <h1>用户端</h1>
+          <p class="subtitle">PIN 绑定设备、管理数据与测试第三方API。</p>
+        </div>
+        <div id="u-quick-device" class="device-quick hidden">
+          <span class="device-quick-label">当前设备</span>
+          <strong id="u-quick-current-device" class="device-quick-value">未选择</strong>
+          <button id="u-quick-pick" type="button" class="secondary">选择设备</button>
+        </div>
+
+        <div id="u-nav-guest" class="nav">
+          <button class="nav-btn active" type="button" data-section-target="login">登录</button>
+        </div>
+
+        <div id="u-nav-app" class="nav hidden">
+          <button class="nav-btn" type="button" data-section-target="overview">主页概览</button>
+          <button class="nav-btn" type="button" data-section-target="device">设备绑定</button>
+          <button class="nav-btn" type="button" data-section-target="firmware">固件升级</button>
+          <button class="nav-btn" type="button" data-section-target="todo">TODO</button>
+          <button class="nav-btn" type="button" data-section-target="schedule">课程表</button>
+          <button class="nav-btn" type="button" data-section-target="third">第三方API参数</button>
+          <button class="nav-btn" type="button" data-section-target="tf">TF卡管理</button>
+          <button class="nav-btn" type="button" data-section-target="remote">投屏与远程控制</button>
+        </div>
+
+        <div class="stack">
+          <span class="pill">脚本状态：<span id="u-script-status">加载中</span></span>
+          <button id="u-logout" type="button" class="ghost">退出登录</button>
+          <a href="/"><button class="ghost" type="button">返回首页</button></a>
+        </div>
+      </aside>
+
+      <section class="content">
+        <section id="u-section-login" class="section active" data-section="login">
+          <div class="card stack login-card">
+            <h3>用户登录</h3>
+            <div class="row row-2">
+              <div>
+                <label for="u-username">用户名</label>
+                <input id="u-username" value="demo" />
+              </div>
+              <div>
+                <label for="u-password">密码</label>
+                <input id="u-password" value="user123" type="password" />
+              </div>
+            </div>
+            <div class="actions">
+              <button id="u-login" type="button">登录</button>
+            </div>
+          </div>
+        </section>
+
+        <section id="u-section-overview" class="section" data-section="overview">
+          <div class="content-header">
+            <h2>主页概览</h2>
+            <button id="u-overview-refresh" type="button" class="ghost">刷新概览</button>
+          </div>
+          <div class="stat-grid">
+            <div class="stat-card">
+              <span class="section-note">用户信息</span>
+              <strong id="u-overview-username">-</strong>
+              <div class="tiny muted">ID：<span id="u-overview-id">-</span></div>
+              <div class="tiny muted">角色：<span id="u-overview-role">-</span></div>
+            </div>
+            <div class="stat-card">
+              <span class="section-note">设备统计</span>
+              <strong id="u-overview-device-total">0</strong>
+              <div class="tiny muted">已绑定：<span id="u-overview-device-bound">0</span></div>
+              <div class="tiny muted">待绑定：<span id="u-overview-device-pending">0</span></div>
+            </div>
+            <div class="stat-card">
+              <span class="section-note">数据统计</span>
+              <strong id="u-overview-todo-count">0</strong>
+              <div class="tiny muted">课程表条目：<span id="u-overview-schedule-count">0</span></div>
+            </div>
+          </div>
+        </section>
+
+        <section id="u-section-device" class="section" data-section="device">
+          <div class="content-header">
+            <h2>设备绑定与选择</h2>
+            <span class="badge">当前设备：<span id="u-current-device">未选择</span></span>
+          </div>
+          <div class="card stack">
+            <div class="row row-2">
+              <div>
+                <label for="u-bind-pin">输入设备PIN码（10分钟有效期）</label>
+                <input id="u-bind-pin" placeholder="例如 123456" />
+              </div>
+              <div class="actions actions-bottom">
+                <button id="u-bind-pin-btn" type="button">绑定设备</button>
+              </div>
+            </div>
+            <div class="actions">
+              <button id="u-delete-device" type="button" class="warn">删除当前设备</button>
+            </div>
+          </div>
+        </section>
+
+        <section id="u-section-firmware" class="section" data-section="firmware">
+          <div class="content-header">
+            <h2>固件升级</h2>
+            <button id="u-load-fw" type="button" class="ghost">刷新固件列表</button>
+          </div>
+          <div class="card stack">
+            <div class="row row-2">
+              <div>
+                <label for="u-fw-select">固件版本</label>
+                <select id="u-fw-select"></select>
+              </div>
+              <div>
+                <label for="u-fw-schedule">定时升级时间（可空）</label>
+                <input id="u-fw-schedule" type="datetime-local" />
+              </div>
+            </div>
+            <button id="u-upgrade-fw" type="button">触发升级</button>
+          </div>
+        </section>
+
+        <section id="u-section-todo" class="section" data-section="todo">
+          <div class="content-header">
+            <h2>TODO（表格编辑）</h2>
+            <div class="actions">
+              <button id="u-todo-load" type="button" class="ghost">加载数据</button>
+              <button id="u-todo-add" type="button">新增行</button>
+              <button id="u-todo-save" type="button" class="secondary">批量保存</button>
+              <button id="u-todo-reset" type="button" class="ghost">回滚重载</button>
+            </div>
+          </div>
+          <div class="card">
+            <div class="table-wrap">
+              <table class="sheet-table">
+                <thead>
+                  <tr>
+                    <th>内容</th>
+                    <th>完成</th>
+                    <th>优先级</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="u-todo-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section id="u-section-schedule" class="section" data-section="schedule">
+          <div class="content-header">
+            <h2>课程表（表格编辑）</h2>
+            <div class="actions">
+              <button id="u-sch-load" type="button" class="ghost">加载数据</button>
+              <button id="u-sch-add" type="button">新增行</button>
+              <button id="u-sch-remove" type="button" class="ghost">删除行</button>
+              <button id="u-sch-save" type="button" class="secondary">批量保存</button>
+              <button id="u-sch-reset" type="button" class="ghost">回滚重载</button>
+            </div>
+          </div>
+          <div class="card">
+            <div class="table-wrap">
+              <table class="sheet-table schedule-grid">
+                <thead>
+                  <tr>
+                    <th><input id="u-sch-select-all" type="checkbox" /></th>
+                    <th>节次</th>
+                    <th>周一</th>
+                    <th>周二</th>
+                    <th>周三</th>
+                    <th>周四</th>
+                    <th>周五</th>
+                    <th>周六</th>
+                    <th>周日</th>
+                  </tr>
+                </thead>
+                <tbody id="u-sch-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section id="u-section-third" class="section" data-section="third">
+          <div class="content-header">
+            <h2>第三方API参数</h2>
+          </div>
+          <div class="card stack">
+            <p class="tiny muted">支持两种操作：测试调用（仅返回结果）和下发参数（保存到设备并推送）。</p>
+            <div class="row row-2">
+              <div>
+                <label for="u-third-slug">模板</label>
+                <select id="u-third-slug"></select>
+              </div>
+              <div>
+                <label for="u-third-params">附加参数 JSON（可选）</label>
+                <input id="u-third-params" placeholder='{"lang":"zh","unit":"m"}' />
+              </div>
+            </div>
+            <div id="u-third-dynamic-fields" class="row row-3"></div>
+            <div class="actions">
+              <button id="u-third-call" type="button">测试调用</button>
+              <button id="u-third-push" type="button" class="secondary">下发参数到设备</button>
+            </div>
+          </div>
+        </section>
+
+        <section id="u-section-tf" class="section" data-section="tf">
+          <div class="content-header">
+            <h2>TF卡管理</h2>
+            <div class="actions">
+              <span class="badge">当前设备：<span id="u-tf-current-device">未选择</span></span>
+              <button id="u-tf-refresh" type="button" class="ghost">刷新云端文件</button>
+            </div>
+          </div>
+          <div class="card stack">
+            <div class="row row-2">
+              <div>
+                <label for="u-tf-file">上传文件</label>
+                <input id="u-tf-file" type="file" />
+              </div>
+              <div>
+                <label for="u-tf-category">分类</label>
+                <select id="u-tf-category">
+                  <option value="fonts">fonts 字体</option>
+                  <option value="read">read 电子书</option>
+                  <option value="photo">photo 图片</option>
+                  <option value="update">update 固件</option>
+                  <option value="background">background 背景</option>
+                  <option value="config">config 配置</option>
+                </select>
+              </div>
+            </div>
+            <div class="actions">
+              <button id="u-tf-upload" type="button">上传文件</button>
+              <button id="u-tf-local-refresh" type="button" class="secondary">刷新本地文件</button>
+            </div>
+            <div class="table-wrap">
+              <table class="sheet-table">
+                <thead>
+                  <tr>
+                    <th>文件名</th>
+                    <th>分类</th>
+                    <th>大小</th>
+                    <th>状态</th>
+                    <th>上传时间</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="u-tf-body"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="card stack">
+            <h3>本地文件（设备上报）</h3>
+            <p class="tiny muted">用于对比云端“待下发 / 已下发”。</p>
+            <p class="tiny muted">最近上报：<span id="u-tf-local-time">-</span></p>
+            <div class="table-wrap">
+              <table class="sheet-table">
+                <thead>
+                  <tr>
+                    <th>文件名</th>
+                    <th>分类</th>
+                    <th>大小</th>
+                    <th>更新时间</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="u-tf-local-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section id="u-section-remote" class="section" data-section="remote">
+          <div class="content-header">
+            <h2>投屏与远程控制</h2>
+            <span class="badge">当前设备：<span id="u-remote-device">未选择</span></span>
+          </div>
+          <div class="card stack">
+            <h3>图片投屏</h3>
+            <div class="row row-2">
+              <div class="file-input">
+                <label for="u-cast-image">选择图片</label>
+                <input id="u-cast-image" type="file" accept="image/*" />
+              </div>
+              <div class="actions actions-bottom">
+                <button id="u-cast-image-send" type="button">发送图片</button>
+              </div>
+            </div>
+            <img id="u-cast-image-preview" class="cast-preview hidden" alt="预览" />
+          </div>
+          <div class="card stack">
+            <h3>屏幕实时投射</h3>
+            <div class="row row-3">
+              <div>
+                <label for="u-cast-fps">帧率（1-5fps）</label>
+                <input id="u-cast-fps" type="number" min="1" max="5" value="1" />
+              </div>
+              <div class="actions actions-bottom">
+                <button id="u-cast-start" type="button">开始投屏</button>
+                <button id="u-cast-stop" type="button" class="ghost">停止投屏</button>
+              </div>
+            </div>
+            <p class="tiny muted">基于浏览器投屏，建议 1-2fps，避免带宽占用过高。</p>
+          </div>
+          <div class="card stack">
+            <h3>远程控制</h3>
+            <div class="row row-2">
+              <div>
+                <label for="u-remote-view">切换界面</label>
+                <select id="u-remote-view">
+                  <option value="overview">主页概览</option>
+                  <option value="device">设备绑定</option>
+                  <option value="firmware">固件升级</option>
+                  <option value="todo">TODO</option>
+                  <option value="schedule">课程表</option>
+                  <option value="third">第三方API</option>
+                  <option value="tf">TF卡管理</option>
+                </select>
+              </div>
+              <div class="actions actions-bottom">
+                <button id="u-remote-view-btn" type="button">切换界面</button>
+              </div>
+            </div>
+            <div class="row row-2">
+              <div>
+                <label for="u-remote-text">临时显示文字</label>
+                <input id="u-remote-text" placeholder="输入要显示的文字" />
+              </div>
+              <div>
+                <label for="u-remote-duration">持续秒数（10-86400）</label>
+                <input id="u-remote-duration" type="number" min="10" max="86400" value="10" placeholder="10-86400" />
+              </div>
+            </div>
+            <button id="u-remote-text-btn" type="button">发送文字</button>
+          </div>
+        </section>
+      </section>
+
+      <div id="u-output-panel" class="floating-output">
+        <div id="u-output-handle" class="floating-header">
+          <span>操作输出</span>
+          <span class="tiny muted">拖动移动</span>
+        </div>
+        <div class="floating-body">
+          <pre class="output" id="u-output"></pre>
+        </div>
+      </div>
+      <button id="u-output-toggle" class="output-toggle" type="button">收起输出</button>
+    </main>
+
+    <script nomodule>
+      (function () {
+        var status = document.getElementById("u-script-status");
+        if (status) status.textContent = "浏览器不支持模块脚本";
+      })();
+    </script>
+    <script type="module" src="/assets/user.js?v=20260301-2"></script>
+  </body>
+</html>
+
+
+

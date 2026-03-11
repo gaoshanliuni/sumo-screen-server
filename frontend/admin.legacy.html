@@ -1,0 +1,605 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>管理端 - 智能墨水屏平台</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&family=Noto+Sans+SC:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/assets/style.css" />
+  </head>
+  <body>
+    <main class="shell layout">
+      <aside class="sidebar">
+        <div>
+          <h1>管理端</h1>
+          <p class="subtitle">全量设备、账号与配置管理。</p>
+        </div>
+        <div id="a-quick-device" class="device-quick hidden">
+          <span class="device-quick-label">当前设备</span>
+          <strong id="a-quick-current-device" class="device-quick-value">未选择</strong>
+          <button id="a-quick-pick" type="button" class="secondary">选择设备</button>
+        </div>
+
+        <div id="a-nav-guest" class="nav">
+          <button class="nav-btn active" type="button" data-section-target="login">登录</button>
+        </div>
+
+        <div id="a-nav-app" class="nav hidden">
+          <button class="nav-btn" type="button" data-section-target="overview">主页概览</button>
+          <button class="nav-btn" type="button" data-section-target="users">账号管理</button>
+          <button class="nav-btn" type="button" data-section-target="device">设备与PIN</button>
+          <button class="nav-btn" type="button" data-section-target="todo">TODO</button>
+          <button class="nav-btn" type="button" data-section-target="schedule">课程表</button>
+          <button class="nav-btn" type="button" data-section-target="templates">API模板</button>
+          <button class="nav-btn" type="button" data-section-target="firmware">固件管理</button>
+          <button class="nav-btn" type="button" data-section-target="tf">TF卡管理</button>
+          <button class="nav-btn" type="button" data-section-target="logs">日志中心</button>
+          <button class="nav-btn" type="button" data-section-target="remote">投屏与远程控制</button>
+        </div>
+
+        <div class="stack">
+          <span class="pill">脚本状态：<span id="a-script-status">加载中</span></span>
+          <button id="a-logout" type="button" class="ghost">退出登录</button>
+          <a href="/"><button class="ghost" type="button">返回首页</button></a>
+        </div>
+      </aside>
+
+      <section class="content">
+        <section id="a-section-login" class="section active" data-section="login">
+          <div class="card stack login-card">
+            <h3>管理员登录</h3>
+            <div class="row row-2">
+              <div>
+                <label for="a-username">用户名</label>
+                <input id="a-username" value="admin" />
+              </div>
+              <div>
+                <label for="a-password">密码</label>
+                <input id="a-password" value="admin123" type="password" />
+              </div>
+            </div>
+            <div class="actions">
+              <button id="a-login" type="button">登录</button>
+            </div>
+          </div>
+        </section>
+
+        <section id="a-section-overview" class="section" data-section="overview">
+          <div class="content-header">
+            <h2>主页概览</h2>
+            <button id="a-overview-refresh" type="button" class="ghost">刷新概览</button>
+          </div>
+          <div class="stat-grid">
+            <div class="stat-card">
+              <span class="section-note">设备总数</span>
+              <strong id="a-overview-device-total">0</strong>
+              <div class="tiny muted">封禁：<span id="a-overview-device-blocked">0</span></div>
+            </div>
+            <div class="stat-card">
+              <span class="section-note">用户总数</span>
+              <strong id="a-overview-user-total">0</strong>
+              <div class="tiny muted">集群：<span id="a-overview-cluster-total">0</span></div>
+            </div>
+            <div class="stat-card">
+              <span class="section-note">固件版本</span>
+              <strong id="a-overview-firmware-total">0</strong>
+              <div class="tiny muted">API调用统计</div>
+              <div class="tiny muted" id="a-overview-api-stat">-</div>
+            </div>
+          </div>
+        </section>
+
+        <section id="a-section-users" class="section" data-section="users">
+          <div class="content-header">
+            <h2>账号管理</h2>
+            <div class="actions">
+              <button id="a-user-refresh" type="button" class="ghost">刷新账号列表</button>
+            </div>
+          </div>
+          <div class="card stack">
+            <h3>注册新账号</h3>
+            <div class="row row-3">
+              <div>
+                <label for="a-user-create-username">用户名</label>
+                <input id="a-user-create-username" placeholder="newuser" />
+              </div>
+              <div>
+                <label for="a-user-create-password">密码</label>
+                <input id="a-user-create-password" type="password" placeholder="至少6位" />
+              </div>
+              <div>
+                <label for="a-user-create-role">角色</label>
+                <select id="a-user-create-role">
+                  <option value="user">user</option>
+                  <option value="admin">admin</option>
+                </select>
+              </div>
+            </div>
+            <div class="row row-2">
+              <div>
+                <label for="a-user-create-nickname">昵称</label>
+                <input id="a-user-create-nickname" placeholder="可选" />
+              </div>
+              <div class="actions actions-bottom">
+                <button id="a-user-create" type="button">创建账号</button>
+              </div>
+            </div>
+          </div>
+          <div class="card stack">
+            <h3>账号列表</h3>
+            <div class="table-wrap">
+              <table class="sheet-table">
+                <thead>
+                  <tr>
+                    <th>用户</th>
+                    <th>角色</th>
+                    <th>状态</th>
+                    <th>昵称</th>
+                    <th>设备数</th>
+                    <th>重置密码</th>
+                    <th>删除模式</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="a-user-body"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="card stack">
+            <h3>账号资源处理</h3>
+            <div class="row row-3">
+              <div>
+                <label for="a-resource-user">选择账号</label>
+                <select id="a-resource-user"></select>
+              </div>
+              <div>
+                <label for="a-resource-action">动作</label>
+                <select id="a-resource-action">
+                  <option value="detach">解绑全部设备</option>
+                  <option value="transfer">迁移设备</option>
+                  <option value="purge">清理设备与数据</option>
+                </select>
+              </div>
+              <div>
+                <label for="a-resource-target">目标账号（迁移时）</label>
+                <select id="a-resource-target"></select>
+              </div>
+            </div>
+            <button id="a-resource-apply" type="button" class="warn">执行资源操作</button>
+          </div>
+        </section>
+
+        <section id="a-section-device" class="section" data-section="device">
+          <div class="content-header">
+            <h2>设备与PIN绑定</h2>
+            <span class="badge">当前设备：<span id="a-current-device">未选择</span></span>
+          </div>
+          <div class="card stack">
+            <div class="actions">
+              <button id="a-delete-device" type="button" class="warn">删除当前设备</button>
+            </div>
+            <div class="row row-3">
+              <div>
+                <label for="a-device-status">状态</label>
+                <select id="a-device-status">
+                  <option value="enabled">enabled</option>
+                  <option value="blocked">blocked</option>
+                </select>
+              </div>
+              <div>
+                <label for="a-device-remark">备注</label>
+                <input id="a-device-remark" placeholder="设备备注" />
+              </div>
+              <div>
+                <label for="a-device-owner">归属用户 ID（可空）</label>
+                <input id="a-device-owner" placeholder="u_demo" />
+              </div>
+            </div>
+            <button id="a-update-device" type="button">更新设备信息</button>
+            <div class="row row-2">
+              <div>
+                <label for="a-bind-pin">PIN码（10分钟有效）</label>
+                <input id="a-bind-pin" placeholder="6位数字" />
+              </div>
+              <div>
+                <label for="a-bind-user">绑定到用户</label>
+                <select id="a-bind-user"></select>
+              </div>
+            </div>
+            <button id="a-bind-pin-btn" type="button">管理员绑定设备</button>
+          </div>
+        </section>
+
+        <section id="a-section-todo" class="section" data-section="todo">
+          <div class="content-header">
+            <h2>TODO（表格编辑）</h2>
+            <div class="actions">
+              <button id="a-todo-load" type="button" class="ghost">加载数据</button>
+              <button id="a-todo-add" type="button">新增行</button>
+              <button id="a-todo-save" type="button" class="secondary">批量保存</button>
+              <button id="a-todo-reset" type="button" class="ghost">回滚重载</button>
+            </div>
+          </div>
+          <div class="card">
+            <div class="table-wrap">
+              <table class="sheet-table">
+                <thead>
+                  <tr>
+                    <th>内容</th>
+                    <th>完成</th>
+                    <th>优先级</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="a-todo-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section id="a-section-schedule" class="section" data-section="schedule">
+          <div class="content-header">
+            <h2>课程表（表格编辑）</h2>
+            <div class="actions">
+              <button id="a-sch-load" type="button" class="ghost">加载数据</button>
+              <button id="a-sch-add" type="button">新增行</button>
+              <button id="a-sch-remove" type="button" class="ghost">删除行</button>
+              <button id="a-sch-save" type="button" class="secondary">批量保存</button>
+              <button id="a-sch-reset" type="button" class="ghost">回滚重载</button>
+            </div>
+          </div>
+          <div class="card">
+            <div class="table-wrap">
+              <table class="sheet-table schedule-grid">
+                <thead>
+                  <tr>
+                    <th><input id="a-sch-select-all" type="checkbox" /></th>
+                    <th>节次</th>
+                    <th>周一</th>
+                    <th>周二</th>
+                    <th>周三</th>
+                    <th>周四</th>
+                    <th>周五</th>
+                    <th>周六</th>
+                    <th>周日</th>
+                  </tr>
+                </thead>
+                <tbody id="a-sch-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section id="a-section-templates" class="section" data-section="templates">
+          <div class="content-header">
+            <h2>API 模板管理</h2>
+            <div class="actions">
+              <button id="a-list-templates" type="button" class="ghost">刷新模板列表</button>
+              <button id="a-template-add" type="button">新增模板</button>
+            </div>
+          </div>
+          <div class="card stack">
+            <div class="table-wrap">
+              <table class="sheet-table">
+                <thead>
+                  <tr>
+                    <th>名称</th>
+                    <th>slug</th>
+                    <th>用户补全字段</th>
+                    <th>需要设备Key</th>
+                    <th>启用</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="a-template-body"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="card stack">
+            <div class="row row-2">
+              <div>
+                <label>单设备模板Key配置</label>
+                <div class="actions actions-tight">
+                  <button id="a-key-pick-device" type="button" class="secondary">选择设备</button>
+                  <span id="a-key-device" class="pill">未选择</span>
+                </div>
+              </div>
+              <div>
+                <label for="a-key-save">保存</label>
+                <button id="a-key-save" type="button">保存该设备全部模板Key</button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table class="sheet-table">
+                <thead>
+                  <tr>
+                    <th>模板</th>
+                    <th>Key</th>
+                  </tr>
+                </thead>
+                <tbody id="a-key-body"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="card stack">
+            <div class="row row-2">
+              <div>
+                <label>批量下发模板Key</label>
+                <div class="actions actions-tight">
+                  <button id="a-batch-pick-devices" type="button" class="secondary">选择设备</button>
+                  <span id="a-batch-devices-label" class="pill">未选择</span>
+                </div>
+              </div>
+              <div>
+                <label for="a-batch-clusters">批量集群 ID（逗号分隔）</label>
+                <input id="a-batch-clusters" placeholder="cluster_xxx,cluster_yyy" />
+              </div>
+            </div>
+            <div class="row row-2">
+              <div>
+                <label for="a-batch-template">模板</label>
+                <select id="a-batch-template"></select>
+              </div>
+              <div>
+                <label for="a-batch-key">Key</label>
+                <input id="a-batch-key" placeholder="请输入配置Key" />
+              </div>
+            </div>
+            <button id="a-batch-apply" type="button">批量下发Key</button>
+          </div>
+        </section>
+
+        <section id="a-section-firmware" class="section" data-section="firmware">
+          <div class="content-header">
+            <h2>固件管理与批量升级</h2>
+            <button id="a-load-firmware" type="button" class="ghost">刷新固件列表</button>
+          </div>
+          <div class="card stack">
+            <div class="row row-2">
+              <div>
+                <label for="a-fw-version">版本</label>
+                <input id="a-fw-version" placeholder="v1.0.0" />
+              </div>
+              <div>
+                <label for="a-fw-type">设备类型</label>
+                <input id="a-fw-type" value="ink-screen" />
+              </div>
+            </div>
+            <div class="row row-2">
+              <div>
+                <label for="a-fw-note">更新说明</label>
+                <input id="a-fw-note" placeholder="例如：修复显示抖动" />
+              </div>
+              <div>
+                <label for="a-fw-file">固件文件</label>
+                <input id="a-fw-file" type="file" />
+              </div>
+            </div>
+            <button id="a-create-firmware" type="button">新增固件</button>
+          </div>
+          <div class="card stack">
+            <h3>固件列表</h3>
+            <div class="table-wrap">
+              <table class="sheet-table">
+                <thead>
+                  <tr>
+                    <th>版本</th>
+                    <th>设备类型</th>
+                    <th>文件名</th>
+                    <th>大小</th>
+                    <th>更新时间</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="a-fw-list-body"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="card stack">
+            <p class="tiny muted">批量升级已禁用“指定版本”，将自动使用最新固件版本。</p>
+            <div class="row row-2">
+              <div>
+                <label for="a-upgrade-fw">固件版本（自动最新）</label>
+                <select id="a-upgrade-fw" disabled></select>
+              </div>
+              <div>
+                <label for="a-upgrade-time">定时下发时间（可空）</label>
+                <input id="a-upgrade-time" type="datetime-local" />
+              </div>
+            </div>
+            <div class="row row-2">
+              <div>
+                <label>批量设备</label>
+                <div class="actions actions-tight">
+                  <button id="a-pick-upgrade-devices" type="button" class="secondary">选择设备</button>
+                  <span id="a-upgrade-devices" class="pill">未选择</span>
+                </div>
+              </div>
+              <div>
+                <label for="a-upgrade-clusters">批量集群 ID（逗号分隔）</label>
+                <input id="a-upgrade-clusters" placeholder="cluster_xxx,cluster_yyy" />
+              </div>
+            </div>
+            <button id="a-batch-upgrade" type="button" class="warn">批量升级</button>
+          </div>
+        </section>
+
+        <section id="a-section-tf" class="section" data-section="tf">
+          <div class="content-header">
+            <h2>TF卡管理</h2>
+            <div class="actions">
+              <span class="badge">当前设备：<span id="a-tf-current-device">未选择</span></span>
+              <button id="a-tf-refresh" type="button" class="ghost">刷新云端文件</button>
+              <button id="a-tf-local-refresh" type="button" class="ghost">刷新本地文件</button>
+            </div>
+          </div>
+          <div class="card stack">
+            <h3>云端文件（待下发 / 已下发）</h3>
+            <div class="row row-3">
+              <div>
+                <label for="a-tf-owner">归属账号</label>
+                <select id="a-tf-owner"></select>
+              </div>
+              <div>
+                <label for="a-tf-category">分类</label>
+                <select id="a-tf-category">
+                  <option value="">全部</option>
+                  <option value="fonts">fonts 字体</option>
+                  <option value="read">read 电子书</option>
+                  <option value="photo">photo 图片</option>
+                  <option value="update">update 固件</option>
+                  <option value="background">background 背景</option>
+                  <option value="config">config 配置</option>
+                </select>
+              </div>
+              <div class="file-input">
+                <label for="a-tf-file">选择上传文件</label>
+                <input id="a-tf-file" type="file" />
+              </div>
+            </div>
+            <div class="actions">
+              <button id="a-tf-upload" type="button">上传文件</button>
+            </div>
+            <div class="table-wrap">
+              <table class="sheet-table">
+                <thead>
+                  <tr>
+                    <th>文件名</th>
+                    <th>归属账号</th>
+                    <th>分类</th>
+                    <th>大小</th>
+                    <th>状态</th>
+                    <th>时间</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="a-tf-body"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="card stack">
+            <h3>硬件本地文件（设备上报）</h3>
+            <p class="tiny muted">最近上报：<span id="a-tf-local-time">-</span></p>
+            <div class="table-wrap">
+              <table class="sheet-table">
+                <thead>
+                  <tr>
+                    <th>文件名</th>
+                    <th>分类</th>
+                    <th>大小</th>
+                    <th>更新时间</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="a-tf-local-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section id="a-section-remote" class="section" data-section="remote">
+          <div class="content-header">
+            <h2>投屏与远程控制</h2>
+            <span class="badge">当前设备：<span id="a-remote-device">未选择</span></span>
+          </div>
+          <div class="card stack">
+            <h3>图片投屏</h3>
+            <div class="row row-2">
+              <div class="file-input">
+                <label for="a-cast-image">选择图片</label>
+                <input id="a-cast-image" type="file" accept="image/*" />
+              </div>
+              <div class="actions actions-bottom">
+                <button id="a-cast-image-send" type="button">发送图片</button>
+              </div>
+            </div>
+            <img id="a-cast-image-preview" class="cast-preview hidden" alt="预览" />
+          </div>
+          <div class="card stack">
+            <h3>屏幕实时投射</h3>
+            <div class="row row-3">
+              <div>
+                <label for="a-cast-fps">帧率（1-5fps）</label>
+                <input id="a-cast-fps" type="number" min="1" max="5" value="1" />
+              </div>
+              <div class="actions actions-bottom">
+                <button id="a-cast-start" type="button">开始投屏</button>
+                <button id="a-cast-stop" type="button" class="ghost">停止投屏</button>
+              </div>
+            </div>
+            <p class="tiny muted">基于浏览器投屏，建议 1-2fps，避免带宽占用过高。</p>
+          </div>
+          <div class="card stack">
+            <h3>远程控制</h3>
+            <div class="row row-2">
+              <div>
+                <label for="a-remote-view">切换界面</label>
+                <select id="a-remote-view">
+                  <option value="overview">主页概览</option>
+                  <option value="device">设备与PIN</option>
+                  <option value="templates">API模板</option>
+                  <option value="firmware">固件管理</option>
+                  <option value="todo">TODO</option>
+                  <option value="schedule">课程表</option>
+                  <option value="tf">TF卡管理</option>
+                </select>
+              </div>
+              <div class="actions actions-bottom">
+                <button id="a-remote-view-btn" type="button">切换界面</button>
+              </div>
+            </div>
+            <div class="row row-2">
+              <div>
+                <label for="a-remote-text">临时显示文字</label>
+                <input id="a-remote-text" placeholder="输入要显示的文字" />
+              </div>
+              <div>
+                <label for="a-remote-duration">持续秒数（10-86400）</label>
+                <input id="a-remote-duration" type="number" min="10" max="86400" value="10" placeholder="10-86400" />
+              </div>
+            </div>
+            <button id="a-remote-text-btn" type="button">发送文字</button>
+          </div>
+        </section>
+
+        <section id="a-section-logs" class="section" data-section="logs">
+          <div class="content-header">
+            <h2>日志中心</h2>
+          </div>
+          <div class="card stack">
+            <div class="actions">
+              <button id="a-log-ops" type="button" class="secondary">操作日志</button>
+              <button id="a-log-api" type="button" class="secondary">API 调用日志</button>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <div id="a-output-panel" class="floating-output">
+        <div id="a-output-handle" class="floating-header">
+          <span>操作输出</span>
+          <span class="tiny muted">拖动移动</span>
+        </div>
+        <div class="floating-body">
+          <pre class="output" id="a-output"></pre>
+        </div>
+      </div>
+      <button id="a-output-toggle" class="output-toggle" type="button">收起输出</button>
+    </main>
+
+    <script nomodule>
+      (function () {
+        var status = document.getElementById("a-script-status");
+        if (status) status.textContent = "浏览器不支持模块脚本";
+      })();
+    </script>
+    <script type="module" src="/assets/admin.js?v=20260301-2"></script>
+  </body>
+</html>
+
+

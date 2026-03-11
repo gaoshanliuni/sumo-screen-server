@@ -1,0 +1,200 @@
+<template>
+  <div class="page">
+    <el-card class="panel">
+      <template #header>
+        <div class="header-row">
+          <div>
+            <strong>API 文档（Vue）</strong>
+            <div class="sub">统一设备链路：login -> auto-register -> bind/status -> login -> stream</div>
+          </div>
+          <div class="actions">
+            <el-button @click="goAdmin">返回管理端</el-button>
+          </div>
+        </div>
+      </template>
+
+      <el-alert type="info" :closable="false" show-icon>
+        <template #default>
+          <div class="tips">
+            <div><code>POST /api/hardware/simulate/register</code> 仅兼容保留，已弃用（deprecated）。</div>
+            <div><code>POST /api/hardware/login</code> 返回 <code>404</code> 表示设备未注册，返回 <code>403</code> 表示设备未绑定或已封禁。</div>
+            <div>模拟设备请走与真机一致流程，不再依赖快捷 auto-login/auto-bind。</div>
+          </div>
+        </template>
+      </el-alert>
+
+      <div class="auth-line">
+        <el-select v-model="loginForm.role" style="width: 150px">
+          <el-option label="用户" value="user" />
+          <el-option label="管理员" value="admin" />
+        </el-select>
+        <el-input v-model="loginForm.username" placeholder="用户名" style="width: 220px" />
+        <el-input v-model="loginForm.password" placeholder="密码" show-password style="width: 220px" />
+        <el-button type="primary" :loading="loginLoading" @click="loginAndAuthorize">登录并授权</el-button>
+        <el-button @click="clearAuth">退出授权</el-button>
+      </div>
+      <div class="msg">{{ authMsg }}</div>
+
+      <div id="swagger-ui" class="swagger-wrap" />
+    </el-card>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { useRouter } from "vue-router";
+import { ElMessage } from "element-plus";
+
+type AppRole = "user" | "admin";
+
+const router = useRouter();
+const loginLoading = ref(false);
+const authMsg = ref("");
+const loginForm = reactive<{ role: AppRole; username: string; password: string }>({
+  role: "user",
+  username: "demo",
+  password: "user123",
+});
+
+let swaggerUi: any = null;
+
+function goAdmin() {
+  router.push("/admin");
+}
+
+function appendSwaggerCss() {
+  if (document.getElementById("swagger-ui-css")) return;
+  const link = document.createElement("link");
+  link.id = "swagger-ui-css";
+  link.rel = "stylesheet";
+  link.href = "https://unpkg.com/swagger-ui-dist@5/swagger-ui.css";
+  document.head.appendChild(link);
+}
+
+function loadSwaggerScript() {
+  return new Promise<void>((resolve, reject) => {
+    const win = window as any;
+    if (win.SwaggerUIBundle) {
+      resolve();
+      return;
+    }
+    const script = document.createElement("script");
+    script.src = "https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js";
+    script.async = true;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error("Swagger 脚本加载失败"));
+    document.body.appendChild(script);
+  });
+}
+
+async function initSwagger() {
+  appendSwaggerCss();
+  await loadSwaggerScript();
+  const win = window as any;
+  swaggerUi = win.SwaggerUIBundle({
+    url: "/openapi.yaml",
+    dom_id: "#swagger-ui",
+    deepLinking: true,
+    displayRequestDuration: true,
+    persistAuthorization: true,
+  });
+}
+
+async function loginAndAuthorize() {
+  if (!loginForm.username.trim() || !loginForm.password) {
+    ElMessage.error("请输入账号和密码");
+    return;
+  }
+  loginLoading.value = true;
+  try {
+    const path = loginForm.role === "admin" ? "/api/auth/admin/login" : "/api/auth/user/login";
+    const res = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username: loginForm.username.trim(),
+        password: loginForm.password,
+      }),
+    });
+    const json = await res.json();
+    if (!res.ok || !json?.data?.token) {
+      throw new Error(json?.msg || "授权失败");
+    }
+    swaggerUi?.preauthorizeApiKey?.("BearerAuth", json.data.token);
+    authMsg.value = "授权成功，可直接调试接口";
+    ElMessage.success("授权成功");
+  } catch (error) {
+    authMsg.value = (error as Error).message || "授权失败";
+    ElMessage.error(authMsg.value);
+  } finally {
+    loginLoading.value = false;
+  }
+}
+
+function clearAuth() {
+  swaggerUi?.authActions?.logout?.(["BearerAuth"]);
+  authMsg.value = "已退出授权";
+  ElMessage.info("已退出授权");
+}
+
+onMounted(async () => {
+  try {
+    await initSwagger();
+  } catch (error) {
+    authMsg.value = (error as Error).message || "文档初始化失败";
+  }
+});
+
+onBeforeUnmount(() => {
+  // Keep Swagger instance persistent in page cache, no explicit dispose needed.
+});
+</script>
+
+<style scoped>
+.page {
+  padding: 16px;
+}
+.panel {
+  max-width: 1280px;
+  margin: 0 auto;
+}
+.header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+.sub {
+  margin-top: 6px;
+  color: #64748b;
+  font-size: 12px;
+}
+.actions {
+  display: flex;
+  gap: 8px;
+}
+.tips {
+  display: grid;
+  gap: 6px;
+}
+.auth-line {
+  margin-top: 12px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.msg {
+  margin: 8px 0 10px;
+  color: #475569;
+  font-size: 13px;
+  min-height: 20px;
+}
+.swagger-wrap {
+  border: 1px solid #d9dee8;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #fff;
+}
+</style>
+
