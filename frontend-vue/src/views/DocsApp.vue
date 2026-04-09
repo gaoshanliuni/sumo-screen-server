@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="page">
     <el-card class="panel">
       <template #header>
@@ -8,6 +8,7 @@
             <div class="sub">统一设备链路：login -> auto-register -> bind/status -> login -> stream</div>
           </div>
           <div class="actions">
+            <el-button @click="goSimulator">设备模拟</el-button>
             <el-button @click="goAdmin">返回管理端</el-button>
           </div>
         </div>
@@ -18,10 +19,35 @@
           <div class="tips">
             <div><code>POST /api/hardware/simulate/register</code> 仅兼容保留，已弃用（deprecated）。</div>
             <div><code>POST /api/hardware/login</code> 返回 <code>404</code> 表示设备未注册，返回 <code>403</code> 表示设备未绑定或已封禁。</div>
-            <div>模拟设备请走与真机一致流程，不再依赖快捷 auto-login/auto-bind。</div>
+            <div>模拟设备请走与真机一致流程，不再依赖快捷 auto-login / auto-bind。</div>
           </div>
         </template>
       </el-alert>
+
+      <el-row :gutter="12" class="meta-grid">
+        <el-col :md="12" :xs="24">
+          <el-card shadow="never" class="meta-card">
+            <template #header>最新设备能力</template>
+            <ul class="meta-list">
+              <li>主页/桌牌/天气：后端生成图片，设备显示并支持时间覆盖。</li>
+              <li>远程事件：<code>remote.switch_view</code> / <code>remote.refresh_page_image</code> / <code>remote.request_screen_state</code>。</li>
+              <li>投屏控制：<code>remote.show_text</code> / <code>remote.show_image</code> / <code>remote.cast_stop</code>。</li>
+              <li>ACK 回传：<code>POST /api/hardware/remote/ack</code>。</li>
+            </ul>
+          </el-card>
+        </el-col>
+        <el-col :md="12" :xs="24">
+          <el-card shadow="never" class="meta-card">
+            <template #header>推荐联调顺序</template>
+            <ol class="meta-list ordered">
+              <li>登录 Swagger 并授权 Bearer token。</li>
+              <li>执行设备注册/绑定相关接口，确认设备在线。</li>
+              <li>触发 remote 事件并观察模拟器/真机 ACK。</li>
+              <li>检查 homepage / badgepage / weatherpage 图像 payload。</li>
+            </ol>
+          </el-card>
+        </el-col>
+      </el-row>
 
       <div class="auth-line">
         <el-select v-model="loginForm.role" style="width: 150px">
@@ -60,6 +86,10 @@ let swaggerUi: any = null;
 
 function goAdmin() {
   router.push("/admin");
+}
+
+function goSimulator() {
+  router.push("/simulator");
 }
 
 function appendSwaggerCss() {
@@ -177,6 +207,23 @@ onBeforeUnmount(() => {
   display: grid;
   gap: 6px;
 }
+.meta-grid {
+  margin-top: 12px;
+}
+.meta-card {
+  border-radius: 12px;
+}
+.meta-list {
+  margin: 0;
+  padding-left: 18px;
+  color: #334155;
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+}
+.meta-list.ordered {
+  padding-left: 22px;
+}
 .auth-line {
   margin-top: 12px;
   display: flex;
@@ -197,4 +244,3 @@ onBeforeUnmount(() => {
   background: #fff;
 }
 </style>
-

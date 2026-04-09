@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="page">
     <el-card class="panel">
       <template #header>
@@ -8,6 +8,7 @@
             <div class="sub">真机同链路：login -> auto-register -> bind/status -> login -> stream</div>
           </div>
           <div class="actions">
+            <el-button @click="goDocs">API 文档</el-button>
             <el-button @click="goAdmin">返回管理端</el-button>
             <template v-if="auth.token">
               <span class="who">当前用户：{{ auth.username }}</span>
@@ -32,6 +33,14 @@
       </div>
 
       <div v-else class="stack">
+        <el-alert type="info" :closable="false" show-icon>
+          <template #default>
+            模拟器已对齐最新设备能力：支持主页/桌牌/天气图片状态、
+            <code>remote.switch_view</code>、<code>remote.refresh_page_image</code>、<code>remote.request_screen_state</code>、
+            <code>remote.show_text</code>、<code>remote.show_image</code>、<code>remote.cast_stop</code>。
+          </template>
+        </el-alert>
+
         <el-row :gutter="12">
           <el-col :md="12" :xs="24">
             <el-card>
@@ -86,18 +95,31 @@
               <div class="kv"><span>SSE</span><strong>{{ sseStatus }}</strong></div>
               <div class="kv"><span>WS</span><strong>{{ wsStatus }}</strong></div>
               <div class="kv"><span>当前界面</span><strong>{{ displayState.view || "-" }}</strong></div>
+              <div class="kv"><span>最近命令</span><strong class="ellipsis">{{ displayState.lastRemoteCommand || "-" }}</strong></div>
+              <div class="kv"><span>最近ACK</span><strong>{{ displayState.lastAckStatus || "-" }}</strong></div>
+              <div class="kv"><span>ACK时间</span><strong>{{ displayState.lastAckAt || "-" }}</strong></div>
             </el-card>
           </el-col>
 
           <el-col :md="8" :xs="24">
             <el-card>
-              <template #header>投屏/公告显示</template>
+              <template #header>页面图像与投屏状态</template>
+              <div class="kv"><span>激活页面类型</span><strong>{{ activePageType }}</strong></div>
+              <div class="kv"><span>页面 image_id</span><strong class="ellipsis">{{ displayState.pageImageId || "-" }}</strong></div>
+              <div class="kv"><span>页面 etag</span><strong class="ellipsis">{{ displayState.pageEtag || "-" }}</strong></div>
+              <div class="kv"><span>页面更新时间</span><strong class="ellipsis">{{ displayState.pageUpdatedAt || "-" }}</strong></div>
+              <div class="kv"><span>投屏 file_id</span><strong class="ellipsis">{{ displayState.imageFileId || "-" }}</strong></div>
               <div class="kv"><span>公告模式</span><strong>{{ displayState.announcementMode || "-" }}</strong></div>
               <div class="kv"><span>公告文本</span><strong class="ellipsis">{{ displayState.announcementText || "-" }}</strong></div>
-              <div class="kv"><span>投屏文件ID</span><strong>{{ displayState.imageFileId || "-" }}</strong></div>
+
+              <div class="actions" style="margin-top: 8px">
+                <el-button size="small" @click="refreshAllPageSnapshots('manual')">刷新三页快照</el-button>
+                <el-button size="small" @click="refreshCurrentPageSnapshot">刷新当前页</el-button>
+              </div>
+
               <div class="preview-wrap">
-                <img v-if="displayState.imageUrl" :src="displayState.imageUrl" alt="cast preview" class="preview-image" />
-                <div v-else class="preview-empty">暂无投屏图片</div>
+                <img v-if="previewImageUrl" :src="previewImageUrl" alt="page preview" class="preview-image" />
+                <div v-else class="preview-empty">暂无页面/投屏图片</div>
               </div>
             </el-card>
           </el-col>
@@ -123,6 +145,16 @@ import { useAuthStore } from "../stores/auth";
 
 type AppRole = "user" | "admin";
 type DeviceInfo = { id: string; mac: string; displayName?: string; simulated?: boolean };
+type PageType = "homepage" | "badgepage" | "weatherpage" | "unknown";
+
+type PageSnapshot = {
+  pageType: PageType;
+  imageId: string;
+  previewUrl: string;
+  etag: string;
+  updatedAt: string;
+  version: number;
+};
 
 const auth = useAuthStore();
 const router = useRouter();
@@ -158,12 +190,27 @@ const pinExpire = ref("");
 const sseStatus = ref("未连接");
 const wsStatus = ref("未连接");
 
+const pageSnapshots = reactive<Record<PageType, PageSnapshot>>({
+  homepage: { pageType: "homepage", imageId: "", previewUrl: "", etag: "", updatedAt: "", version: 0 },
+  badgepage: { pageType: "badgepage", imageId: "", previewUrl: "", etag: "", updatedAt: "", version: 0 },
+  weatherpage: { pageType: "weatherpage", imageId: "", previewUrl: "", etag: "", updatedAt: "", version: 0 },
+  unknown: { pageType: "unknown", imageId: "", previewUrl: "", etag: "", updatedAt: "", version: 0 },
+});
+
 const displayState = reactive({
   view: "",
   announcementText: "",
   announcementMode: "",
   imageFileId: "",
   imageUrl: "",
+  pageType: "unknown" as PageType,
+  pageImageId: "",
+  pageImageUrl: "",
+  pageEtag: "",
+  pageUpdatedAt: "",
+  lastRemoteCommand: "",
+  lastAckStatus: "",
+  lastAckAt: "",
 });
 
 let bindPollTimer: ReturnType<typeof setInterval> | null = null;
@@ -178,8 +225,25 @@ const currentDeviceLabel = computed(() => {
   return `${name}${currentDevice.value.id} (${currentDevice.value.mac})`;
 });
 
+const activePageType = computed<PageType>(() => {
+  const fromView = normalizePageType(displayState.view);
+  if (fromView !== "unknown") return fromView;
+  return displayState.pageType;
+});
+
+const previewImageUrl = computed(() => {
+  if (displayState.imageUrl) return displayState.imageUrl;
+  if (displayState.pageImageUrl) return displayState.pageImageUrl;
+  const fallback = pageSnapshots[activePageType.value];
+  return fallback?.previewUrl || "";
+});
+
 function goAdmin() {
   router.push("/admin");
+}
+
+function goDocs() {
+  router.push("/docs");
 }
 
 function logout() {
@@ -189,7 +253,7 @@ function logout() {
 
 function pushLog(line: string) {
   logs.value.unshift(`[${new Date().toISOString()}] ${line}`);
-  logs.value = logs.value.slice(0, 400);
+  logs.value = logs.value.slice(0, 500);
 }
 
 function clearLogs() {
@@ -210,51 +274,33 @@ function createRandomMac() {
   return bytes.map((n) => n.toString(16).padStart(2, "0").toUpperCase()).join(":");
 }
 
-async function doLogin() {
-  if (!loginForm.username.trim() || !loginForm.password) {
-    ElMessage.error("请输入账号和密码");
-    return;
-  }
-  loginLoading.value = true;
-  try {
-    await auth.login(loginForm.role, loginForm.username.trim(), loginForm.password);
-    await loadSimulatedDevices();
-    ElMessage.success("登录成功");
-  } catch (error) {
-    ElMessage.error((error as Error).message || "登录失败");
-  } finally {
-    loginLoading.value = false;
-  }
+function normalizePageType(value: string): PageType {
+  const v = String(value || "").trim().toLowerCase();
+  if (["home", "homepage"].includes(v)) return "homepage";
+  if (["badge", "badgepage", "nameplate"].includes(v)) return "badgepage";
+  if (["weather", "weatherpage"].includes(v)) return "weatherpage";
+  return "unknown";
 }
 
-async function loadSimulatedDevices() {
-  if (!auth.token) return;
-  const rows = await apiRequest<DeviceInfo[]>("/api/devices?simulated=true", { token: auth.token });
-  simulatedDevices.value = rows;
+function pageEndpoint(pageType: PageType) {
+  if (pageType === "homepage") return "/api/hardware/homepage";
+  if (pageType === "badgepage") return "/api/hardware/badgepage";
+  if (pageType === "weatherpage") return "/api/hardware/weatherpage";
+  return "";
 }
 
-async function loginHardwareByMac(mac: string) {
-  const normalized = normalizeMac(mac);
-  if (!normalized) throw new Error("MAC为空，无法登录");
-
-  hardwareToken.value = "";
-  logBootStage("TRY_LOGIN", { mac: normalized });
-  const login = await apiRequest<{ token: string; deviceId: string; templates: unknown[] }>("/api/hardware/login", {
-    method: "POST",
-    body: JSON.stringify({ mac: normalized }),
+function resetPageSnapshots() {
+  ["homepage", "badgepage", "weatherpage"].forEach((k) => {
+    const pageType = k as PageType;
+    pageSnapshots[pageType] = {
+      pageType,
+      imageId: "",
+      previewUrl: "",
+      etag: "",
+      updatedAt: "",
+      version: 0,
+    };
   });
-  hardwareToken.value = login.token || "";
-  const current = simulatedDevices.value.find((item) => item.id === login.deviceId || item.mac === normalized);
-  currentDevice.value = {
-    id: login.deviceId || current?.id || "",
-    mac: normalized,
-    displayName: current?.displayName || "",
-    simulated: true,
-  };
-  bindStatus.value = "已绑定";
-  pinCode.value = "";
-  pinExpire.value = "";
-  logBootStage("LOGIN_OK", { deviceId: login.deviceId || "" });
 }
 
 function resetDisplayState() {
@@ -263,6 +309,14 @@ function resetDisplayState() {
   displayState.announcementMode = "";
   displayState.imageFileId = "";
   displayState.imageUrl = "";
+  displayState.pageType = "unknown";
+  displayState.pageImageId = "";
+  displayState.pageImageUrl = "";
+  displayState.pageEtag = "";
+  displayState.pageUpdatedAt = "";
+  displayState.lastRemoteCommand = "";
+  displayState.lastAckStatus = "";
+  displayState.lastAckAt = "";
 }
 
 function buildEventDedupKey(type: string, payload: Record<string, any>) {
@@ -305,6 +359,68 @@ function preloadImage(url: string) {
   });
 }
 
+function applySnapshotToDisplay(pageType: PageType) {
+  const snap = pageSnapshots[pageType];
+  if (!snap) return;
+  displayState.pageType = pageType;
+  displayState.pageImageId = snap.imageId;
+  displayState.pageImageUrl = snap.previewUrl;
+  displayState.pageEtag = snap.etag;
+  displayState.pageUpdatedAt = snap.updatedAt;
+}
+
+async function refreshPageSnapshot(pageType: PageType, reason: string) {
+  if (pageType === "unknown") return;
+  if (!hardwareToken.value) return;
+
+  const endpoint = pageEndpoint(pageType);
+  if (!endpoint) return;
+
+  try {
+    const data = await apiRequest<any>(endpoint, { token: hardwareToken.value });
+    const image = data?.image || {};
+    const preview =
+      buildAuthorizedUrl(String(image.admin_preview_url || "")) ||
+      buildAuthorizedUrl(String(image.preview_url || "")) ||
+      buildAuthorizedUrl(String(image.admin_image_url || "")) ||
+      buildAuthorizedUrl(String(image.image_url || ""));
+
+    pageSnapshots[pageType] = {
+      pageType,
+      imageId: String(image.image_id || image.image_key || ""),
+      previewUrl: preview,
+      etag: String(image.etag || ""),
+      updatedAt: String(image.updated_at || ""),
+      version: Number(data?.version || 0),
+    };
+
+    if (activePageType.value === pageType || displayState.pageType === "unknown") {
+      applySnapshotToDisplay(pageType);
+    }
+
+    pushLog(`PAGE_SNAPSHOT_OK ${pageType} reason=${reason} etag=${pageSnapshots[pageType].etag || "-"}`);
+  } catch (error) {
+    pushLog(`PAGE_SNAPSHOT_FAIL ${pageType} reason=${reason} err=${(error as Error).message || String(error)}`);
+  }
+}
+
+async function refreshAllPageSnapshots(reason: string) {
+  await Promise.all([
+    refreshPageSnapshot("homepage", reason),
+    refreshPageSnapshot("badgepage", reason),
+    refreshPageSnapshot("weatherpage", reason),
+  ]);
+}
+
+async function refreshCurrentPageSnapshot() {
+  const pageType = activePageType.value;
+  if (pageType === "unknown") {
+    ElMessage.info("当前界面不是主页/桌牌/天气，无法刷新页面快照");
+    return;
+  }
+  await refreshPageSnapshot(pageType, "manual-current");
+}
+
 async function sendRemoteAck(commandId: string, eventType: string, status: "success" | "failed", message: string, payload: Record<string, any> = {}) {
   const cid = String(commandId || "").trim();
   if (!cid || !hardwareToken.value) return;
@@ -320,8 +436,12 @@ async function sendRemoteAck(commandId: string, eventType: string, status: "succ
         payload,
       }),
     });
+    displayState.lastAckStatus = `${status} · ${eventType}`;
+    displayState.lastAckAt = new Date().toLocaleTimeString();
     pushLog(`ACK ${eventType} ${status} ${cid}${message ? ` ${message}` : ""}`);
   } catch (error) {
+    displayState.lastAckStatus = `failed · ${eventType}`;
+    displayState.lastAckAt = new Date().toLocaleTimeString();
     pushLog(`ACK_ERROR ${eventType} ${cid} ${(error as Error).message || String(error)}`);
   }
 }
@@ -351,7 +471,38 @@ async function handleShowImageCommand(type: string, payload: Record<string, any>
   }
 }
 
-function handleDeviceEvent(rawEvent: any) {
+async function handleRefreshPageImageEvent(type: string, payload: Record<string, any>) {
+  const commandId = String(payload.commandId || "").trim();
+  const pageType = normalizePageType(String(payload.pageType || payload.view || displayState.view || ""));
+  if (pageType === "unknown") {
+    await sendRemoteAck(commandId, type, "failed", "unsupported pageType", { pageType: payload.pageType || "" });
+    return;
+  }
+  await refreshPageSnapshot(pageType, "remote.refresh_page_image");
+  applySnapshotToDisplay(pageType);
+  await sendRemoteAck(commandId, type, "success", "page image refreshed", {
+    pageType,
+    imageId: pageSnapshots[pageType].imageId,
+    etag: pageSnapshots[pageType].etag,
+  });
+}
+
+async function handleRequestScreenStateEvent(type: string, payload: Record<string, any>) {
+  const commandId = String(payload.commandId || "").trim();
+  const state = {
+    view: displayState.view || "",
+    pageType: displayState.pageType,
+    pageImageId: displayState.pageImageId,
+    pageEtag: displayState.pageEtag,
+    announcementMode: displayState.announcementMode,
+    hasCastImage: Boolean(displayState.imageUrl),
+    wsStatus: wsStatus.value,
+    sseStatus: sseStatus.value,
+  };
+  await sendRemoteAck(commandId, type, "success", "screen state", state);
+}
+
+async function handleDeviceEvent(rawEvent: any) {
   if (!rawEvent) return;
   const type = String(rawEvent.type || "");
   const payload = rawEvent.payload && typeof rawEvent.payload === "object" ? rawEvent.payload : {};
@@ -359,31 +510,78 @@ function handleDeviceEvent(rawEvent: any) {
     pushLog(`DEVICE_EVENT_DUP ${type}`);
     return;
   }
+
+  displayState.lastRemoteCommand = type;
   pushLog(`DEVICE_EVENT ${type} ${JSON.stringify(payload)}`);
 
   if (type === "remote.switch_view") {
     displayState.view = String(payload.view || "");
-    void sendRemoteAck(String(payload.commandId || ""), type, "success", "view switched", {
+    const pageType = normalizePageType(displayState.view);
+    if (pageType !== "unknown") {
+      await refreshPageSnapshot(pageType, "remote.switch_view");
+      applySnapshotToDisplay(pageType);
+    }
+    await sendRemoteAck(String(payload.commandId || ""), type, "success", "view switched", {
       view: displayState.view,
+      pageType,
     });
     return;
   }
+
+  if (type === "remote.refresh_page_image") {
+    await handleRefreshPageImageEvent(type, payload);
+    return;
+  }
+
+  if (type === "remote.request_screen_state") {
+    await handleRequestScreenStateEvent(type, payload);
+    return;
+  }
+
   if (type === "remote.show_text") {
     displayState.announcementText = String(payload.text || "");
     displayState.announcementMode = String(payload.announcementMode || "status");
-    void sendRemoteAck(String(payload.commandId || ""), type, "success", "text shown", {
+    await sendRemoteAck(String(payload.commandId || ""), type, "success", "text shown", {
       mode: displayState.announcementMode,
     });
     return;
   }
+
   if (type === "remote.show_image") {
-    void handleShowImageCommand(type, payload);
+    await handleShowImageCommand(type, payload);
     return;
   }
+
+  if (type === "remote.cast_frame") {
+    if (payload.downloadUrl || payload?.file?.url) {
+      await handleShowImageCommand(type, payload);
+    } else {
+      await sendRemoteAck(String(payload.commandId || ""), type, "success", "cast frame accepted");
+    }
+    return;
+  }
+
   if (type === "remote.cast_stop") {
     displayState.imageFileId = "";
     displayState.imageUrl = "";
-    void sendRemoteAck(String(payload.commandId || ""), type, "success", "cast stopped");
+    await sendRemoteAck(String(payload.commandId || ""), type, "success", "cast stopped");
+    return;
+  }
+
+  if (type.startsWith("homepage.")) {
+    await refreshPageSnapshot("homepage", type);
+    if (activePageType.value === "homepage") applySnapshotToDisplay("homepage");
+    return;
+  }
+  if (type.startsWith("badgepage.")) {
+    await refreshPageSnapshot("badgepage", type);
+    if (activePageType.value === "badgepage") applySnapshotToDisplay("badgepage");
+    return;
+  }
+  if (type.startsWith("weatherpage.")) {
+    await refreshPageSnapshot("weatherpage", type);
+    if (activePageType.value === "weatherpage") applySnapshotToDisplay("weatherpage");
+    return;
   }
 }
 
@@ -418,7 +616,7 @@ function connectStreams() {
   sse.addEventListener("device-event", (event) => {
     try {
       const data = JSON.parse((event as MessageEvent).data || "{}");
-      handleDeviceEvent(data);
+      void handleDeviceEvent(data);
     } catch (_) {
       pushLog(`SSE_EVENT_RAW ${(event as MessageEvent).data}`);
     }
@@ -440,9 +638,9 @@ function connectStreams() {
     try {
       const data = JSON.parse(event.data || "{}");
       if (data?.type === "device-event" && data?.event) {
-        handleDeviceEvent(data.event);
+        void handleDeviceEvent(data.event);
       } else {
-        handleDeviceEvent(data);
+        void handleDeviceEvent(data);
       }
     } catch (_) {
       pushLog(`WS_EVENT_RAW ${event.data}`);
@@ -480,6 +678,7 @@ function scheduleBindPoll() {
         await loginHardwareByMac(deviceMac);
         stopBindPoll();
         connectStreams();
+        await refreshAllPageSnapshots("bind-confirmed");
         logBootStage("STREAM_READY", { channel: "WS+SSE" });
         await loadSimulatedDevices();
         ElMessage.success("设备已绑定并登录成功");
@@ -504,6 +703,54 @@ function resetRuntime() {
   pinCode.value = "";
   pinExpire.value = "";
   resetDisplayState();
+  resetPageSnapshots();
+}
+
+async function doLogin() {
+  if (!loginForm.username.trim() || !loginForm.password) {
+    ElMessage.error("请输入账号和密码");
+    return;
+  }
+  loginLoading.value = true;
+  try {
+    await auth.login(loginForm.role, loginForm.username.trim(), loginForm.password);
+    await loadSimulatedDevices();
+    ElMessage.success("登录成功");
+  } catch (error) {
+    ElMessage.error((error as Error).message || "登录失败");
+  } finally {
+    loginLoading.value = false;
+  }
+}
+
+async function loadSimulatedDevices() {
+  if (!auth.token) return;
+  const rows = await apiRequest<DeviceInfo[]>("/api/devices?simulated=true", { token: auth.token });
+  simulatedDevices.value = rows;
+}
+
+async function loginHardwareByMac(mac: string) {
+  const normalized = normalizeMac(mac);
+  if (!normalized) throw new Error("MAC 为空，无法登录");
+
+  hardwareToken.value = "";
+  logBootStage("TRY_LOGIN", { mac: normalized });
+  const login = await apiRequest<{ token: string; deviceId: string; templates: unknown[] }>("/api/hardware/login", {
+    method: "POST",
+    body: JSON.stringify({ mac: normalized }),
+  });
+  hardwareToken.value = login.token || "";
+  const current = simulatedDevices.value.find((item) => item.id === login.deviceId || item.mac === normalized);
+  currentDevice.value = {
+    id: login.deviceId || current?.id || "",
+    mac: normalized,
+    displayName: current?.displayName || "",
+    simulated: true,
+  };
+  bindStatus.value = "已绑定";
+  pinCode.value = "";
+  pinExpire.value = "";
+  logBootStage("LOGIN_OK", { deviceId: login.deviceId || "" });
 }
 
 async function switchToPickedDevice() {
@@ -513,6 +760,7 @@ async function switchToPickedDevice() {
     resetRuntime();
     await loginHardwareByMac(row.mac);
     connectStreams();
+    await refreshAllPageSnapshots("switch-device");
     logBootStage("STREAM_READY", { channel: "WS+SSE", deviceId: row.id });
     ElMessage.success("已切换到模拟设备");
   } catch (error) {
@@ -539,6 +787,7 @@ async function startSimulatedDeviceFlow() {
     try {
       await loginHardwareByMac(mac);
       connectStreams();
+      await refreshAllPageSnapshots("quick-login");
       logBootStage("STREAM_READY", { channel: "WS+SSE" });
       ElMessage.success("设备已注册并绑定，直接登录成功");
       await loadSimulatedDevices();
@@ -577,6 +826,7 @@ async function startSimulatedDeviceFlow() {
     if (result.mode === "already_bound") {
       await loginHardwareByMac(currentDevice.value.mac);
       connectStreams();
+      await refreshAllPageSnapshots("already-bound");
       logBootStage("STREAM_READY", { channel: "WS+SSE" });
       await loadSimulatedDevices();
       ElMessage.success("设备已绑定并登录成功");
@@ -651,7 +901,7 @@ onBeforeUnmount(() => {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  max-width: 180px;
+  max-width: 220px;
 }
 .preview-wrap {
   margin-top: 10px;
@@ -665,7 +915,7 @@ onBeforeUnmount(() => {
 }
 .preview-image {
   max-width: 100%;
-  max-height: 280px;
+  max-height: 320px;
   object-fit: contain;
 }
 .preview-empty {
@@ -677,7 +927,7 @@ onBeforeUnmount(() => {
   color: #e2e8f0;
   border-radius: 8px;
   padding: 12px;
-  height: 320px;
+  height: 360px;
   overflow: auto;
   font-size: 12px;
   margin: 0;

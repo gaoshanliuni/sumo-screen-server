@@ -1,7 +1,15 @@
 const createId = require("./id");
 const { updateDB } = require("../db/store");
 
-async function logOperation({
+function enqueueLogWrite(task) {
+  setImmediate(() => {
+    task().catch(() => {
+      // Ignore logging failures to avoid breaking main flow.
+    });
+  });
+}
+
+function logOperation({
   actorId = "system",
   actorRole = "system",
   action,
@@ -11,8 +19,7 @@ async function logOperation({
   status = "success",
 }) {
   if (!action) return;
-
-  try {
+  enqueueLogWrite(async () => {
     await updateDB((db) => {
       db.operationLogs.unshift({
         id: createId("oplog"),
@@ -27,12 +34,10 @@ async function logOperation({
       });
       db.operationLogs = db.operationLogs.slice(0, 5000);
     });
-  } catch (_) {
-    // Ignore logging failures to avoid breaking main flow.
-  }
+  });
 }
 
-async function logApi({
+function logApi({
   callerRole = "unknown",
   callerId = "",
   deviceId = "",
@@ -42,7 +47,7 @@ async function logApi({
   latencyMs = 0,
   error = "",
 }) {
-  try {
+  enqueueLogWrite(async () => {
     await updateDB((db) => {
       db.apiLogs.unshift({
         id: createId("apilog"),
@@ -58,9 +63,7 @@ async function logApi({
       });
       db.apiLogs = db.apiLogs.slice(0, 10000);
     });
-  } catch (_) {
-    // Ignore logging failures to avoid breaking main flow.
-  }
+  });
 }
 
 module.exports = {

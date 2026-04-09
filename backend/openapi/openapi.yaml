@@ -1394,6 +1394,34 @@ paths:
         '200':
           description: ok
 
+  /api/logs/cleanup:
+    post:
+      summary: 日志中心清理（操作日志/API日志/调试文件）
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mode:
+                  type: string
+                  enum: [all, range]
+                startAt:
+                  type: string
+                  description: range 模式必填，ISO 时间
+                endAt:
+                  type: string
+                  description: range 模式必填，ISO 时间
+                includeOperationLogs: { type: boolean }
+                includeApiLogs: { type: boolean }
+                includeFiles: { type: boolean }
+                dryRun: { type: boolean }
+      responses:
+        '200':
+          description: ok
+
   /api/tf:
     get:
       summary: TF卡文件列表

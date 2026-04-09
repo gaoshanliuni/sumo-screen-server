@@ -10,6 +10,7 @@ let writeQueue = Promise.resolve();
 let warnedReadFallback = false;
 let warnedWriteFallback = false;
 let forceCacheReads = false;
+let dbRetryAfterTs = 0;
 
 function clone(data) {
   return JSON.parse(JSON.stringify(data));
@@ -49,6 +50,21 @@ function warnFallback(kind, error) {
   const msg = error && error.message ? error.message : String(error || "unknown error");
   // eslint-disable-next-line no-console
   console.warn(`[store] ${kind} fallback to in-memory cache: ${msg}`);
+}
+
+function enableCacheReadMode() {
+  forceCacheReads = true;
+  const cooldown = Math.max(1000, Number(config.dbRetryCooldownMs || 30000));
+  dbRetryAfterTs = Date.now() + cooldown;
+}
+
+function disableCacheReadMode() {
+  forceCacheReads = false;
+  dbRetryAfterTs = 0;
+}
+
+function shouldBypassDB() {
+  return forceCacheReads && Date.now() < dbRetryAfterTs;
 }
 
 async function ensureMemoryStore() {
@@ -569,6 +585,11 @@ async function getPool() {
     database: config.mysql.database,
     charset: config.mysql.charset,
     connectionLimit: config.mysql.connectionLimit,
+    connectTimeout: config.mysql.connectTimeoutMs,
+    waitForConnections: true,
+    queueLimit: 0,
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 10000,
   });
   return pool;
 }
@@ -609,7 +630,7 @@ async function initStore() {
       initialized = true;
       warnedReadFallback = false;
       warnedWriteFallback = false;
-      forceCacheReads = false;
+      disableCacheReadMode();
       return clone(cache);
     } finally {
       conn.release();
@@ -620,7 +641,7 @@ async function initStore() {
       warnFallback("initStore", error);
       warnedReadFallback = true;
     }
-    forceCacheReads = true;
+    enableCacheReadMode();
     return clone(cache);
   }
 }
@@ -628,21 +649,10 @@ async function initStore() {
 async function readDB() {
   try {
     await initStore();
-    if (forceCacheReads) {
-      return clone(cache);
-    }
-    const currentPool = await getPool();
-    const [rows] = await currentPool.query(`SELECT payload FROM ${tableName()} WHERE id = 1 LIMIT 1`);
-    if (!rows.length) {
-      cache = await getDefaultData();
-      normalizeStoreShape(cache);
-      await currentPool.query(`INSERT INTO ${tableName()} (id, payload) VALUES (1, ?)`, [JSON.stringify(cache)]);
-      return clone(cache);
-    }
-    cache = JSON.parse(rows[0].payload);
-    normalizeStoreShape(cache);
+    // Serve from in-process snapshot by default to keep API latency stable
+    // even when remote DB has jitter. Snapshot is refreshed on startup and
+    // every successful updateDB commit.
     warnedReadFallback = false;
-    forceCacheReads = false;
     return clone(cache);
   } catch (error) {
     await ensureMemoryStore();
@@ -650,7 +660,7 @@ async function readDB() {
       warnFallback("readDB", error);
       warnedReadFallback = true;
     }
-    forceCacheReads = true;
+    enableCacheReadMode();
     return clone(cache);
   }
 }
@@ -668,9 +678,20 @@ async function readDBCached() {
       warnFallback("readDBCached", error);
       warnedReadFallback = true;
     }
-    forceCacheReads = true;
+    enableCacheReadMode();
     return clone(cache);
   }
+}
+
+async function updateMemoryOnly(mutator) {
+  await ensureMemoryStore();
+  const draft = clone(cache);
+  const result = await mutator(draft);
+  normalizeStoreShape(draft);
+  draft.meta = draft.meta || {};
+  draft.meta.updatedAt = new Date().toISOString();
+  cache = draft;
+  return result;
 }
 
 async function updateDB(mutator) {
@@ -679,6 +700,9 @@ async function updateDB(mutator) {
     .then(async () => {
       try {
         await initStore();
+        if (shouldBypassDB()) {
+          return updateMemoryOnly(mutator);
+        }
         const currentPool = await getPool();
         const conn = await currentPool.getConnection();
         try {
@@ -702,7 +726,7 @@ async function updateDB(mutator) {
           await conn.commit();
           cache = draft;
           warnedWriteFallback = false;
-          forceCacheReads = false;
+          disableCacheReadMode();
           return result;
         } catch (error) {
           try {
@@ -715,19 +739,12 @@ async function updateDB(mutator) {
           conn.release();
         }
       } catch (error) {
-        await ensureMemoryStore();
         if (!warnedWriteFallback) {
           warnFallback("updateDB", error);
           warnedWriteFallback = true;
         }
-        forceCacheReads = true;
-        const draft = clone(cache);
-        const result = await mutator(draft);
-        normalizeStoreShape(draft);
-        draft.meta = draft.meta || {};
-        draft.meta.updatedAt = new Date().toISOString();
-        cache = draft;
-        return result;
+        enableCacheReadMode();
+        return updateMemoryOnly(mutator);
       }
     });
 

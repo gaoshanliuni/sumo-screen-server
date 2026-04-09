@@ -573,7 +573,27 @@
             <div class="row-actions">
               <el-button @click="loadOperationLogs">查询操作日志</el-button>
               <el-button @click="loadApiLogs">查询API日志</el-button>
+              <el-checkbox v-model="logCleanupForm.includeOperationLogs">操作日志</el-checkbox>
+              <el-checkbox v-model="logCleanupForm.includeApiLogs">API日志</el-checkbox>
+              <el-checkbox v-model="logCleanupForm.includeFiles">文件/日志文件</el-checkbox>
+              <el-checkbox v-model="logCleanupForm.dryRun">仅预览</el-checkbox>
             </div>
+            <div class="row-actions">
+              <el-date-picker
+                v-model="logCleanupForm.range"
+                type="datetimerange"
+                range-separator="至"
+                start-placeholder="开始时间"
+                end-placeholder="结束时间"
+                format="YYYY-MM-DD HH:mm:ss"
+                style="min-width: 360px"
+              />
+              <el-button type="danger" :loading="logCleanupLoading" @click="runLogCleanup('range')">按时间段清理</el-button>
+              <el-button type="danger" plain :loading="logCleanupLoading" @click="runLogCleanup('all')">清理全部</el-button>
+            </div>
+            <el-alert v-if="logCleanupSummary" type="info" :closable="false" show-icon>
+              <template #default>{{ logCleanupSummary }}</template>
+            </el-alert>
             <el-row :gutter="12">
               <el-col :md="12" :xs="24">
                 <el-card>
@@ -1393,6 +1413,21 @@ const tfBatchClusterIds = ref<string[]>([]);
 
 const operationLogs = ref<Array<Record<string, any>>>([]);
 const apiLogs = ref<Array<Record<string, any>>>([]);
+const logCleanupLoading = ref(false);
+const logCleanupSummary = ref("");
+const logCleanupForm = reactive<{
+  range: [Date, Date] | [];
+  includeOperationLogs: boolean;
+  includeApiLogs: boolean;
+  includeFiles: boolean;
+  dryRun: boolean;
+}>({
+  range: [],
+  includeOperationLogs: true,
+  includeApiLogs: true,
+  includeFiles: true,
+  dryRun: false,
+});
 
 const remoteForm = reactive({
   view: "home",
@@ -3234,6 +3269,80 @@ async function loadOperationLogs() {
 
 async function loadApiLogs() {
   apiLogs.value = await apiRequest<any[]>("/api/logs/apis", { token: auth.token });
+}
+
+function formatBytes(value: number) {
+  const bytes = Number(value || 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let size = bytes;
+  let idx = 0;
+  while (size >= 1024 && idx < units.length - 1) {
+    size /= 1024;
+    idx += 1;
+  }
+  return `${size.toFixed(idx === 0 ? 0 : 1)} ${units[idx]}`;
+}
+
+async function runLogCleanup(mode: "all" | "range") {
+  if (!isAdmin.value) return;
+  if (!logCleanupForm.includeOperationLogs && !logCleanupForm.includeApiLogs && !logCleanupForm.includeFiles) {
+    ElMessage.warning("请至少选择一个清理项");
+    return;
+  }
+
+  let startAt = "";
+  let endAt = "";
+  if (mode === "range") {
+    if (!Array.isArray(logCleanupForm.range) || logCleanupForm.range.length !== 2) {
+      ElMessage.warning("请先选择时间段");
+      return;
+    }
+    startAt = logCleanupForm.range[0].toISOString();
+    endAt = logCleanupForm.range[1].toISOString();
+  }
+
+  const confirmText =
+    mode === "all"
+      ? `确认${logCleanupForm.dryRun ? "预览" : "执行"}全部清理？`
+      : `确认${logCleanupForm.dryRun ? "预览" : "执行"}所选时间段清理？`;
+  if (!window.confirm(confirmText)) return;
+
+  logCleanupLoading.value = true;
+  try {
+    const result = await apiRequest<any>("/api/logs/cleanup", {
+      method: "POST",
+      token: auth.token,
+      body: JSON.stringify({
+        mode,
+        startAt,
+        endAt,
+        includeOperationLogs: logCleanupForm.includeOperationLogs,
+        includeApiLogs: logCleanupForm.includeApiLogs,
+        includeFiles: logCleanupForm.includeFiles,
+        dryRun: logCleanupForm.dryRun,
+      }),
+    });
+
+    const db = result?.db || {};
+    const files = result?.files || {};
+    logCleanupSummary.value =
+      `DB: 操作日志删除 ${db.operationRemoved || 0}，API日志删除 ${db.apiRemoved || 0}；` +
+      ` 文件: 扫描 ${files.scanned || 0}，选中 ${files.selected || 0}，删除 ${files.removed || 0}，` +
+      `释放 ${formatBytes(files.removedBytes || 0)}${(files.failed || 0) > 0 ? `，失败 ${files.failed}` : ""}`;
+
+    if (!logCleanupForm.dryRun) {
+      if (logCleanupForm.includeOperationLogs) await loadOperationLogs();
+      if (logCleanupForm.includeApiLogs) await loadApiLogs();
+      ElMessage.success("清理完成");
+    } else {
+      ElMessage.success("清理预览完成");
+    }
+  } catch (error: any) {
+    ElMessage.error(error?.message || "清理失败");
+  } finally {
+    logCleanupLoading.value = false;
+  }
 }
 
 async function loadLayouts() {
