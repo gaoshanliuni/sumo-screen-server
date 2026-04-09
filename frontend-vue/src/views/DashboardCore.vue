@@ -4,8 +4,11 @@
       <template #header>
         <div class="header-row">
           <div class="header-left">
-            <el-button v-if="isMobile || !sidebarCollapsed" class="menu-toggle" plain @click="toggleSidebar">
-              {{ isMobile ? (mobileNavOpen ? "关闭菜单" : "菜单") : sidebarCollapsed ? "展开侧栏" : "收起侧栏" }}
+            <el-button v-if="isMobile" class="menu-toggle" plain @click="toggleSidebar">
+              {{ mobileNavOpen ? "关闭菜单" : "菜单" }}
+            </el-button>
+            <el-button v-else-if="!sidebarCollapsed" class="menu-toggle menu-toggle-icon" circle plain @click="toggleSidebar" title="收起侧栏">
+              ☰
             </el-button>
             <strong>{{ title }}</strong>
           </div>
@@ -3545,6 +3548,7 @@ watch(
 .header-row { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
 .header-left { display:flex; align-items:center; gap:10px; min-width:0; }
 .menu-toggle { flex:0 0 auto; }
+.menu-toggle-icon { width:32px; height:32px; padding:0; font-size:18px; font-weight:700; }
 .header-user { display:flex; align-items:center; gap:10px; }
 .header-username { color:#374151; font-size:14px; }
 .theme-toggle { display:flex; align-items:center; gap:8px; padding:6px 10px; border-radius:999px; background:rgba(15, 23, 42, 0.05); }
@@ -3589,7 +3593,7 @@ watch(
 .image-preview-stage { position:relative; border:1px solid #d9dee8; border-radius:10px; background:#fff; overflow:hidden; }
 .image-preview-img { width:100%; height:100%; object-fit:cover; display:block; }
 .image-preview-empty { height:100%; display:flex; align-items:center; justify-content:center; color:#64748b; font-size:14px; }
-.time-overlay-preview { position:absolute; border:2px solid rgba(239, 68, 68, 0.85); background:transparent; box-sizing:border-box; pointer-events:none; overflow:hidden; padding:0; margin:0; }
+.time-overlay-preview { position:absolute; border:none; background:transparent; box-sizing:border-box; pointer-events:none; overflow:hidden; padding:0; margin:0; }
 .time-overlay-preview :deep(.segment-time-preview) { width:100%; height:100%; background:transparent; }
 .homepage-edit-preview-frame { width:100%; height:100%; border:0; background:#fff; display:block; }
 .dark-mode .panel { background:rgba(15, 23, 42, 0.82); border-color:#233047; }

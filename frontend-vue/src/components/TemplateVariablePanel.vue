@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <teleport to="body">
     <transition name="el-fade-in-linear">
       <div v-if="modelValue" class="template-variable-panel" :class="{ mobile: isMobile, dragging: dragging }" :style="panelStyle">

@@ -1,37 +1,17 @@
-<template>
+﻿<template>
   <div class="segment-time-preview" :style="rootStyle" aria-label="time preview">
-    <svg
-      class="segment-time-svg"
-      :viewBox="`0 0 ${svgWidth} ${svgHeight}`"
-      preserveAspectRatio="none"
-      role="img"
-    >
-      <rect v-if="background !== 'transparent'" x="0" y="0" :width="svgWidth" :height="svgHeight" :fill="background" />
+    <svg class="segment-time-svg" :viewBox="`0 0 ${svgWidth} ${svgHeight}`" preserveAspectRatio="none" role="img">
       <g v-for="(glyph, index) in glyphs" :key="`${glyph.char}-${index}`" :transform="`translate(${glyph.x}, ${glyph.y})`">
-        <g v-if="glyph.kind === 'digit'">
-          <rect
-            v-for="segment in glyph.segments"
-            :key="segment.id"
-            :x="segment.x"
-            :y="segment.y"
-            :width="segment.w"
-            :height="segment.h"
-            :rx="segment.radius"
-            :fill="color"
-          />
-        </g>
-        <g v-else-if="glyph.kind === 'colon'">
-          <rect
-            v-for="dot in glyph.dots"
-            :key="dot.id"
-            :x="dot.x"
-            :y="dot.y"
-            :width="dot.w"
-            :height="dot.h"
-            :rx="dot.radius"
-            :fill="color"
-          />
-        </g>
+        <rect
+          v-for="segment in glyph.rects"
+          :key="segment.id"
+          :x="segment.x"
+          :y="segment.y"
+          :width="segment.w"
+          :height="segment.h"
+          :rx="segment.radius"
+          :fill="color"
+        />
       </g>
     </svg>
   </div>
@@ -52,11 +32,20 @@ type SegmentRect = {
 
 type Glyph = {
   char: string;
-  kind: "digit" | "colon" | "space";
   x: number;
   y: number;
-  segments: SegmentRect[];
-  dots: SegmentRect[];
+  rects: SegmentRect[];
+};
+
+type Metrics = {
+  fontSize: number;
+  digitH: number;
+  digitW: number;
+  segTh: number;
+  verticalH: number;
+  colonW: number;
+  spacing: number;
+  spaceW: number;
 };
 
 const props = withDefaults(
@@ -91,40 +80,95 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
-function digitSegments(x: number, y: number, digitW: number, digitH: number, thick: number): SegmentRect[] {
-  const innerW = Math.max(1, digitW - thick * 2);
-  const vH = Math.max(1, Math.floor((digitH - thick * 3) / 2));
-  const bottomY = digitH - thick;
-  const middleY = thick + vH;
-  const lowerY = thick * 2 + vH;
-  const radius = Math.max(1, Math.floor(thick / 3));
-
-  return [
-    { id: "a", x: x + thick, y: y, w: innerW, h: thick, radius },
-    { id: "b", x: x, y: y + thick, w: thick, h: vH, radius },
-    { id: "c", x: x + digitW - thick, y: y + thick, w: thick, h: vH, radius },
-    { id: "d", x: x + thick, y: y + middleY, w: innerW, h: thick, radius },
-    { id: "e", x: x, y: y + lowerY, w: thick, h: vH, radius },
-    { id: "f", x: x + digitW - thick, y: y + lowerY, w: thick, h: vH, radius },
-    { id: "g", x: x + thick, y: y + bottomY, w: innerW, h: thick, radius },
-  ];
+function buildMetrics(fontSize: number): Metrics {
+  const safeFont = Math.max(18, Math.round(fontSize));
+  const digitH = safeFont;
+  const digitW = Math.max(20, Math.round((safeFont * 3) / 5));
+  let segTh = Math.max(2, Math.round(safeFont / 8));
+  if (segTh * 3 >= digitH) {
+    segTh = Math.max(2, Math.floor(digitH / 4));
+  }
+  const verticalH = Math.max(2, Math.floor((digitH - segTh * 3) / 2));
+  const colonW = Math.max(8, segTh * 2);
+  const spacing = Math.max(2, Math.round(safeFont / 10));
+  return {
+    fontSize: safeFont,
+    digitH,
+    digitW,
+    segTh,
+    verticalH,
+    colonW,
+    spacing,
+    spaceW: spacing * 2,
+  };
 }
 
-function colonDots(x: number, y: number, digitH: number, thick: number): SegmentRect[] {
-  const dot = Math.max(2, Math.round(thick * 1.15));
-  const radius = Math.max(1, Math.floor(dot / 4));
-  const topY = y + Math.floor(digitH / 3) - Math.floor(dot / 2);
-  const bottomY = y + Math.floor((digitH * 2) / 3) - Math.floor(dot / 2);
-  return [
-    { id: "top", x: x, y: topY, w: dot, h: dot, radius },
-    { id: "bottom", x: x, y: bottomY, w: dot, h: dot, radius },
-  ];
-}
-
-function classifyChar(ch: string): Glyph["kind"] {
+function classifyChar(ch: string): "digit" | "colon" | "space" {
   if (/^[0-9]$/.test(ch)) return "digit";
   if (ch === ":") return "colon";
   return "space";
+}
+
+function digitRects(ch: string, metrics: Metrics): SegmentRect[] {
+  const x = 0;
+  const y = 0;
+  const { digitW, digitH, segTh, verticalH } = metrics;
+  const rightX = x + digitW - segTh;
+  const topY = y;
+  const upperY = y + segTh;
+  const middleY = y + segTh + verticalH;
+  const lowerY = middleY + segTh;
+  const bottomY = lowerY + verticalH;
+  const radius = Math.max(1, Math.floor(segTh / 3));
+
+  if (ch === "1") {
+    let capW = Math.floor(digitW / 2);
+    if (capW < segTh * 2) {
+      capW = segTh * 2;
+    }
+    const capX = x + digitW - capW;
+    return [
+      { id: "bar", x: rightX, y: topY, w: segTh, h: digitH, radius },
+      { id: "cap-top", x: capX, y: topY, w: capW, h: segTh, radius },
+      { id: "cap-bottom", x: capX, y: bottomY, w: capW, h: segTh, radius },
+    ];
+  }
+
+  const masks: Record<string, number> = {
+    "0": 0x77,
+    "2": 0x5d,
+    "3": 0x6d,
+    "4": 0x2e,
+    "5": 0x6b,
+    "6": 0x7b,
+    "7": 0x25,
+    "8": 0x7f,
+    "9": 0x6f,
+  };
+  const mask = masks[ch] ?? 0;
+
+  const segments: SegmentRect[] = [
+    { id: "top", x, y: topY, w: digitW, h: segTh, radius },
+    { id: "upper-left", x, y: upperY, w: segTh, h: verticalH, radius },
+    { id: "upper-right", x: rightX, y: upperY, w: segTh, h: verticalH, radius },
+    { id: "middle", x, y: middleY, w: digitW, h: segTh, radius },
+    { id: "lower-left", x, y: lowerY, w: segTh, h: verticalH, radius },
+    { id: "lower-right", x: rightX, y: lowerY, w: segTh, h: verticalH, radius },
+    { id: "bottom", x, y: bottomY, w: digitW, h: segTh, radius },
+  ];
+
+  return segments.filter((_, index) => Boolean(mask & (1 << index)));
+}
+
+function colonRects(metrics: Metrics): SegmentRect[] {
+  const dot = Math.max(3, metrics.segTh);
+  const radius = Math.max(1, Math.floor(dot / 4));
+  const topY = Math.floor(metrics.digitH / 3) - Math.floor(dot / 2);
+  const bottomY = Math.floor((metrics.digitH * 2) / 3) - Math.floor(dot / 2);
+  return [
+    { id: "dot-top", x: 0, y: topY, w: dot, h: dot, radius },
+    { id: "dot-bottom", x: 0, y: bottomY, w: dot, h: dot, radius },
+  ];
 }
 
 const displayText = computed(() => {
@@ -133,101 +177,75 @@ const displayText = computed(() => {
   return formatPreviewTime(props.format, now.value);
 });
 
-const boxWidth = computed(() => Math.max(1, Number(props.width || 0) || 0));
-const boxHeight = computed(() => Math.max(1, Number(props.height || 0) || 0));
+const boxWidth = computed(() => Math.max(1, Number(props.width || 0) || 1));
+const boxHeight = computed(() => Math.max(1, Number(props.height || 0) || 1));
 
 const layout = computed(() => {
-  const rawText = displayText.value;
-  const baseFont = clamp(Number(props.fontSize || 88), 18, Math.max(18, boxHeight.value || 88));
-  const baseThick = Math.max(4, Math.round(baseFont / 6));
-  const baseDigitW = Math.max(20, Math.round(baseFont * 0.68));
-  const baseColonW = Math.max(10, Math.round(baseThick * 1.35));
-  const baseSpaceW = Math.max(8, Math.round(baseThick * 1.1));
-  const baseGap = Math.max(2, Math.round(baseThick * 0.45));
-  const padX = Math.max(4, Math.round(baseFont / 10));
-  const padY = Math.max(2, Math.round(baseFont / 10));
+  const text = displayText.value;
+  const safeTarget = clamp(Number(props.fontSize || 88), 18, Math.max(18, boxHeight.value));
+  const base = buildMetrics(safeTarget);
+  const padX = Math.max(4, Math.round(base.fontSize / 10));
+  const padY = Math.max(2, Math.round(base.fontSize / 10));
 
-  const measure = [...rawText].reduce((sum, ch) => {
+  const baseWidth = [...text].reduce((sum, ch) => {
     const kind = classifyChar(ch);
-    if (kind === "digit") return sum + baseDigitW;
-    if (kind === "colon") return sum + baseColonW;
-    return sum + baseSpaceW;
-  }, 0);
-  const gapCount = Math.max(0, rawText.length - 1);
-  const needW = measure + gapCount * baseGap;
-  const needH = baseFont;
+    if (kind === "digit") return sum + base.digitW;
+    if (kind === "colon") return sum + base.colonW;
+    return sum + base.spaceW;
+  }, 0) + Math.max(0, text.length - 1) * base.spacing;
+
   const availW = Math.max(1, boxWidth.value - padX * 2);
   const availH = Math.max(1, boxHeight.value - padY * 2);
-  const ratioW = needW > 0 ? availW / needW : 1;
-  const ratioH = needH > 0 ? availH / needH : 1;
-  const scale = clamp(Math.min(1, ratioW, ratioH), 0.5, 1);
+  const ratioW = baseWidth > 0 ? availW / baseWidth : 1;
+  const ratioH = base.digitH > 0 ? availH / base.digitH : 1;
+  const scale = clamp(Math.min(1, ratioW, ratioH), 0.35, 1);
 
-  const fontSize = Math.max(16, Math.round(baseFont * scale));
-  const thick = Math.max(4, Math.round(baseThick * scale));
-  const digitW = Math.max(18, Math.round(baseDigitW * scale));
-  const colonW = Math.max(8, Math.round(baseColonW * scale));
-  const spaceW = Math.max(8, Math.round(baseSpaceW * scale));
-  const gap = Math.max(2, Math.round(baseGap * scale));
-  const contentW = [...rawText].reduce((sum, ch) => {
+  const metrics = buildMetrics(Math.max(18, Math.round(base.fontSize * scale)));
+  const contentW = [...text].reduce((sum, ch) => {
     const kind = classifyChar(ch);
-    if (kind === "digit") return sum + digitW;
-    if (kind === "colon") return sum + colonW;
-    return sum + spaceW;
-  }, 0) + Math.max(0, rawText.length - 1) * gap;
+    if (kind === "digit") return sum + metrics.digitW;
+    if (kind === "colon") return sum + metrics.colonW;
+    return sum + metrics.spaceW;
+  }, 0) + Math.max(0, text.length - 1) * metrics.spacing;
 
-  const innerH = Math.max(fontSize, 18);
-  const align = props.align;
-  const startX = align === "left" ? padX : align === "center" ? Math.max(padX, Math.round((boxWidth.value - contentW) / 2)) : Math.max(padX, boxWidth.value - padX - contentW);
-  const startY = Math.max(padY, Math.round((boxHeight.value - innerH) / 2));
+  const startX =
+    props.align === "left"
+      ? padX
+      : props.align === "center"
+      ? Math.max(padX, Math.round((boxWidth.value - contentW) / 2))
+      : Math.max(padX, boxWidth.value - padX - contentW);
+  const startY = Math.max(padY, Math.round((boxHeight.value - metrics.digitH) / 2));
 
   return {
-    text: rawText,
-    fontSize,
-    thick,
-    digitW,
-    colonW,
-    spaceW,
-    gap,
+    text,
+    metrics,
     startX,
     startY,
-    innerH,
   };
 });
 
 const glyphs = computed<Glyph[]>(() => {
-  const items: Glyph[] = [];
-  let cx = layout.value.startX;
-  const y = layout.value.startY;
+  const list: Glyph[] = [];
   const text = layout.value.text;
+  const metrics = layout.value.metrics;
+  let cx = layout.value.startX;
+
   for (const ch of text) {
     const kind = classifyChar(ch);
     if (kind === "digit") {
-      const masks: Record<string, number> = {
-        "0": 0x77,
-        "1": 0x24,
-        "2": 0x5d,
-        "3": 0x6d,
-        "4": 0x2e,
-        "5": 0x6b,
-        "6": 0x7b,
-        "7": 0x25,
-        "8": 0x7f,
-        "9": 0x6f,
-      };
-      const mask = masks[ch] || 0;
-      const segments = digitSegments(cx, y, layout.value.digitW, layout.value.innerH, layout.value.thick).filter((seg, idx) => Boolean(mask & (1 << idx)));
-      items.push({ char: ch, kind, x: cx, y, segments, dots: [] });
-      cx += layout.value.digitW;
+      list.push({ char: ch, x: cx, y: layout.value.startY, rects: digitRects(ch, metrics) });
+      cx += metrics.digitW;
     } else if (kind === "colon") {
-      items.push({ char: ch, kind, x: cx, y, segments: [], dots: colonDots(cx, y, layout.value.innerH, layout.value.thick) });
-      cx += layout.value.colonW;
+      list.push({ char: ch, x: cx, y: layout.value.startY, rects: colonRects(metrics) });
+      cx += metrics.colonW;
     } else {
-      items.push({ char: ch, kind, x: cx, y, segments: [], dots: [] });
-      cx += layout.value.spaceW;
+      list.push({ char: ch, x: cx, y: layout.value.startY, rects: [] });
+      cx += metrics.spaceW;
     }
-    cx += layout.value.gap;
+    cx += metrics.spacing;
   }
-  return items;
+
+  return list;
 });
 
 const svgWidth = computed(() => Math.max(1, boxWidth.value));
