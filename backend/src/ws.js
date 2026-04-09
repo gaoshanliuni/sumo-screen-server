@@ -2,7 +2,22 @@ const { WebSocketServer } = require("ws");
 const { verifyToken } = require("./utils/jwt");
 const { readDB } = require("./db/store");
 const { ensureDeviceAccess } = require("./utils/access");
-const { subscribeDevice, getDeviceHistory } = require("./utils/realtime.hub");
+const { subscribeDevice, getDeviceHistory, markDeviceOnline, markDeviceOffline } = require("./utils/realtime.hub");
+
+const REMOTE_REPLAY_MAX_AGE_MS = 45000;
+
+function shouldSkipHistoryReplay(event) {
+  const t = String(event?.type || "");
+  if (t.startsWith("homepage.") || t.startsWith("badgepage.") || t.startsWith("weatherpage.")) {
+    return true;
+  }
+  if (t.startsWith("remote.")) {
+    const ts = Date.parse(String(event?.timestamp || ""));
+    if (!Number.isFinite(ts)) return true;
+    return Date.now() - ts > REMOTE_REPLAY_MAX_AGE_MS;
+  }
+  return false;
+}
 
 function safeSend(ws, payload) {
   if (ws.readyState === ws.OPEN) {
@@ -44,6 +59,7 @@ function setupWebSocketServer(httpServer) {
       const auth = verifyToken(token);
       const db = await readDB();
       ensureDeviceAccess(db, auth, deviceId);
+      markDeviceOnline(deviceId, "ws");
 
       safeSend(ws, {
         channel: "ws",
@@ -55,6 +71,7 @@ function setupWebSocketServer(httpServer) {
 
       const history = getDeviceHistory(deviceId);
       history.forEach((event) => {
+        if (shouldSkipHistoryReplay(event)) return;
         safeSend(ws, { channel: "ws", type: "device-event", event });
       });
 
@@ -73,6 +90,12 @@ function setupWebSocketServer(httpServer) {
 
     ws.on("close", () => {
       unsubscribe();
+      try {
+        const deviceId = url.searchParams.get("deviceId") || "";
+        if (deviceId) markDeviceOffline(deviceId, "ws");
+      } catch (_) {
+        // ignore
+      }
     });
   });
 

@@ -169,6 +169,8 @@ const displayState = reactive({
 let bindPollTimer: ReturnType<typeof setInterval> | null = null;
 let sse: EventSource | null = null;
 let ws: WebSocket | null = null;
+const recentEventKeys = new Map<string, number>();
+const EVENT_DEDUP_WINDOW_MS = 1500;
 
 const currentDeviceLabel = computed(() => {
   if (!currentDevice.value) return "未选择";
@@ -263,32 +265,125 @@ function resetDisplayState() {
   displayState.imageUrl = "";
 }
 
+function buildEventDedupKey(type: string, payload: Record<string, any>) {
+  const commandId = String(payload?.commandId || "").trim();
+  if (commandId) return `${type}:${commandId}`;
+  return `${type}:${JSON.stringify(payload || {})}`;
+}
+
+function isDuplicateEvent(type: string, payload: Record<string, any>) {
+  const key = buildEventDedupKey(type, payload);
+  const now = Date.now();
+  const last = recentEventKeys.get(key) || 0;
+  recentEventKeys.set(key, now);
+  if (recentEventKeys.size > 300) {
+    for (const [k, ts] of recentEventKeys.entries()) {
+      if (now - ts > EVENT_DEDUP_WINDOW_MS * 4) recentEventKeys.delete(k);
+    }
+  }
+  return last > 0 && now - last <= EVENT_DEDUP_WINDOW_MS;
+}
+
+function buildAuthorizedUrl(rawUrl: string) {
+  const raw = String(rawUrl || "").trim();
+  if (!raw) return "";
+  try {
+    const url = raw.startsWith("http") ? new URL(raw) : new URL(raw, location.origin);
+    if (hardwareToken.value) url.searchParams.set("token", hardwareToken.value);
+    return url.toString();
+  } catch (_) {
+    return raw;
+  }
+}
+
+function preloadImage(url: string) {
+  return new Promise<void>((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve();
+    img.onerror = () => reject(new Error("image load error"));
+    img.src = url;
+  });
+}
+
+async function sendRemoteAck(commandId: string, eventType: string, status: "success" | "failed", message: string, payload: Record<string, any> = {}) {
+  const cid = String(commandId || "").trim();
+  if (!cid || !hardwareToken.value) return;
+  try {
+    await apiRequest("/api/hardware/remote/ack", {
+      method: "POST",
+      token: hardwareToken.value,
+      body: JSON.stringify({
+        commandId: cid,
+        eventType,
+        status,
+        message,
+        payload,
+      }),
+    });
+    pushLog(`ACK ${eventType} ${status} ${cid}${message ? ` ${message}` : ""}`);
+  } catch (error) {
+    pushLog(`ACK_ERROR ${eventType} ${cid} ${(error as Error).message || String(error)}`);
+  }
+}
+
+async function handleShowImageCommand(type: string, payload: Record<string, any>) {
+  const commandId = String(payload.commandId || "").trim();
+  displayState.imageFileId = String(payload.fileId || payload?.file?.id || "");
+
+  const candidateUrl = String(payload.downloadUrl || payload?.file?.url || "");
+  const imageUrl = buildAuthorizedUrl(candidateUrl);
+  if (!imageUrl) {
+    displayState.imageUrl = "";
+    await sendRemoteAck(commandId, type, "failed", "missing image url");
+    return;
+  }
+
+  displayState.imageUrl = imageUrl;
+  try {
+    await preloadImage(imageUrl);
+    pushLog(`IMAGE_READY ${displayState.imageFileId || "-"}`);
+    await sendRemoteAck(commandId, type, "success", "image loaded");
+  } catch (error) {
+    displayState.imageUrl = "";
+    const msg = (error as Error).message || "image load failed";
+    pushLog(`IMAGE_LOAD_FAIL ${msg}`);
+    await sendRemoteAck(commandId, type, "failed", msg);
+  }
+}
+
 function handleDeviceEvent(rawEvent: any) {
   if (!rawEvent) return;
   const type = String(rawEvent.type || "");
   const payload = rawEvent.payload && typeof rawEvent.payload === "object" ? rawEvent.payload : {};
+  if (isDuplicateEvent(type, payload)) {
+    pushLog(`DEVICE_EVENT_DUP ${type}`);
+    return;
+  }
   pushLog(`DEVICE_EVENT ${type} ${JSON.stringify(payload)}`);
 
   if (type === "remote.switch_view") {
     displayState.view = String(payload.view || "");
+    void sendRemoteAck(String(payload.commandId || ""), type, "success", "view switched", {
+      view: displayState.view,
+    });
     return;
   }
   if (type === "remote.show_text") {
     displayState.announcementText = String(payload.text || "");
     displayState.announcementMode = String(payload.announcementMode || "status");
+    void sendRemoteAck(String(payload.commandId || ""), type, "success", "text shown", {
+      mode: displayState.announcementMode,
+    });
     return;
   }
   if (type === "remote.show_image") {
-    displayState.imageFileId = String(payload.fileId || payload?.file?.id || "");
-    const rawUrl = String(payload.downloadUrl || payload?.file?.url || "");
-    if (rawUrl) {
-      displayState.imageUrl = rawUrl.startsWith("http") ? rawUrl : `${location.origin}${rawUrl}`;
-    }
+    void handleShowImageCommand(type, payload);
     return;
   }
   if (type === "remote.cast_stop") {
     displayState.imageFileId = "";
     displayState.imageUrl = "";
+    void sendRemoteAck(String(payload.commandId || ""), type, "success", "cast stopped");
   }
 }
 

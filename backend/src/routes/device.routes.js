@@ -6,7 +6,7 @@ const { readDB, updateDB } = require("../db/store");
 const { allowRoles } = require("../middleware/auth");
 const { ensureDeviceAccess, resolveTargetDeviceIds } = require("../utils/access");
 const { logOperation } = require("../utils/logging");
-const { publishDeviceEvent } = require("../utils/realtime.hub");
+const { publishDeviceEvent, getDevicePresence } = require("../utils/realtime.hub");
 
 const router = express.Router();
 
@@ -23,7 +23,9 @@ function isMacValid(mac) {
 }
 
 function ensureUserExists(db, userId) {
-  return db.users.some((item) => item.id === userId && item.role === "user" && item.status !== "blocked");
+  const raw = String(userId || "").trim();
+  if (!raw) return false;
+  return db.users.some((item) => (item.id === raw || item.username === raw) && item.status !== "blocked");
 }
 
 function normalizePin(value) {
@@ -209,7 +211,8 @@ router.get(
   "/",
   allowRoles("admin", "user"),
   asyncHandler(async (req, res) => {
-    const { status, mac, ownerId, simulated, bound } = req.query || {};
+    const { status, mac, ownerId, simulated, bound, online, keyword } = req.query || {};
+    const keywordText = String(keyword || "").trim().toLowerCase();
     const db = await readDB();
     let list = db.devices;
 
@@ -224,6 +227,8 @@ router.get(
     if (simulated === "false") list = list.filter((item) => item.simulated !== true);
     if (bound === "true") list = list.filter((item) => item.bindState === "bound");
     if (bound === "false") list = list.filter((item) => item.bindState !== "bound");
+    if (online === "true") list = list.filter((item) => getDevicePresence(item.id).online);
+    if (online === "false") list = list.filter((item) => !getDevicePresence(item.id).online);
 
     const clusterMap = new Map();
     (db.clusters || []).forEach((cluster) => {
@@ -233,11 +238,31 @@ router.get(
       });
     });
 
-    const rows = list.map((item) => ({
-      ...item,
-      clusterIds: (clusterMap.get(item.id) || []).map((x) => x.id),
-      clusterNames: (clusterMap.get(item.id) || []).map((x) => x.name).filter(Boolean),
-    }));
+    const userMap = new Map((db.users || []).map((user) => [String(user.id), user]));
+
+    let rows = list.map((item) => {
+      const owner = userMap.get(String(item.ownerId || "")) || {};
+      const presence = getDevicePresence(item.id);
+      return {
+        ...item,
+        clusterIds: (clusterMap.get(item.id) || []).map((x) => x.id),
+        clusterNames: (clusterMap.get(item.id) || []).map((x) => x.name).filter(Boolean),
+        ownerUsername: owner.username || "",
+        ownerNickname: owner.nickname || "",
+        online: presence.online,
+        onlineChannels: presence.channels,
+        lastSeenAt: presence.lastSeenAt || item.lastLoginAt || "",
+      };
+    });
+
+    if (keywordText) {
+      rows = rows.filter((item) => {
+        const merged = `${item.id} ${item.mac} ${item.displayName || ""} ${item.remark || ""} ${item.ownerId || ""} ${
+          item.ownerUsername || ""
+        } ${item.ownerNickname || ""} ${(item.clusterNames || []).join(" ")} ${item.online ? "online 在线" : "offline 离线"}`.toLowerCase();
+        return merged.includes(keywordText);
+      });
+    }
 
     res.success(rows, "ok");
   })
@@ -274,7 +299,12 @@ router.post(
       throw new HttpError(400, "PIN码尝试次数已超限");
     }
 
-    const targetOwnerId = req.auth.role === "admin" ? ownerIdInput : req.auth.userId;
+    const targetOwnerId =
+      req.auth.role === "admin"
+        ? db.users.find((item) => item.id === ownerIdInput || item.username === ownerIdInput)?.id ||
+          ownerIdInput ||
+          req.auth.userId
+        : req.auth.userId;
     if (!targetOwnerId) throw new HttpError(400, "管理员绑定时必须指定ownerId");
     if (!ensureUserExists(db, targetOwnerId)) throw new HttpError(400, "ownerId对应用户不存在");
 
@@ -529,7 +559,22 @@ router.post(
     if (patch.bindState && !["pending", "bound"].includes(String(patch.bindState))) {
       throw new HttpError(400, "bindState仅支持 pending/bound");
     }
-    if (patch.defaultView && !["home", "reader", "file", "settings", "nameplate", "provision"].includes(String(patch.defaultView))) {
+    if (
+      patch.defaultView &&
+      ![
+        "home",
+        "weather",
+        "badge",
+        "todo",
+        "settings",
+        "network",
+        "about",
+        "nameplate",
+        "reader",
+        "file",
+        "provision",
+      ].includes(String(patch.defaultView))
+    ) {
       throw new HttpError(400, "defaultView不合法");
     }
     if (patch.displayName !== undefined) {
@@ -584,13 +629,20 @@ router.post(
       let list = db.devices.filter((item) => req.auth.role === "admin" || item.ownerId === req.auth.userId);
       const status = String(filters.status || "").trim();
       const bound = String(filters.bound || "").trim();
+      const online = String(filters.online || "").trim();
       const keyword = String(filters.keyword || "").trim().toLowerCase();
       if (status) list = list.filter((item) => String(item.status || "") === status);
       if (bound === "bound") list = list.filter((item) => item.bindState === "bound");
       if (bound === "unbound") list = list.filter((item) => item.bindState !== "bound");
+      if (online === "online") list = list.filter((item) => getDevicePresence(item.id).online);
+      if (online === "offline") list = list.filter((item) => !getDevicePresence(item.id).online);
       if (keyword) {
         list = list.filter((item) => {
-          const merged = `${item.id} ${item.mac} ${item.displayName || ""} ${item.remark || ""}`.toLowerCase();
+          const owner = (db.users || []).find((u) => u.id === item.ownerId);
+          const merged =
+            `${item.id} ${item.mac} ${item.displayName || ""} ${item.remark || ""} ${item.ownerId || ""} ${
+              owner?.username || ""
+            } ${owner?.nickname || ""}`.toLowerCase();
           return merged.includes(keyword);
         });
       }

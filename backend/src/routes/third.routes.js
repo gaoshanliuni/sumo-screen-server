@@ -3,12 +3,36 @@ const axios = require("axios");
 const asyncHandler = require("../utils/asyncHandler");
 const HttpError = require("../utils/httpError");
 const { allowRoles } = require("../middleware/auth");
-const { readDB } = require("../db/store");
+const { readDB, updateDB } = require("../db/store");
 const { ensureDeviceAccess } = require("../utils/access");
 const { logApi } = require("../utils/logging");
 const config = require("../config");
 
 const router = express.Router();
+
+function buildThirdCacheEntry(tpl, advancedResult) {
+  const steps = Array.isArray(advancedResult?.steps)
+    ? advancedResult.steps.slice(-5).map((step) => ({
+        name: String(step?.name || ""),
+        status: Number(step?.status || 0),
+        output: step?.output !== undefined ? step.output : step?.raw,
+      }))
+    : [];
+
+  return {
+    template: {
+      slug: String(tpl?.slug || ""),
+      name: String(tpl?.name || ""),
+    },
+    formatted: advancedResult?.output !== undefined ? advancedResult.output : null,
+    raw: {
+      output: advancedResult?.output !== undefined ? advancedResult.output : null,
+      vars: advancedResult?.vars && typeof advancedResult.vars === "object" ? advancedResult.vars : {},
+      steps,
+    },
+    updatedAt: new Date().toISOString(),
+  };
+}
 
 function formatBuiltin(slug, raw) {
   if (slug === "weather" && raw) {
@@ -445,6 +469,19 @@ router.post(
         success: true,
         statusCode,
         latencyMs,
+      });
+
+      const cacheEntry = buildThirdCacheEntry(tpl, advancedResult);
+      await updateDB((draft) => {
+        draft.devices = Array.isArray(draft.devices) ? draft.devices : [];
+        const target = draft.devices.find((item) => String(item.id || "") === String(deviceId || ""));
+        if (!target) return;
+        target.thirdApiCache =
+          target.thirdApiCache && typeof target.thirdApiCache === "object" && !Array.isArray(target.thirdApiCache)
+            ? target.thirdApiCache
+            : {};
+        target.thirdApiCache[slug] = cacheEntry;
+        target.updatedAt = new Date().toISOString();
       });
 
       res.success(

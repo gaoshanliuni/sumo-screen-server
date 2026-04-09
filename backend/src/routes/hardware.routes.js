@@ -2,16 +2,52 @@
 const asyncHandler = require("../utils/asyncHandler");
 const HttpError = require("../utils/httpError");
 const createId = require("../utils/id");
-const { readDB, updateDB } = require("../db/store");
+const { readDB, readDBCached, updateDB } = require("../db/store");
 const { signToken, verifyToken } = require("../utils/jwt");
 const { authRequired, allowRoles } = require("../middleware/auth");
 const { ensureDeviceAccess } = require("../utils/access");
 const { logOperation } = require("../utils/logging");
-const { subscribeDevice, getDeviceHistory, publishDeviceEvent } = require("../utils/realtime.hub");
+const {
+  subscribeDevice,
+  getDeviceHistory,
+  publishDeviceEvent,
+  markDeviceOnline,
+  markDeviceOffline,
+} = require("../utils/realtime.hub");
 const { getGridBucket, ObjectId } = require("../utils/mongo");
 const { markRemoteAck, normalizeAckStatus } = require("../utils/remoteAck");
+const {
+  resolveHomepageConfig,
+  getLatestHomepageImage,
+  buildDeviceHomepagePayload,
+} = require("../services/homepage_page.service");
+const {
+  resolveBadgeConfig,
+  getLatestBadgeImage,
+  buildDeviceBadgePayload,
+} = require("../services/badgepage.service");
+const {
+  resolveWeatherConfig,
+  getLatestWeatherImage,
+  buildDeviceWeatherPayload,
+} = require("../services/weatherpage.service");
 
 const router = express.Router();
+
+const REMOTE_REPLAY_MAX_AGE_MS = 45000;
+
+function shouldSkipHistoryReplay(event) {
+  const t = String(event?.type || "");
+  if (t.startsWith("homepage.") || t.startsWith("badgepage.") || t.startsWith("weatherpage.")) {
+    return true;
+  }
+  if (t.startsWith("remote.")) {
+    const ts = Date.parse(String(event?.timestamp || ""));
+    if (!Number.isFinite(ts)) return true;
+    return Date.now() - ts > REMOTE_REPLAY_MAX_AGE_MS;
+  }
+  return false;
+}
 
 const PIN_TTL_SECONDS = 10 * 60;
 const PIN_MAX_ATTEMPTS = 5;
@@ -393,21 +429,41 @@ router.get(
 router.post(
   "/login",
   asyncHandler(async (req, res) => {
+    const startedAt = Date.now();
+    let stepAt = startedAt;
+    const loginTrace = (stage, detail = "") => {
+      const now = Date.now();
+      const stepElapsed = now - stepAt;
+      const totalElapsed = now - startedAt;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[login] ${stage} elapsed_ms=${stepElapsed} total_ms=${totalElapsed}${detail ? ` ${detail}` : ""}`
+      );
+      stepAt = now;
+    };
+
     const mac = normalizeMac(req.body?.mac);
+    // eslint-disable-next-line no-console
+    console.log(`[login] start mac=${mac}`);
     if (!mac) throw new HttpError(400, "MAC地址不能为空");
     if (!isMacValid(mac)) throw new HttpError(400, "MAC地址格式不合法");
+    loginTrace("parse_request", `mac=${mac}`);
 
-    const db = await readDB();
+    const db = await readDBCached();
+    loginTrace("read_db_cached");
     const device = db.devices.find((item) => item.mac === mac);
+    loginTrace("find_device", `found=${device ? 1 : 0}`);
     if (!device) throw new HttpError(404, "设备未注册");
     if (device.status === "blocked") throw new HttpError(403, "设备已封禁");
     if (device.bindState !== "bound" || !device.ownerId) throw new HttpError(403, "设备尚未绑定用户");
+    loginTrace("bind_status", `bindState=${device.bindState} owner=${device.ownerId ? 1 : 0}`);
 
     const token = signToken({
       role: "device",
       deviceId: device.id,
       mac: device.mac,
     });
+    loginTrace("issue_token");
 
     res.success(
       {
@@ -420,17 +476,35 @@ router.post(
       },
       "设备鉴权成功"
     );
+    loginTrace("response_send", `deviceId=${device.id}`);
+    // eslint-disable-next-line no-console
+    console.log(`[login] total elapsed_ms=${Date.now() - startedAt} mac=${mac} deviceId=${device.id}`);
+    const asyncScheduledAt = Date.now();
+    // eslint-disable-next-line no-console
+    console.log(`[login] async_updates_scheduled total_ms=${asyncScheduledAt - startedAt}`);
 
     // Keep hardware login response fast for constrained devices:
     // update bookkeeping asynchronously to avoid blocking auth response on remote DB latency.
+    const updateStart = Date.now();
     updateDB((draft) => {
       const target = draft.devices.find((item) => item.id === device.id);
       if (target) {
         target.lastLoginAt = new Date().toISOString();
         target.updatedAt = target.lastLoginAt;
       }
-    }).catch(() => {});
+    })
+      .then(() => {
+        // eslint-disable-next-line no-console
+        console.log(`[login] update_last_seen async_ms=${Date.now() - updateStart} deviceId=${device.id}`);
+      })
+      .catch((error) => {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[login] update_last_seen_failed async_ms=${Date.now() - updateStart} err=${String(error?.message || error)}`
+        );
+      });
 
+    const logStart = Date.now();
     logOperation({
       actorId: device.id,
       actorRole: "device",
@@ -438,7 +512,15 @@ router.post(
       targetType: "device",
       targetId: device.id,
       detail: { mac: device.mac },
-    }).catch(() => {});
+    })
+      .then(() => {
+        // eslint-disable-next-line no-console
+        console.log(`[login] op_log async_ms=${Date.now() - logStart} deviceId=${device.id}`);
+      })
+      .catch((error) => {
+        // eslint-disable-next-line no-console
+        console.log(`[login] op_log_failed async_ms=${Date.now() - logStart} err=${String(error?.message || error)}`);
+      });
   })
 );
 
@@ -461,7 +543,94 @@ router.get(
         key: device.apiKeys?.[tpl.slug] || "",
       }));
 
-    res.success({ deviceId: device.id, templates }, "ok");
+    const homeResolved = resolveHomepageConfig(db, device.ownerId, device.id);
+    const homeImageRow = getLatestHomepageImage(db, device.id);
+    const homepage = buildDeviceHomepagePayload({
+      deviceId: device.id,
+      config: homeResolved.config,
+      imageRow: homeImageRow,
+    });
+
+    const badgeResolved = resolveBadgeConfig(db, device.ownerId, device.id);
+    const badgeImageRow = getLatestBadgeImage(db, device.id);
+    const badgepage = buildDeviceBadgePayload({
+      deviceId: device.id,
+      config: badgeResolved.config,
+      imageRow: badgeImageRow,
+    });
+
+    const weatherResolved = resolveWeatherConfig(db, device.ownerId, device.id);
+    const weatherImageRow = getLatestWeatherImage(db, device.id);
+    const weatherpage = buildDeviceWeatherPayload({
+      deviceId: device.id,
+      config: weatherResolved.config,
+      imageRow: weatherImageRow,
+    });
+
+    res.success({ deviceId: device.id, templates, homepage, badgepage, weatherpage }, "ok");
+  })
+);
+
+router.get(
+  "/homepage",
+  authRequired,
+  allowRoles("device"),
+  asyncHandler(async (req, res) => {
+    const db = await readDB();
+    const device = db.devices.find((item) => item.id === req.auth.deviceId);
+    if (!device) throw new HttpError(404, "设备不存在");
+
+    const resolved = resolveHomepageConfig(db, device.ownerId, device.id);
+    const imageRow = getLatestHomepageImage(db, device.id);
+    const homepage = buildDeviceHomepagePayload({
+      deviceId: device.id,
+      config: resolved.config,
+      imageRow,
+    });
+
+    res.success(homepage, "ok");
+  })
+);
+
+router.get(
+  "/badgepage",
+  authRequired,
+  allowRoles("device"),
+  asyncHandler(async (req, res) => {
+    const db = await readDB();
+    const device = db.devices.find((item) => item.id === req.auth.deviceId);
+    if (!device) throw new HttpError(404, "设备不存在");
+
+    const resolved = resolveBadgeConfig(db, device.ownerId, device.id);
+    const imageRow = getLatestBadgeImage(db, device.id);
+    const badgepage = buildDeviceBadgePayload({
+      deviceId: device.id,
+      config: resolved.config,
+      imageRow,
+    });
+
+    res.success(badgepage, "ok");
+  })
+);
+
+router.get(
+  "/weatherpage",
+  authRequired,
+  allowRoles("device"),
+  asyncHandler(async (req, res) => {
+    const db = await readDB();
+    const device = db.devices.find((item) => item.id === req.auth.deviceId);
+    if (!device) throw new HttpError(404, "设备不存在");
+
+    const resolved = resolveWeatherConfig(db, device.ownerId, device.id);
+    const imageRow = getLatestWeatherImage(db, device.id);
+    const weatherpage = buildDeviceWeatherPayload({
+      deviceId: device.id,
+      config: resolved.config,
+      imageRow,
+    });
+
+    res.success(weatherpage, "ok");
   })
 );
 
@@ -757,6 +926,8 @@ router.get(
     res.setHeader("X-Accel-Buffering", "no");
     if (typeof res.flushHeaders === "function") res.flushHeaders();
 
+    markDeviceOnline(deviceId, "sse");
+
     writeSse(res, "ready", {
       channel: "sse",
       deviceId,
@@ -766,9 +937,10 @@ router.get(
 
     const history = getDeviceHistory(deviceId);
     history.forEach((event) => {
-      // Remote control events are ephemeral and should not be replayed on reconnect,
-      // otherwise devices can execute stale commands after reboot/reconnect.
-      if (String(event.type || "").startsWith("remote.")) return;
+      // Ephemeral events should not be replayed on reconnect, otherwise device-side
+      // handlers can spend long time processing stale image/control events and delay
+      // newly issued remote commands.
+      if (shouldSkipHistoryReplay(event)) return;
       writeSse(res, "device-event", { channel: "sse", ...event });
     });
 
@@ -780,10 +952,17 @@ router.get(
       writeSse(res, "ping", { time: new Date().toISOString() });
     }, 20000);
 
-    req.on("close", () => {
+    let cleaned = false;
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
       clearInterval(heartbeat);
       unsubscribe();
-    });
+      markDeviceOffline(deviceId, "sse");
+    };
+
+    req.on("close", cleanup);
+    res.on("close", cleanup);
   })
 );
 

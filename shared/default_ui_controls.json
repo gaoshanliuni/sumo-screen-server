@@ -1,0 +1,40 @@
+﻿{
+  "id": "default_ui_controls",
+  "name": "Default Key & Menu Controls",
+  "enabled": true,
+  "key_input": {
+    "gpio": 19,
+    "adc_unit": "ADC_UNIT_2",
+    "adc_channel": "ADC_CHANNEL_8",
+    "debounce_ms": 45,
+    "long_press_ms": 900,
+    "poll_interval_ms": 25,
+    "release_hysteresis": 120,
+    "thresholds": {
+      "none_min": 3300,
+      "key_a_min": 2440,
+      "key_a_max": 3299,
+      "key_b_min": 1530,
+      "key_b_max": 2439,
+      "key_c_min": 300,
+      "key_c_max": 1529
+    },
+    "calibration_note": "Threshold defaults are based on schematic resistor ladder (R51=6.8k, R52=3k, R53=1k, pull-up R50=3k). Must calibrate on real board."
+  },
+  "menu": {
+    "mode": "icon_text_overlay",
+    "language": "en",
+    "menu_items": [
+      { "id": "home", "label": "Home", "icon": "shouye-zhihui.png", "target": "home" },
+      { "id": "weather", "label": "Weather", "icon": "dianshiji.png", "target": "weather" },
+      { "id": "badge", "label": "Badge", "icon": "shuzhuo.png", "target": "badge" },
+      { "id": "todo", "label": "TODO", "icon": "bianji.png", "target": "todo" },
+      { "id": "settings", "label": "Settings", "icon": "gerenzhongxin-zhihui.png", "target": "settings" },
+      { "id": "network", "label": "Network", "icon": "kuandai.png", "target": "network" },
+      { "id": "exit", "label": "Exit", "icon": "guanbi.png", "target": "exit" }
+    ]
+  },
+  "reboot_overlay": {
+    "confirm_timeout_ms": 8000
+  }
+}

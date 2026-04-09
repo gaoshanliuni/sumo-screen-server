@@ -122,6 +122,18 @@ async function waitForAckMap({ readDB, commandIds, timeoutMs = 2800, pollInterva
     await new Promise((resolve) => setTimeout(resolve, Math.max(60, Number(pollIntervalMs || 120))));
   }
 
+  // Final read at timeout boundary to reduce race condition:
+  // ACK may have been committed right after the last polling iteration.
+  try {
+    const db = await readDB();
+    const partial = collectAcksByCommandIds(db, ids);
+    for (const [cid, ack] of partial.entries()) {
+      resolved.set(cid, ack);
+    }
+  } catch (_) {
+    // Keep best-effort behavior; caller can still inspect pending state.
+  }
+
   return resolved;
 }
 

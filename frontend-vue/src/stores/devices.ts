@@ -8,7 +8,11 @@ export type DeviceInfo = {
   status: string;
   type: string;
   ownerId: string;
+  ownerUsername?: string;
+  ownerNickname?: string;
   bindState: string;
+  online?: boolean;
+  lastSeenAt?: string;
   displayName?: string;
   defaultView?: string;
   remark?: string;
@@ -19,7 +23,9 @@ export type DeviceInfo = {
 export type DeviceQuery = {
   status?: string;
   bound?: string;
+  online?: string;
   keyword?: string;
+  ownerId?: string;
 };
 
 export const useDeviceStore = defineStore("devices", () => {
@@ -35,17 +41,25 @@ export const useDeviceStore = defineStore("devices", () => {
       const params = new URLSearchParams();
       const status = String(query.status || "").trim();
       const bound = String(query.bound || "").trim();
+      const online = String(query.online || "").trim();
       const keyword = String(query.keyword || "").trim();
+      const ownerId = String(query.ownerId || "").trim();
       if (status) params.set("status", status);
       if (bound === "bound") params.set("bound", "true");
       if (bound === "unbound") params.set("bound", "false");
-      if (keyword) params.set("mac", keyword);
+      if (online === "online") params.set("online", "true");
+      if (online === "offline") params.set("online", "false");
+      if (ownerId) params.set("ownerId", ownerId);
+      if (keyword) params.set("keyword", keyword);
       const path = `/api/devices${params.toString() ? `?${params.toString()}` : ""}`;
       devices.value = await apiRequest<DeviceInfo[]>(path, { token });
       if (keyword) {
         const kw = keyword.toLowerCase();
         devices.value = devices.value.filter((item) => {
-          const merged = `${item.id} ${item.mac} ${item.displayName || ""} ${item.remark || ""}`.toLowerCase();
+          const merged =
+            `${item.id} ${item.mac} ${item.displayName || ""} ${item.remark || ""} ${item.ownerId || ""} ${
+              item.ownerUsername || ""
+            } ${item.ownerNickname || ""}`.toLowerCase();
           return merged.includes(kw);
         });
       }

@@ -23,6 +23,19 @@ const upload = multer({
 const CATEGORY_SET = new Set(["fonts", "read", "photo", "update", "background", "config"]);
 const TEXT_MIN_SECONDS = 10;
 const TEXT_MAX_SECONDS = 7 * 24 * 60 * 60;
+const SWITCH_VIEW_CANONICAL = new Set(["home", "weather", "badge", "todo", "settings", "network", "about"]);
+const PAGE_TYPE_SET = new Set(["homepage", "weatherpage", "badgepage", "todo", "settings", "network", "about"]);
+
+function normalizeSwitchViewAlias(view) {
+  const v = String(view || "").trim().toLowerCase();
+  if (!v) return "";
+  if (v === "homepage") return "home";
+  if (v === "weatherpage") return "weather";
+  if (v === "badgepage" || v === "nameplate") return "badge";
+  if (v === "reader") return "home";
+  if (v === "file") return "network";
+  return v;
+}
 
 function normalizeDuration(body = {}) {
   if (body.durationSec !== undefined) {
@@ -199,11 +212,13 @@ async function createCommandAck({ deviceId, eventType, source, auth, meta }) {
   return row;
 }
 
+const MAX_ACK_WAIT_MS = 30000;
+
 function getAckWaitMs(body) {
   const raw = Number(body?.ackTimeoutMs);
   if (!Number.isFinite(raw)) return 2800;
   if (raw < 0) return 0;
-  if (raw > 10000) return 10000;
+  if (raw > MAX_ACK_WAIT_MS) return MAX_ACK_WAIT_MS;
   return Math.floor(raw);
 }
 
@@ -257,7 +272,11 @@ router.post(
   "/switch-view",
   asyncHandler(async (req, res) => {
     const { view = "", saveToTf = true, setAsDefault = false } = req.body || {};
-    if (!view) throw new HttpError(400, "view不能为空");
+    const viewValue = normalizeSwitchViewAlias(view);
+    if (!viewValue) throw new HttpError(400, "view不能为空");
+    if (!SWITCH_VIEW_CANONICAL.has(viewValue)) {
+      throw new HttpError(400, "view不支持，允许: home/weather/badge/todo/settings/network/about（兼容: homepage/weatherpage/badgepage）");
+    }
 
     const db = await readDB();
     const target = resolveBatchTargets(db, req.auth, req.body || {});
@@ -274,7 +293,7 @@ router.post(
         target.targetIds.forEach((deviceId) => {
           const device = draft.devices.find((item) => item.id === deviceId);
           if (device) {
-            device.defaultView = String(view);
+            device.defaultView = String(viewValue);
             device.updatedAt = new Date().toISOString();
           }
         });
@@ -293,7 +312,7 @@ router.post(
         if (saveToTf && ownerId) {
           if (!fileByOwner.has(ownerId)) {
             const fileName = `remote_controls/view_${new Date().toISOString().replace(/[:.]/g, "")}.json`;
-            const payload = JSON.stringify({ type: "switch_view", view, createdAt: new Date().toISOString() });
+            const payload = JSON.stringify({ type: "switch_view", view: viewValue, createdAt: new Date().toISOString() });
             const record = await saveRemoteFile({
               ownerId,
               category: "config",
@@ -311,7 +330,7 @@ router.post(
           eventType: "remote.switch_view",
           source: "remote.switch_view",
           auth: req.auth,
-          meta: { view },
+          meta: { view: viewValue },
         });
 
         publishDeviceEvent({
@@ -319,7 +338,7 @@ router.post(
           deviceId,
           payload: {
             commandId: command.commandId,
-            view,
+            view: viewValue,
             setAsDefault: Boolean(setAsDefault),
             file: saved ? { id: saved.id, url: saved.url, name: saved.originalName } : null,
           },
@@ -328,7 +347,7 @@ router.post(
         sentSuccess.push({
           deviceId,
           commandId: command.commandId,
-          view,
+          view: viewValue,
           file: saved
             ? {
                 id: saved.id,
@@ -350,7 +369,7 @@ router.post(
       targetType: "device_batch",
       targetId: `count:${target.targetIds.length}`,
       detail: {
-        view,
+        view: viewValue,
         setAsDefault: Boolean(setAsDefault),
         requestedCount: target.requestedCount,
         successCount: sentSuccess.length,
@@ -359,6 +378,131 @@ router.post(
 
     const result = await buildAckedResponse({ req, target, sentSuccess, sendFailed: failed });
     res.success(result, result.ackedSuccessCount > 0 ? "切换指令已确认" : "切换指令未获设备确认");
+  })
+);
+
+router.post(
+  "/refresh-page-image",
+  asyncHandler(async (req, res) => {
+    const pageType = String(req.body?.pageType || "homepage").trim().toLowerCase();
+    if (!PAGE_TYPE_SET.has(pageType)) {
+      throw new HttpError(400, "pageType不支持，允许: homepage/weatherpage/badgepage/todo/settings/network/about");
+    }
+
+    const db = await readDB();
+    const target = resolveBatchTargets(db, req.auth, req.body || {});
+    if (target.targetIds.length === 0) {
+      return res.success(buildBatchResult({ requestedCount: target.requestedCount, denied: target.denied, success: [], failed: [] }), "没有可下发设备");
+    }
+
+    const sentSuccess = [];
+    const failed = [];
+    for (const deviceId of target.targetIds) {
+      try {
+        const command = await createCommandAck({
+          deviceId,
+          eventType: "remote.refresh_page_image",
+          source: "remote.refresh_page_image",
+          auth: req.auth,
+          meta: { pageType },
+        });
+
+        publishDeviceEvent({
+          type: "remote.refresh_page_image",
+          deviceId,
+          payload: {
+            commandId: command.commandId,
+            pageType,
+            requestedAt: new Date().toISOString(),
+          },
+        });
+
+        sentSuccess.push({
+          deviceId,
+          commandId: command.commandId,
+          pageType,
+        });
+      } catch (error) {
+        failed.push({ deviceId, reason: error?.message || "下发失败" });
+      }
+    }
+
+    await logOperation({
+      actorId: req.auth.userId,
+      actorRole: req.auth.role,
+      action: "remote.refresh_page_image",
+      targetType: "device_batch",
+      targetId: `count:${target.targetIds.length}`,
+      detail: {
+        pageType,
+        requestedCount: target.requestedCount,
+        successCount: sentSuccess.length,
+      },
+    });
+
+    const result = await buildAckedResponse({ req, target, sentSuccess, sendFailed: failed });
+    res.success(result, result.ackedSuccessCount > 0 ? "刷新图片指令已确认" : "刷新图片指令未获设备确认");
+  })
+);
+
+router.post(
+  "/request-screen-state",
+  asyncHandler(async (req, res) => {
+    const db = await readDB();
+    const target = resolveBatchTargets(db, req.auth, req.body || {});
+    if (target.targetIds.length === 0) {
+      return res.success(buildBatchResult({ requestedCount: target.requestedCount, denied: target.denied, success: [], failed: [] }), "没有可下发设备");
+    }
+
+    const include = Array.isArray(req.body?.include)
+      ? req.body.include.map((v) => String(v || "").trim()).filter(Boolean)
+      : [];
+    const sentSuccess = [];
+    const failed = [];
+    for (const deviceId of target.targetIds) {
+      try {
+        const command = await createCommandAck({
+          deviceId,
+          eventType: "remote.request_screen_state",
+          source: "remote.request_screen_state",
+          auth: req.auth,
+          meta: { include },
+        });
+
+        publishDeviceEvent({
+          type: "remote.request_screen_state",
+          deviceId,
+          payload: {
+            commandId: command.commandId,
+            include,
+            requestedAt: new Date().toISOString(),
+          },
+        });
+
+        sentSuccess.push({
+          deviceId,
+          commandId: command.commandId,
+          include,
+        });
+      } catch (error) {
+        failed.push({ deviceId, reason: error?.message || "下发失败" });
+      }
+    }
+
+    await logOperation({
+      actorId: req.auth.userId,
+      actorRole: req.auth.role,
+      action: "remote.request_screen_state",
+      targetType: "device_batch",
+      targetId: `count:${target.targetIds.length}`,
+      detail: {
+        requestedCount: target.requestedCount,
+        successCount: sentSuccess.length,
+      },
+    });
+
+    const result = await buildAckedResponse({ req, target, sentSuccess, sendFailed: failed });
+    res.success(result, result.ackedSuccessCount > 0 ? "状态请求已确认" : "状态请求未获设备确认");
   })
 );
 

@@ -19,6 +19,9 @@ const adminRoutes = require("./routes/admin.routes");
 const tfRoutes = require("./routes/tf.routes");
 const remoteRoutes = require("./routes/remote.routes");
 const nameplateRoutes = require("./routes/nameplate.routes");
+const homepageRoutes = require("./routes/homepage.routes");
+const badgepageRoutes = require("./routes/badgepage.routes");
+const weatherpageRoutes = require("./routes/weatherpage.routes");
 
 const app = express();
 
@@ -44,6 +47,9 @@ app.use("/api/admin", authRequired, adminRoutes);
 app.use("/api/tf", authRequired, tfRoutes);
 app.use("/api/remote", authRequired, remoteRoutes);
 app.use("/api/nameplates", authRequired, nameplateRoutes);
+app.use("/api/homepages", authRequired, homepageRoutes);
+app.use("/api/badgepages", authRequired, badgepageRoutes);
+app.use("/api/weatherpages", authRequired, weatherpageRoutes);
 app.use("/api", (req, res) => {
   return res.fail("接口不存在", 404);
 });

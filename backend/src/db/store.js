@@ -7,6 +7,9 @@ let cache = null;
 let pool = null;
 let initialized = false;
 let writeQueue = Promise.resolve();
+let warnedReadFallback = false;
+let warnedWriteFallback = false;
+let forceCacheReads = false;
 
 function clone(data) {
   return JSON.parse(JSON.stringify(data));
@@ -40,6 +43,23 @@ function ensureTemplateAdvancedConfig(input, method, url) {
 
 function tableName() {
   return `\`${String(config.mysql.stateTable).replace(/`/g, "")}\``;
+}
+
+function warnFallback(kind, error) {
+  const msg = error && error.message ? error.message : String(error || "unknown error");
+  // eslint-disable-next-line no-console
+  console.warn(`[store] ${kind} fallback to in-memory cache: ${msg}`);
+}
+
+async function ensureMemoryStore() {
+  if (cache && typeof cache === "object") {
+    normalizeStoreShape(cache);
+    initialized = true;
+    return;
+  }
+  cache = await getDefaultData();
+  normalizeStoreShape(cache);
+  initialized = true;
 }
 
 async function getDefaultData() {
@@ -186,6 +206,15 @@ async function getDefaultData() {
     nameplateLayouts: [],
     nameplateBatchPlans: [],
     nameplateHistory: [],
+    homepageTemplates: [],
+    homepageConfigs: [],
+    homepageImages: [],
+    badgepageTemplates: [],
+    badgepageConfigs: [],
+    badgepageImages: [],
+    weatherpageTemplates: [],
+    weatherpageConfigs: [],
+    weatherpageImages: [],
     remoteCommandAcks: [],
   };
 }
@@ -214,6 +243,15 @@ function normalizeStoreShape(state) {
   state.nameplateLayouts = Array.isArray(state.nameplateLayouts) ? state.nameplateLayouts : [];
   state.nameplateBatchPlans = Array.isArray(state.nameplateBatchPlans) ? state.nameplateBatchPlans : [];
   state.nameplateHistory = Array.isArray(state.nameplateHistory) ? state.nameplateHistory : [];
+  state.homepageTemplates = Array.isArray(state.homepageTemplates) ? state.homepageTemplates : [];
+  state.homepageConfigs = Array.isArray(state.homepageConfigs) ? state.homepageConfigs : [];
+  state.homepageImages = Array.isArray(state.homepageImages) ? state.homepageImages : [];
+  state.badgepageTemplates = Array.isArray(state.badgepageTemplates) ? state.badgepageTemplates : [];
+  state.badgepageConfigs = Array.isArray(state.badgepageConfigs) ? state.badgepageConfigs : [];
+  state.badgepageImages = Array.isArray(state.badgepageImages) ? state.badgepageImages : [];
+  state.weatherpageTemplates = Array.isArray(state.weatherpageTemplates) ? state.weatherpageTemplates : [];
+  state.weatherpageConfigs = Array.isArray(state.weatherpageConfigs) ? state.weatherpageConfigs : [];
+  state.weatherpageImages = Array.isArray(state.weatherpageImages) ? state.weatherpageImages : [];
   state.remoteCommandAcks = Array.isArray(state.remoteCommandAcks) ? state.remoteCommandAcks : [];
 
   state.devices.forEach((device) => {
@@ -230,6 +268,10 @@ function normalizeStoreShape(state) {
     device.thirdApiParams =
       device.thirdApiParams && typeof device.thirdApiParams === "object" && !Array.isArray(device.thirdApiParams)
         ? device.thirdApiParams
+        : {};
+    device.thirdApiCache =
+      device.thirdApiCache && typeof device.thirdApiCache === "object" && !Array.isArray(device.thirdApiCache)
+        ? device.thirdApiCache
         : {};
     device.status = device.status || "enabled";
     device.type = device.type || "ink-screen";
@@ -437,6 +479,61 @@ function normalizeStoreShape(state) {
     row.updatedAt = row.updatedAt || row.createdAt;
   });
 
+  const normalizePageTemplates = (rows) => {
+    rows.forEach((row) => {
+      row.id = row.id || "";
+      row.ownerId = row.ownerId || "";
+      row.name = row.name || "";
+      row.type = row.type || "custom_html";
+      row.html = row.html || "";
+      row.builtin = Boolean(row.builtin);
+      row.createdAt = row.createdAt || new Date().toISOString();
+      row.updatedAt = row.updatedAt || row.createdAt;
+    });
+  };
+
+  const normalizePageConfigs = (rows) => {
+    rows.forEach((row) => {
+      row.id = row.id || "";
+      row.ownerId = row.ownerId || "";
+      row.deviceId = row.deviceId || "";
+      row.config = row.config && typeof row.config === "object" && !Array.isArray(row.config) ? row.config : {};
+      row.version = Number(row.version || 1);
+      row.updatedBy = row.updatedBy || "";
+      row.createdAt = row.createdAt || new Date().toISOString();
+      row.updatedAt = row.updatedAt || row.createdAt;
+    });
+  };
+
+  const normalizePageImages = (rows) => {
+    rows.forEach((row) => {
+      row.id = row.id || "";
+      row.deviceId = row.deviceId || "";
+      row.ownerId = row.ownerId || "";
+      row.imageFileId = row.imageFileId || "";
+      row.previewFileId = row.previewFileId || "";
+      row.templateId = row.templateId || "";
+      row.format = row.format || "epd4";
+      row.width = Number(row.width || 0);
+      row.height = Number(row.height || 0);
+      row.etag = row.etag || "";
+      row.version = row.version || "";
+      row.configVersion = Number(row.configVersion || 1);
+      row.createdAt = row.createdAt || new Date().toISOString();
+      row.updatedAt = row.updatedAt || row.createdAt;
+    });
+  };
+
+  normalizePageTemplates(state.homepageTemplates);
+  normalizePageConfigs(state.homepageConfigs);
+  normalizePageImages(state.homepageImages);
+  normalizePageTemplates(state.badgepageTemplates);
+  normalizePageConfigs(state.badgepageConfigs);
+  normalizePageImages(state.badgepageImages);
+  normalizePageTemplates(state.weatherpageTemplates);
+  normalizePageConfigs(state.weatherpageConfigs);
+  normalizePageImages(state.weatherpageImages);
+
   state.remoteCommandAcks.forEach((row) => {
     row.id = row.id || "";
     row.commandId = row.commandId || row.id || "";
@@ -503,66 +600,136 @@ async function loadStateFromDB(conn) {
 async function initStore() {
   if (initialized && cache) return clone(cache);
 
-  const currentPool = await getPool();
-  const conn = await currentPool.getConnection();
   try {
-    await ensureSchema(conn);
-    cache = await loadStateFromDB(conn);
-    initialized = true;
+    const currentPool = await getPool();
+    const conn = await currentPool.getConnection();
+    try {
+      await ensureSchema(conn);
+      cache = await loadStateFromDB(conn);
+      initialized = true;
+      warnedReadFallback = false;
+      warnedWriteFallback = false;
+      forceCacheReads = false;
+      return clone(cache);
+    } finally {
+      conn.release();
+    }
+  } catch (error) {
+    await ensureMemoryStore();
+    if (!warnedReadFallback) {
+      warnFallback("initStore", error);
+      warnedReadFallback = true;
+    }
+    forceCacheReads = true;
     return clone(cache);
-  } finally {
-    conn.release();
   }
 }
 
 async function readDB() {
-  await initStore();
-  const currentPool = await getPool();
-  const [rows] = await currentPool.query(`SELECT payload FROM ${tableName()} WHERE id = 1 LIMIT 1`);
-  if (!rows.length) {
-    cache = await getDefaultData();
+  try {
+    await initStore();
+    if (forceCacheReads) {
+      return clone(cache);
+    }
+    const currentPool = await getPool();
+    const [rows] = await currentPool.query(`SELECT payload FROM ${tableName()} WHERE id = 1 LIMIT 1`);
+    if (!rows.length) {
+      cache = await getDefaultData();
+      normalizeStoreShape(cache);
+      await currentPool.query(`INSERT INTO ${tableName()} (id, payload) VALUES (1, ?)`, [JSON.stringify(cache)]);
+      return clone(cache);
+    }
+    cache = JSON.parse(rows[0].payload);
     normalizeStoreShape(cache);
-    await currentPool.query(`INSERT INTO ${tableName()} (id, payload) VALUES (1, ?)`, [JSON.stringify(cache)]);
+    warnedReadFallback = false;
+    forceCacheReads = false;
+    return clone(cache);
+  } catch (error) {
+    await ensureMemoryStore();
+    if (!warnedReadFallback) {
+      warnFallback("readDB", error);
+      warnedReadFallback = true;
+    }
+    forceCacheReads = true;
     return clone(cache);
   }
-  cache = JSON.parse(rows[0].payload);
-  normalizeStoreShape(cache);
-  return clone(cache);
+}
+
+// Fast path for high-frequency read endpoints (e.g., hardware login):
+// returns in-process snapshot without round-tripping MySQL each call.
+async function readDBCached() {
+  try {
+    await initStore();
+    warnedReadFallback = false;
+    return clone(cache);
+  } catch (error) {
+    await ensureMemoryStore();
+    if (!warnedReadFallback) {
+      warnFallback("readDBCached", error);
+      warnedReadFallback = true;
+    }
+    forceCacheReads = true;
+    return clone(cache);
+  }
 }
 
 async function updateDB(mutator) {
-  writeQueue = writeQueue.then(async () => {
-    await initStore();
-    const currentPool = await getPool();
-    const conn = await currentPool.getConnection();
-    try {
-      await conn.beginTransaction();
-      const [rows] = await conn.query(`SELECT payload FROM ${tableName()} WHERE id = 1 FOR UPDATE`);
-      let draft;
-      if (!rows.length) {
-        draft = await getDefaultData();
-        normalizeStoreShape(draft);
-        await conn.query(`INSERT INTO ${tableName()} (id, payload) VALUES (1, ?)`, [JSON.stringify(draft)]);
-      } else {
-        draft = JSON.parse(rows[0].payload);
-        normalizeStoreShape(draft);
-      }
+  writeQueue = writeQueue
+    .catch(() => undefined)
+    .then(async () => {
+      try {
+        await initStore();
+        const currentPool = await getPool();
+        const conn = await currentPool.getConnection();
+        try {
+          await conn.beginTransaction();
+          const [rows] = await conn.query(`SELECT payload FROM ${tableName()} WHERE id = 1 FOR UPDATE`);
+          let draft;
+          if (!rows.length) {
+            draft = await getDefaultData();
+            normalizeStoreShape(draft);
+            await conn.query(`INSERT INTO ${tableName()} (id, payload) VALUES (1, ?)`, [JSON.stringify(draft)]);
+          } else {
+            draft = JSON.parse(rows[0].payload);
+            normalizeStoreShape(draft);
+          }
 
-      const result = await mutator(draft);
-      normalizeStoreShape(draft);
-      draft.meta = draft.meta || {};
-      draft.meta.updatedAt = new Date().toISOString();
-      await conn.query(`UPDATE ${tableName()} SET payload = ? WHERE id = 1`, [JSON.stringify(draft)]);
-      await conn.commit();
-      cache = draft;
-      return result;
-    } catch (error) {
-      await conn.rollback();
-      throw error;
-    } finally {
-      conn.release();
-    }
-  });
+          const result = await mutator(draft);
+          normalizeStoreShape(draft);
+          draft.meta = draft.meta || {};
+          draft.meta.updatedAt = new Date().toISOString();
+          await conn.query(`UPDATE ${tableName()} SET payload = ? WHERE id = 1`, [JSON.stringify(draft)]);
+          await conn.commit();
+          cache = draft;
+          warnedWriteFallback = false;
+          forceCacheReads = false;
+          return result;
+        } catch (error) {
+          try {
+            await conn.rollback();
+          } catch (_) {
+            // ignore rollback errors
+          }
+          throw error;
+        } finally {
+          conn.release();
+        }
+      } catch (error) {
+        await ensureMemoryStore();
+        if (!warnedWriteFallback) {
+          warnFallback("updateDB", error);
+          warnedWriteFallback = true;
+        }
+        forceCacheReads = true;
+        const draft = clone(cache);
+        const result = await mutator(draft);
+        normalizeStoreShape(draft);
+        draft.meta = draft.meta || {};
+        draft.meta.updatedAt = new Date().toISOString();
+        cache = draft;
+        return result;
+      }
+    });
 
   return writeQueue;
 }
@@ -570,5 +737,6 @@ async function updateDB(mutator) {
 module.exports = {
   initStore,
   readDB,
+  readDBCached,
   updateDB,
 };

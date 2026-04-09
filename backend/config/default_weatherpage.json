@@ -1,0 +1,72 @@
+{
+  "id": "weatherpage_default",
+  "name": "Default Weather Page",
+  "enabled": true,
+  "version": 1,
+  "screen": {
+    "width": 2560,
+    "height": 1600
+  },
+  "template": {
+    "type": "default_html",
+    "template_id": "tpl_weatherpage_default",
+    "template_name": "Default Weather HTML",
+    "template_path": "builtin://weatherpage/default",
+    "render_engine": "auto"
+  },
+  "image": {
+    "format": "epd4",
+    "preview_format": "png",
+    "render_source": "server",
+    "refresh_policy": "event-or-poll",
+    "cache_ttl_sec": 1800
+  },
+  "time_overlay": {
+    "enabled": true,
+    "x": 1880,
+    "y": 90,
+    "width": 620,
+    "height": 160,
+    "format": "HH:mm",
+    "font_size": 78,
+    "align": "right",
+    "refresh_interval_sec": 60,
+    "background_clear_mode": "fill-white",
+    "invert": false
+  },
+  "data_sources": {
+    "profile": false,
+    "todo_summary": false,
+    "schedule_summary": false,
+    "custom_fields": true,
+    "weather_summary": true
+  },
+  "refresh_control": {
+    "partial_refresh_enabled": true,
+    "partial_refresh_region": {
+      "x": 0,
+      "y": 220,
+      "width": 2560,
+      "height": 1200
+    },
+    "full_refresh_every_n_partials": 6,
+    "force_full_refresh_on_image_version_change": true,
+    "max_partial_age_sec": 900
+  },
+  "cache_policy": {
+    "cache_ttl_sec": 1800,
+    "max_versions": 4,
+    "use_etag": true
+  },
+  "qweather": {
+    "asset_root": "D:/dachicunhouduan/ico/QWeather-Icons-1.8.0",
+    "font_json": "font/qweather-icons.json",
+    "font_css": "font/qweather-icons.css",
+    "font_ttf": "font/fonts/qweather-icons.ttf",
+    "demo_html": "font/demo.html"
+  },
+  "fallback": {
+    "enabled": true,
+    "mode": "local_text_weather"
+  }
+}

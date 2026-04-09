@@ -197,3 +197,86 @@ MONGO_URI=mongodb://mongo_tkKafE:mongo_5tNAQx@gaoshanliuni.top:27017/smp?authSou
 1. `MONGO_URI 未配置`：检查 `backend/.env` 是否存在并包含正确的连接串。
 2. `401` 或 `403`：确认已登录并携带 `Authorization: Bearer <JWT>`。
 3. 设备不可见：用户端只能看到自己绑定的设备，管理员可看到全量设备。
+
+## 新主页机制（后端生成图片 + 设备端时间局刷）
+
+### 架构变更
+- 旧机制：设备端本地排版主页（文字+布局）。
+- 新机制：后端按配置和 HTML 模板渲染主页图片，设备端只显示底图并局部覆盖时间。
+- 兼容策略：旧本地 HOME 页面保留为 fallback，当主页图片拉取失败时自动降级。
+
+### 新增后端接口
+- `GET /api/homepages/default`：读取统一默认主页配置。
+- `GET /api/homepages/config?deviceId=...`：读取设备主页配置（管理侧）。
+- `POST /api/homepages/config`：更新主页配置（全局/按设备）。
+- `GET /api/homepages/templates`：模板列表。
+- `POST /api/homepages/templates`：新建/更新 HTML 模板。
+- `POST /api/homepages/templates/{templateId}/delete`：删除模板。
+- `POST /api/homepages/render`：按设备渲染主页图片（不推送）。
+- `POST /api/homepages/push`：渲染并推送主页更新事件。
+- `GET /api/hardware/homepage`：设备端拉取主页配置与图片元信息。
+
+### 统一默认配置文件
+- 路径：`backend/config/default_homepage.json`
+- 作用：前端编辑基线、后端渲染基线、设备端解析基线统一来源。
+
+### 设备更新事件
+- `homepage.config.updated`
+- `homepage.image.updated`
+- `homepage.updated`
+
+### 前端入口
+- `http://localhost:8890/homepage.html`
+- 跳转到 Vue 页面：`/vue-app/#/homepage`
+
+### 当前图片格式策略
+- 预览图：PNG（管理端/前端查看）。
+- 设备图：`epd4`（4-bit packed grayscale，自定义设备友好格式）。
+- 说明：设备端优先走 `epd4` 直显，避免在 ESP32 上做高成本 PNG 解码。
+- TODO：如需完全通用化，可新增 BMP/PNG 设备端解码适配层。
+
+## 图片化页面扩展（Home + Badge + Weather）
+
+本轮已扩展为三类图片页面：
+- `homepage`
+- `badgepage`
+- `weatherpage`
+
+统一后端接口族：
+- `/api/homepages/*`
+- `/api/badgepages/*`
+- `/api/weatherpages/*`
+
+统一设备配置接口：
+- `GET /api/hardware/homepage`
+- `GET /api/hardware/badgepage`
+- `GET /api/hardware/weatherpage`
+
+## QWeather 图标资源接入
+
+天气图标渲染由后端完成，资源根目录固定为：
+- `D:\dachicunhouduan\ico\QWeather-Icons-1.8.0`
+
+后端渲染链路会扫描并接入：
+- `font/demo.html`
+- `font/qweather-icons.css`
+- `font/qweather-icons.json`
+- `font/fonts/qweather-icons.ttf`
+- `icons/*.svg`
+
+设备端只消费后端生成的天气图片与元信息，不承担天气图标排版渲染压力。
+
+## Remote Screen Control Extensions
+
+新增远程控制动作：
+- `remote.switch_view`
+- `remote.refresh_page_image`
+- `remote.request_screen_state`
+
+对应管理接口：
+- `POST /api/remote/switch-view`
+- `POST /api/remote/refresh-page-image`
+- `POST /api/remote/request-screen-state`
+
+并保持 ACK 闭环：
+- `POST /api/hardware/remote/ack`

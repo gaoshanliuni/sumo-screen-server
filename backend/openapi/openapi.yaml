@@ -1164,6 +1164,30 @@ paths:
         '200':
           description: ok
 
+  /api/hardware/homepage:
+    get:
+      summary: 设备端获取主页配置与主页图片元信息
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+
+  /api/hardware/badgepage:
+    get:
+      summary: 设备端获取桌牌页配置与图片元信息
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+
+  /api/hardware/weatherpage:
+    get:
+      summary: 设备端获取天气页配置与图片元信息
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+
   /api/hardware/stream/sse:
     get:
       summary: SSE事件通道
@@ -1276,6 +1300,26 @@ paths:
                 message: { type: string }
                 currentVersion: { type: string }
                 targetVersion: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/hardware/remote/ack:
+    post:
+      summary: 设备端回传远程命令 ACK（OpenAPI 补充）
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                commandId: { type: string }
+                eventType: { type: string }
+                status: { type: string, enum: [success, failed, pending] }
+                message: { type: string }
+                payload: { type: object }
       responses:
         '200':
           description: ok
@@ -1546,6 +1590,48 @@ paths:
         '200':
           description: ok
 
+  /api/remote/refresh-page-image:
+    post:
+      summary: 远程触发页面图片刷新（home/weather/badge 等）
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                pageType: { type: string, example: homepage }
+                deviceId: { type: string }
+                deviceIds: { type: array, items: { type: string } }
+                clusterIds: { type: array, items: { type: string } }
+                randomCount: { type: integer, minimum: 1 }
+                ackTimeoutMs: { type: integer }
+      responses:
+        '200':
+          description: ok
+
+  /api/remote/request-screen-state:
+    post:
+      summary: 远程请求设备上报当前屏幕状态
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                deviceIds: { type: array, items: { type: string } }
+                clusterIds: { type: array, items: { type: string } }
+                randomCount: { type: integer, minimum: 1 }
+                include: { type: array, items: { type: string } }
+                ackTimeoutMs: { type: integer }
+      responses:
+        '200':
+          description: ok
+
   /api/remote/cast-frame:
     post:
       summary: 投屏帧上传
@@ -1685,6 +1771,353 @@ paths:
                 clusterIds: { type: array, items: { type: string } }
                 randomCount: { type: integer, minimum: 1 }
                 switchView: { type: boolean }
+      responses:
+        '200':
+          description: ok
+
+  /api/homepages/default:
+    get:
+      summary: 获取默认主页配置基线
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+
+  /api/homepages/config:
+    get:
+      summary: 获取设备主页配置（管理端）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: query
+          name: deviceId
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+    post:
+      summary: 更新主页配置（支持全局或按设备）
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                ownerId: { type: string }
+                config: { type: object }
+      responses:
+        '200':
+          description: ok
+
+  /api/homepages/templates:
+    get:
+      summary: 获取主页模板列表
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+    post:
+      summary: 新建/更新主页HTML模板
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id: { type: string }
+                name: { type: string }
+                type: { type: string }
+                html: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/homepages/templates/{templateId}/delete:
+    post:
+      summary: 删除主页模板
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: templateId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/homepages/render:
+    post:
+      summary: 渲染指定设备主页图片（不推送）
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                config: { type: object }
+                data: { type: object }
+      responses:
+        '200':
+          description: ok
+
+  /api/homepages/push:
+    post:
+      summary: 渲染并推送主页更新到设备
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                deviceIds: { type: array, items: { type: string } }
+                clusterIds: { type: array, items: { type: string } }
+                randomCount: { type: integer, minimum: 1 }
+                config: { type: object }
+                data: { type: object }
+      responses:
+        '200':
+          description: ok
+
+  /api/badgepages/default:
+    get:
+      summary: 获取默认桌牌页配置基线
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+
+  /api/badgepages/config:
+    get:
+      summary: 获取设备桌牌页配置（管理端）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: query
+          name: deviceId
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+    post:
+      summary: 更新桌牌页配置（支持全局或按设备）
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                ownerId: { type: string }
+                config: { type: object }
+      responses:
+        '200':
+          description: ok
+
+  /api/badgepages/templates:
+    get:
+      summary: 获取桌牌页模板列表
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+    post:
+      summary: 新建/更新桌牌页 HTML 模板
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id: { type: string }
+                name: { type: string }
+                type: { type: string }
+                html: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/badgepages/templates/{templateId}/delete:
+    post:
+      summary: 删除桌牌页模板
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: templateId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/badgepages/render:
+    post:
+      summary: 渲染指定设备桌牌页图片（不推送）
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                config: { type: object }
+                data: { type: object }
+      responses:
+        '200':
+          description: ok
+
+  /api/badgepages/push:
+    post:
+      summary: 渲染并推送桌牌页更新到设备
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                deviceIds: { type: array, items: { type: string } }
+                clusterIds: { type: array, items: { type: string } }
+                randomCount: { type: integer, minimum: 1 }
+                config: { type: object }
+                data: { type: object }
+      responses:
+        '200':
+          description: ok
+
+  /api/weatherpages/default:
+    get:
+      summary: 获取默认天气页配置基线
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+
+  /api/weatherpages/config:
+    get:
+      summary: 获取设备天气页配置（管理端）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: query
+          name: deviceId
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+    post:
+      summary: 更新天气页配置（支持全局或按设备）
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                ownerId: { type: string }
+                config: { type: object }
+      responses:
+        '200':
+          description: ok
+
+  /api/weatherpages/templates:
+    get:
+      summary: 获取天气页模板列表
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+    post:
+      summary: 新建/更新天气页 HTML 模板
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id: { type: string }
+                name: { type: string }
+                type: { type: string }
+                html: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/weatherpages/templates/{templateId}/delete:
+    post:
+      summary: 删除天气页模板
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: templateId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/weatherpages/render:
+    post:
+      summary: 渲染指定设备天气页图片（不推送）
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                config: { type: object }
+                data: { type: object }
+      responses:
+        '200':
+          description: ok
+
+  /api/weatherpages/push:
+    post:
+      summary: 渲染并推送天气页更新到设备
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                deviceIds: { type: array, items: { type: string } }
+                clusterIds: { type: array, items: { type: string } }
+                randomCount: { type: integer, minimum: 1 }
+                config: { type: object }
+                data: { type: object }
+      responses:
+        '200':
+          description: ok
+
+  /api/weatherpages/qweather-assets:
+    get:
+      summary: 查看 QWeather 资源接入状态（字体/映射/演示资源）
+      security: [{ BearerAuth: [] }]
       responses:
         '200':
           description: ok

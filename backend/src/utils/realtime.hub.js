@@ -3,6 +3,7 @@ const createId = require("./id");
 
 const emitter = new EventEmitter();
 const historyByDevice = new Map();
+const presenceByDevice = new Map();
 const HISTORY_LIMIT = 200;
 
 function createEvent({ type, deviceId, payload = {} }) {
@@ -24,6 +25,52 @@ function saveHistory(event) {
     list.splice(0, list.length - HISTORY_LIMIT);
   }
   historyByDevice.set(deviceId, list);
+}
+
+function normalizeChannel(channel) {
+  const raw = String(channel || "").trim().toLowerCase();
+  if (raw === "ws") return "ws";
+  return "sse";
+}
+
+function ensurePresence(deviceId) {
+  const id = String(deviceId || "").trim();
+  if (!id) return null;
+  if (!presenceByDevice.has(id)) {
+    presenceByDevice.set(id, {
+      sse: 0,
+      ws: 0,
+      lastSeenAt: "",
+    });
+  }
+  return presenceByDevice.get(id);
+}
+
+function markDeviceOnline(deviceId, channel = "sse") {
+  const row = ensurePresence(deviceId);
+  if (!row) return;
+  const key = normalizeChannel(channel);
+  row[key] = Number(row[key] || 0) + 1;
+  row.lastSeenAt = new Date().toISOString();
+}
+
+function markDeviceOffline(deviceId, channel = "sse") {
+  const row = ensurePresence(deviceId);
+  if (!row) return;
+  const key = normalizeChannel(channel);
+  row[key] = Math.max(0, Number(row[key] || 0) - 1);
+  row.lastSeenAt = new Date().toISOString();
+}
+
+function getDevicePresence(deviceId) {
+  const row = ensurePresence(deviceId) || { sse: 0, ws: 0, lastSeenAt: "" };
+  const sse = Number(row.sse || 0);
+  const ws = Number(row.ws || 0);
+  return {
+    online: sse > 0 || ws > 0,
+    channels: { sse, ws },
+    lastSeenAt: row.lastSeenAt || "",
+  };
 }
 
 function publishDeviceEvent({ type, deviceId, payload = {} }) {
@@ -54,4 +101,7 @@ module.exports = {
   subscribeDevice,
   subscribeAll,
   getDeviceHistory,
+  markDeviceOnline,
+  markDeviceOffline,
+  getDevicePresence,
 };

@@ -1,9 +1,9 @@
-<template>
+﻿<template>
   <div class="picker-shell">
     <div class="toolbar">
-      <el-input v-model="keyword" placeholder="搜索设备ID / 名称 / MAC / 备注 / 设备池" clearable style="max-width: 360px" />
+      <el-input v-model="keyword" placeholder="搜索设备ID / 名称 / MAC / 绑定用户 / 备注 / 设备池" clearable style="max-width: 360px" />
       <el-select v-model="status" style="width: 170px">
-        <el-option label="全部状态" value="all" />
+        <el-option label="全部设备状态" value="all" />
         <el-option label="enabled" value="enabled" />
         <el-option label="blocked" value="blocked" />
       </el-select>
@@ -11,6 +11,11 @@
         <el-option label="全部绑定状态" value="all" />
         <el-option label="已绑定" value="bound" />
         <el-option label="未绑定" value="unbound" />
+      </el-select>
+      <el-select v-model="onlineFilter" style="width: 170px">
+        <el-option label="全部在线状态" value="all" />
+        <el-option label="在线" value="online" />
+        <el-option label="离线" value="offline" />
       </el-select>
       <el-button @click="selectAllFiltered">全选筛选结果</el-button>
       <el-button @click="invertFilteredSelection">反选筛选结果</el-button>
@@ -39,7 +44,9 @@
         <div class="meta">ID: {{ item.id }}</div>
         <div class="meta">MAC: {{ item.mac }}</div>
         <div class="meta">类型: {{ item.type || "-" }} / 状态: {{ item.status || "-" }}</div>
+        <div class="meta">在线状态: {{ item.online ? "在线" : "离线" }}</div>
         <div class="meta">绑定: {{ item.bindState === "bound" ? "已绑定" : "未绑定" }}</div>
+        <div class="meta">绑定用户: {{ item.ownerUsername || item.ownerNickname || item.ownerId || "-" }}</div>
         <div class="meta">备注: {{ item.remark || "-" }}</div>
         <div class="meta">设备池: {{ (item.clusterNames || []).join("、") || "-" }}</div>
       </div>
@@ -66,6 +73,7 @@ const emit = defineEmits<{
 const keyword = ref("");
 const status = ref<"all" | "enabled" | "blocked">("all");
 const bindFilter = ref<"all" | "bound" | "unbound">("all");
+const onlineFilter = ref<"all" | "online" | "offline">("all");
 const canvasRef = ref<HTMLDivElement | null>(null);
 const cardRefMap = new Map<string, HTMLDivElement>();
 
@@ -84,8 +92,12 @@ const filteredDevices = computed(() => {
     if (status.value !== "all" && String(item.status || "") !== status.value) return false;
     if (bindFilter.value === "bound" && item.bindState !== "bound") return false;
     if (bindFilter.value === "unbound" && item.bindState === "bound") return false;
+    if (onlineFilter.value === "online" && !item.online) return false;
+    if (onlineFilter.value === "offline" && item.online) return false;
     if (!key) return true;
-    const merged = `${item.id} ${item.displayName || ""} ${item.mac} ${item.remark || ""} ${(item.clusterNames || []).join(" ")}`.toLowerCase();
+    const merged = `${item.id} ${item.displayName || ""} ${item.mac} ${item.remark || ""} ${(item.clusterNames || []).join(" ")} ${
+      item.ownerId || ""
+    } ${item.ownerUsername || ""} ${item.ownerNickname || ""}`.toLowerCase();
     return merged.includes(key);
   });
 });
@@ -159,6 +171,7 @@ function getFilters() {
     keyword: keyword.value.trim(),
     status: status.value,
     bound: bindFilter.value,
+    online: onlineFilter.value,
   };
 }
 

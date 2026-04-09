@@ -1,11 +1,16 @@
 ﻿<template>
-  <div class="page">
+  <div class="page" :class="{ 'dark-mode': darkMode }">
     <el-card class="panel">
       <template #header>
         <div class="header-row">
           <strong>{{ title }}</strong>
           <div v-if="auth.token" class="header-user">
+            <div class="theme-toggle">
+              <span class="theme-label">{{ darkMode ? "夜间" : "日间" }}</span>
+              <el-switch v-model="darkMode" inline-prompt active-text="夜" inactive-text="昼" @change="toggleDarkMode" />
+            </div>
             <span class="header-username">当前用户：{{ auth.username }}</span>
+            <el-button plain @click="openPageStudio">PageStudio</el-button>
             <el-button type="danger" plain @click="logout">退出登录</el-button>
           </div>
         </div>
@@ -31,6 +36,7 @@
             <el-menu-item index="schedule">日程安排</el-menu-item>
             <el-menu-item index="tf">文件管理</el-menu-item>
             <el-menu-item index="remote">远程控制</el-menu-item>
+            <el-menu-item index="homepage">主页</el-menu-item>
             <el-menu-item index="layout">桌牌设置</el-menu-item>
             <el-menu-item index="history">桌牌历史</el-menu-item>
             <el-menu-item index="templates">API模板</el-menu-item>
@@ -41,18 +47,23 @@
 
         <el-main class="content-main">
           <section v-if="activePanel === 'overview'" class="section-wrap">
-            <div class="row-actions">
-              <h3>主页概览</h3>
+            <div class="overview-hero">
+              <div>
+                <div class="overview-eyebrow">平台总览</div>
+                <h3>主页概览</h3>
+                <div class="overview-summary">
+                  当前共有 {{ overview.deviceTotal }} 台设备，其中 {{ overview.deviceOnline }} 台在线，绑定率 {{ overviewBoundRate }}。
+                </div>
+              </div>
               <el-button @click="refreshOverview">刷新概览</el-button>
             </div>
-            <el-row :gutter="12">
-              <el-col :md="8" :xs="24"><el-card>设备总数：{{ overview.deviceTotal }}</el-card></el-col>
-              <el-col :md="8" :xs="24"><el-card>已绑定：{{ overview.deviceBound }}</el-card></el-col>
-              <el-col :md="8" :xs="24"><el-card>未绑定：{{ overview.deviceUnbound }}</el-card></el-col>
-              <el-col :md="8" :xs="24"><el-card>TODO：{{ overview.todoCount }}</el-card></el-col>
-              <el-col :md="8" :xs="24"><el-card>课程：{{ overview.scheduleCount }}</el-card></el-col>
-              <el-col :md="8" :xs="24"><el-card>固件：{{ overview.firmwareCount }}</el-card></el-col>
-            </el-row>
+            <div class="overview-grid">
+              <el-card v-for="card in overviewCards" :key="card.key" class="overview-card" shadow="hover">
+                <div class="overview-card-label">{{ card.label }}</div>
+                <div class="overview-card-value">{{ card.value }}</div>
+                <div class="overview-card-note">{{ card.note }}</div>
+              </el-card>
+            </div>
           </section>
 
           <section v-if="activePanel === 'account'" class="section-wrap">
@@ -178,7 +189,11 @@
                         <el-option label="blocked" value="blocked" />
                       </el-select>
                     </el-form-item>
-                    <el-form-item v-if="isAdmin" label="ownerId"><el-input v-model="deviceEditForm.ownerId" /></el-form-item>
+                    <el-form-item v-if="isAdmin" label="归属用户">
+                      <el-select v-model="deviceEditForm.ownerId" clearable filterable style="width:100%" placeholder="选择归属用户">
+                        <el-option v-for="u in ownerSelectOptions" :key="u.id" :label="ownerOptionLabel(u)" :value="u.id" />
+                      </el-select>
+                    </el-form-item>
                   </el-form>
                   <div class="row-actions">
                     <el-button type="primary" @click="updateCurrentDevice">保存设备信息</el-button>
@@ -190,7 +205,11 @@
                 <el-card>
                   <el-form :model="bindForm" label-width="110px" size="small">
                     <el-form-item label="PIN"><el-input v-model="bindForm.pin" placeholder="6位数字PIN" /></el-form-item>
-                    <el-form-item v-if="isAdmin" label="ownerId"><el-input v-model="bindForm.ownerId" placeholder="管理员可指定用户" /></el-form-item>
+                    <el-form-item v-if="isAdmin" label="归属用户">
+                      <el-select v-model="bindForm.ownerId" clearable filterable style="width:100%" placeholder="管理员可指定用户">
+                        <el-option v-for="u in ownerSelectOptions" :key="u.id" :label="ownerOptionLabel(u)" :value="u.id" />
+                      </el-select>
+                    </el-form-item>
                   </el-form>
                   <div class="row-actions">
                     <el-button type="primary" @click="bindByPin">PIN绑定设备</el-button>
@@ -563,11 +582,15 @@
                 <el-option label="已绑定" value="bound" />
                 <el-option label="未绑定" value="unbound" />
               </el-select>
+              <el-select v-model="deviceFilters.online" clearable placeholder="在线状态" style="width:140px">
+                <el-option label="在线" value="online" />
+                <el-option label="离线" value="offline" />
+              </el-select>
               <el-select v-model="deviceFilters.status" clearable placeholder="设备状态" style="width:140px">
                 <el-option label="enabled" value="enabled" />
                 <el-option label="blocked" value="blocked" />
               </el-select>
-              <el-input v-model="deviceFilters.keyword" placeholder="按ID/名称/MAC/备注筛选" style="width:300px" />
+              <el-input v-model="deviceFilters.keyword" placeholder="按ID/名称/MAC/绑定用户/备注筛选" style="width:320px" />
               <el-button :loading="deviceStore.loading" @click="refreshDevices">刷新设备</el-button>
               <el-button type="danger" plain @click="batchDeleteSelectedDevices">删除已选设备</el-button>
               <el-button v-if="isAdmin" type="danger" @click="batchDeleteAllFiltered">删除筛选结果全部设备</el-button>
@@ -590,6 +613,12 @@
               <template #header>已选设备快速编辑</template>
               <el-table :data="quickEditRows" height="280" size="small">
                 <el-table-column prop="id" label="设备ID" min-width="150" />
+                <el-table-column label="在线状态" width="100">
+                  <template #default="scope">{{ scope.row.online ? "在线" : "离线" }}</template>
+                </el-table-column>
+                <el-table-column label="绑定用户" min-width="190">
+                  <template #default="scope">{{ scope.row.ownerNickname || scope.row.ownerUsername || scope.row.ownerId || "-" }}</template>
+                </el-table-column>
                 <el-table-column label="显示名字" min-width="150"><template #default="scope"><el-input v-model="scope.row.displayName" /></template></el-table-column>
                 <el-table-column label="备注" min-width="180"><template #default="scope"><el-input v-model="scope.row.remark" /></template></el-table-column>
                 <el-table-column label="设备池" min-width="180"><template #default="scope">{{ (scope.row.clusterNames || []).join("、") || "-" }}</template></el-table-column>
@@ -604,41 +633,31 @@
             <h3>设备池管理</h3>
             <el-alert type="info" :closable="false" show-icon>
               <template #default>
-                可创建设备池，并将“设备管理”里框选的设备批量加入/移出设备池。
+                上方只负责新建设备池；修改已有设备池时，请在列表中点击“编辑”打开弹窗。
               </template>
             </el-alert>
             <el-row :gutter="12" class="pool-vertical">
-              <el-col :md="10" :xs="24">
+              <el-col :md="24" :xs="24">
                 <el-card>
-                  <el-form :model="clusterForm" label-width="88px" size="small">
+                  <template #header>新建设备池</template>
+                  <el-form :model="clusterCreateForm" label-width="88px" size="small">
                     <el-form-item label="设备池ID">
-                      <el-input :model-value="clusterForm.id || '自动生成'" disabled />
+                      <el-input model-value="自动生成" disabled />
                     </el-form-item>
-                    <el-form-item label="名称"><el-input v-model="clusterForm.name" placeholder="例如：一号会议室" /></el-form-item>
-                    <el-form-item label="描述"><el-input v-model="clusterForm.description" placeholder="可选" /></el-form-item>
+                    <el-form-item label="名称"><el-input v-model="clusterCreateForm.name" placeholder="例如：一号会议室" /></el-form-item>
+                    <el-form-item label="描述"><el-input v-model="clusterCreateForm.description" placeholder="可选" /></el-form-item>
                   </el-form>
                   <div class="row-actions">
-                    <el-button type="primary" @click="saveCluster">{{ clusterForm.id ? "更新设备池" : "创建设备池" }}</el-button>
-                    <el-button @click="resetClusterForm">重置</el-button>
+                    <el-button type="primary" @click="createCluster">创建设备池</el-button>
+                    <el-button @click="resetClusterCreateForm">重置</el-button>
                     <el-button @click="loadClusters">刷新设备池</el-button>
-                  </div>
-                  <el-divider />
-                  <div class="row-actions">
-                    <el-button @click="openPoolPicker">弹窗选择设备</el-button>
-                    <el-button @click="clearPoolPickerSelection">清空弹窗选择</el-button>
-                    <el-tag type="warning">弹窗已选 {{ poolPickerSelection.length }} 台</el-tag>
-                    <el-tag>弹窗筛选后 {{ poolFilteredIds.length }} 台</el-tag>
-                    <el-button type="primary" plain @click="batchManageClusterDevices('append')" :disabled="!clusterForm.id">加入弹窗所选</el-button>
-                    <el-button type="warning" plain @click="batchManageClusterDevices('remove')" :disabled="!clusterForm.id">移出弹窗所选</el-button>
-                    <el-button type="danger" plain @click="batchManageClusterDevices('replace')" :disabled="!clusterForm.id">弹窗所选覆盖</el-button>
-                    <el-button type="danger" @click="deleteCluster" :disabled="!clusterForm.id">删除设备池</el-button>
                   </div>
                 </el-card>
               </el-col>
-              <el-col :md="14" :xs="24">
+              <el-col :md="24" :xs="24">
                 <el-card>
                   <template #header>设备池列表</template>
-                  <el-table :data="clusters" height="460" size="small" @row-click="pickCluster">
+                  <el-table :data="clusters" height="460" size="small" @row-click="openClusterEditor">
                     <el-table-column prop="name" label="名称" min-width="140" />
                     <el-table-column label="设备数" width="90">
                       <template #default="scope">{{ scope.row.deviceIds?.length || 0 }}</template>
@@ -650,7 +669,7 @@
                     <el-table-column prop="updatedAt" label="更新时间" min-width="180" />
                     <el-table-column label="操作" width="110">
                       <template #default="scope">
-                        <el-button link type="primary" @click.stop="pickCluster(scope.row)">编辑</el-button>
+                        <el-button link type="primary" @click.stop="openClusterEditor(scope.row)">编辑</el-button>
                       </template>
                     </el-table-column>
                   </el-table>
@@ -675,10 +694,12 @@
                   <template #header>切换界面</template>
                   <el-select v-model="remoteForm.view" style="width: 100%">
                     <el-option label="主页" value="home" />
-                    <el-option label="阅读器" value="reader" />
-                    <el-option label="文件页" value="file" />
+                    <el-option label="天气" value="weather" />
+                    <el-option label="桌牌" value="badge" />
+                    <el-option label="待办" value="todo" />
                     <el-option label="设置页" value="settings" />
-                    <el-option label="桌牌" value="nameplate" />
+                    <el-option label="网络页" value="network" />
+                    <el-option label="关于页" value="about" />
                   </el-select>
                   <div class="row-actions" style="margin-top:8px">
                     <el-switch v-model="remoteForm.setAsDefault" />
@@ -723,84 +744,184 @@
             </el-row>
           </section>
 
+          <section v-if="activePanel === 'homepage'" class="section-wrap">
+            <h3>主页</h3>
+            <div class="row-actions">
+              <el-select v-model="homepageClusterIds" multiple clearable filterable placeholder="选择设备池" style="width:300px">
+                <el-option v-for="c in clusters" :key="c.id" :label="c.name" :value="c.id" />
+              </el-select>
+              <el-button @click="openDispatchPicker('homepage')">弹窗选择设备</el-button>
+              <el-tag type="warning">设备 {{ batchTargetDeviceIds.homepage.length }} 台</el-tag>
+              <el-tag>设备池 {{ homepageClusterIds.length }} 个</el-tag>
+              <el-button @click="loadHomepageAll">刷新主页数据</el-button>
+            </div>
+            <div class="stack-vertical">
+              <el-card>
+                <template #header>
+                  <div class="row-between">
+                    <strong>渲染预览</strong>
+                    <el-radio-group v-model="homepagePreviewMode" size="small">
+                      <el-radio-button label="edit">编辑预览</el-radio-button>
+                      <el-radio-button label="delivery">下发预览</el-radio-button>
+                    </el-radio-group>
+                  </div>
+                </template>
+                <div v-if="homepagePreviewMode === 'edit'" class="image-preview-shell">
+                  <div class="image-preview-stage" :style="imagePreviewStageStyle">
+                    <img v-if="homepageEditPreviewUrl" :src="homepageEditPreviewUrl" class="image-preview-img" alt="homepage edit preview" />
+                    <div v-else class="image-preview-empty">{{ homepageEditPreviewLoading ? "编辑预览渲染中..." : "编辑模板后自动生成预览" }}</div>
+                  </div>
+                </div>
+                <template v-else>
+                  <div style="font-size:12px;color:#64748b;display:grid;gap:4px">
+                    <div>etag: {{ homepageRenderMeta.etag || "-" }}</div>
+                    <div>image: {{ homepageRenderMeta.image_id || "-" }}</div>
+                    <div>size: {{ homepageRenderMeta.image_width || 0 }} x {{ homepageRenderMeta.image_height || 0 }}</div>
+                  </div>
+                  <div class="image-preview-shell" style="margin-top:10px">
+                    <div class="image-preview-stage" :style="imagePreviewStageStyle">
+                      <img v-if="homepagePreviewUrl" :src="homepagePreviewUrl" class="image-preview-img" alt="homepage preview" />
+                      <div v-else class="image-preview-empty">先执行一次渲染</div>
+                    </div>
+                  </div>
+                </template>
+              </el-card>
+
+              <el-card>
+                <template #header><strong>主页配置</strong></template>
+                <el-form label-width="118px" size="small">
+                  <el-form-item label="目标设备">
+                    <el-select v-model="homepageDeviceId" filterable style="width:100%" @change="loadHomepageConfig">
+                      <el-option v-for="d in deviceStore.devices" :key="d.id" :label="deviceOptionLabel(d)" :value="d.id" />
+                    </el-select>
+                  </el-form-item>
+                  <el-form-item label="模板 ID">
+                    <el-select v-model="homepageConfigModel.template.template_id" filterable style="width:100%">
+                      <el-option v-for="tpl in homepageTemplates" :key="tpl.id" :label="tpl.name" :value="tpl.id" />
+                    </el-select>
+                  </el-form-item>
+                  <el-form-item label="时间覆盖启用"><el-switch v-model="homepageConfigModel.time_overlay.enabled" /></el-form-item>
+                  <el-form-item label="时间格式"><el-input v-model="homepageConfigModel.time_overlay.format" /></el-form-item>
+                  <el-form-item label="时间区域 X/Y/W/H">
+                    <div class="row-actions">
+                      <el-input-number v-model="homepageConfigModel.time_overlay.x" :min="0" />
+                      <el-input-number v-model="homepageConfigModel.time_overlay.y" :min="0" />
+                      <el-input-number v-model="homepageConfigModel.time_overlay.width" :min="40" />
+                      <el-input-number v-model="homepageConfigModel.time_overlay.height" :min="40" />
+                    </div>
+                  </el-form-item>
+                  <el-form-item label="字号/间隔">
+                    <div class="row-actions">
+                      <el-input-number v-model="homepageConfigModel.time_overlay.font_size" :min="12" :max="220" />
+                      <el-input-number v-model="homepageConfigModel.time_overlay.refresh_interval_sec" :min="1" :max="3600" />
+                    </div>
+                  </el-form-item>
+                  <el-form-item label="JSON 高级配置">
+                    <el-input v-model="homepageConfigJson" type="textarea" :rows="11" />
+                  </el-form-item>
+                </el-form>
+                <div class="row-actions">
+                  <el-button type="primary" @click="saveHomepageConfig">保存配置</el-button>
+                  <el-button @click="renderHomepage">仅渲染</el-button>
+                  <el-button type="success" @click="pushHomepage">渲染并推送</el-button>
+                </div>
+              </el-card>
+
+              <el-card>
+                <template #header><strong>主页模板</strong></template>
+                <el-form label-width="92px" size="small">
+                  <el-form-item label="模板">
+                    <el-select v-model="homepageTemplateDraft.id" clearable filterable style="width:100%" @change="onSelectHomepageTemplate">
+                      <el-option v-for="tpl in homepageTemplates" :key="tpl.id" :label="tpl.name" :value="tpl.id" />
+                    </el-select>
+                  </el-form-item>
+                  <el-form-item label="名称"><el-input v-model="homepageTemplateDraft.name" /></el-form-item>
+                  <el-form-item label="HTML">
+                    <el-input v-model="homepageTemplateDraft.html" type="textarea" :rows="13" />
+                  </el-form-item>
+                </el-form>
+                <div class="row-actions">
+                  <el-button type="primary" @click="saveHomepageTemplate">保存模板</el-button>
+                  <el-button type="danger" :disabled="!homepageTemplateDraft.id || homepageTemplateDraft.builtin" @click="deleteHomepageTemplate">删除模板</el-button>
+                </div>
+              </el-card>
+            </div>
+          </section>
+
           <section v-if="activePanel === 'layout'" class="section-wrap">
             <h3>桌牌设置</h3>
-            <el-row :gutter="12">
-              <el-col :md="10" :xs="24">
-                <el-card>
-                  <el-form :model="layoutForm" label-width="108px" size="small">
-                    <el-form-item label="布局名称"><el-input v-model="layoutForm.layoutName" /></el-form-item>
-                    <el-form-item label="设备类型"><el-input v-model="layoutForm.deviceType" /></el-form-item>
-                    <el-form-item label="字体">
-                      <el-select v-model="layoutForm.fontFamily" filterable allow-create default-first-option style="width:100%">
-                        <el-option v-for="font in fontOptions" :key="font" :label="font" :value="font" />
-                      </el-select>
-                    </el-form-item>
-                    <el-form-item label="姓名字号"><el-input-number v-model="layoutForm.nameFontSize" :min="28" :max="320" /></el-form-item>
-                    <el-form-item label="职位字号"><el-input-number v-model="layoutForm.titleFontSize" :min="12" :max="200" /></el-form-item>
-                    <el-form-item label="对齐方式">
-                      <el-select v-model="layoutForm.align">
-                        <el-option label="左对齐" value="left" />
-                        <el-option label="居中" value="center" />
-                        <el-option label="右对齐" value="right" />
-                      </el-select>
-                    </el-form-item>
-                    <el-form-item label="边距"><el-input-number v-model="layoutForm.margin" :min="0" :max="240" /></el-form-item>
-                    <el-form-item label="姓名X偏移"><el-input-number v-model="layoutForm.nameOffsetX" :min="-1200" :max="1200" /></el-form-item>
-                    <el-form-item label="姓名Y偏移"><el-input-number v-model="layoutForm.nameOffsetY" :min="-900" :max="900" /></el-form-item>
-                    <el-form-item label="职位X偏移"><el-input-number v-model="layoutForm.titleOffsetX" :min="-1200" :max="1200" /></el-form-item>
-                    <el-form-item label="职位Y偏移"><el-input-number v-model="layoutForm.titleOffsetY" :min="-900" :max="900" /></el-form-item>
-                  </el-form>
-                  <div class="row-actions">
-                    <el-button type="primary" @click="saveLayout">保存布局</el-button>
-                    <el-button @click="resetLayoutForm">重置</el-button>
-                    <el-button @click="loadLayouts">刷新布局</el-button>
-                  </div>
-                </el-card>
-              </el-col>
+            <div class="stack-vertical">
+              <el-card>
+                <el-form :model="layoutForm" label-width="108px" size="small">
+                  <el-form-item label="布局名称"><el-input v-model="layoutForm.layoutName" /></el-form-item>
+                  <el-form-item label="设备类型"><el-input v-model="layoutForm.deviceType" /></el-form-item>
+                  <el-form-item label="字体">
+                    <el-select v-model="layoutForm.fontFamily" filterable allow-create default-first-option style="width:100%">
+                      <el-option v-for="font in fontOptions" :key="font" :label="font" :value="font" />
+                    </el-select>
+                  </el-form-item>
+                  <el-form-item label="姓名字号"><el-input-number v-model="layoutForm.nameFontSize" :min="28" :max="320" /></el-form-item>
+                  <el-form-item label="职位字号"><el-input-number v-model="layoutForm.titleFontSize" :min="12" :max="200" /></el-form-item>
+                  <el-form-item label="对齐方式">
+                    <el-select v-model="layoutForm.align">
+                      <el-option label="左对齐" value="left" />
+                      <el-option label="居中" value="center" />
+                      <el-option label="右对齐" value="right" />
+                    </el-select>
+                  </el-form-item>
+                  <el-form-item label="边距"><el-input-number v-model="layoutForm.margin" :min="0" :max="240" /></el-form-item>
+                  <el-form-item label="姓名X偏移"><el-input-number v-model="layoutForm.nameOffsetX" :min="-1200" :max="1200" /></el-form-item>
+                  <el-form-item label="姓名Y偏移"><el-input-number v-model="layoutForm.nameOffsetY" :min="-900" :max="900" /></el-form-item>
+                  <el-form-item label="职位X偏移"><el-input-number v-model="layoutForm.titleOffsetX" :min="-1200" :max="1200" /></el-form-item>
+                  <el-form-item label="职位Y偏移"><el-input-number v-model="layoutForm.titleOffsetY" :min="-900" :max="900" /></el-form-item>
+                </el-form>
+                <div class="row-actions">
+                  <el-button type="primary" @click="saveLayout">保存布局</el-button>
+                  <el-button @click="resetLayoutForm">重置</el-button>
+                  <el-button @click="loadLayouts">刷新布局</el-button>
+                </div>
+              </el-card>
 
-              <el-col :md="14" :xs="24">
-                <el-card>
-                  <template #header>
-                    <div class="row-between">
-                      <span>实时预览（拖动姓名/职位可改位置）</span>
-                      <el-button link type="primary" @click="previewDialogOpen = true">弹窗等比预览</el-button>
-                    </div>
-                  </template>
-
-                  <div
-                    ref="previewRef"
-                    class="nameplate-stage"
-                    :style="stageStyle"
-                    @pointermove="onPreviewMove"
-                    @pointerup="onPreviewUp"
-                    @pointerleave="onPreviewUp"
-                  >
-                    <div class="preview-name" :style="nameStyle" @pointerdown.stop="onPreviewDown('name', $event)">{{ singleForm.name || '张三' }}</div>
-                    <div class="preview-title" :style="titleStyle" @pointerdown.stop="onPreviewDown('title', $event)">{{ singleForm.title || '产品经理' }}</div>
+              <el-card>
+                <template #header>
+                  <div class="row-between">
+                    <span>实时预览（拖动姓名/职位可改位置）</span>
+                    <el-button link type="primary" @click="previewDialogOpen = true">弹窗等比预览</el-button>
                   </div>
+                </template>
 
-                  <el-divider />
-                  <h4>下发功能 1：下发到指定设备</h4>
-                  <el-form :model="singleForm" label-width="88px" size="small">
-                    <el-form-item label="布局ID">
-                      <el-input :model-value="singleForm.layoutId || layoutForm.id || '将自动生成'" disabled />
-                    </el-form-item>
-                    <el-form-item label="目标设备">
-                      <el-select v-model="singleForm.deviceId" filterable style="width:100%" placeholder="选择一台设备">
-                        <el-option v-for="d in deviceStore.devices" :key="d.id" :label="deviceOptionLabel(d)" :value="d.id" />
-                      </el-select>
-                    </el-form-item>
-                    <el-form-item label="姓名"><el-input v-model="singleForm.name" /></el-form-item>
-                    <el-form-item label="职位"><el-input v-model="singleForm.title" /></el-form-item>
-                  </el-form>
-                  <div class="row-actions">
-                    <el-button type="primary" @click="pushSingle">下发到指定设备</el-button>
-                    <el-button @click="openBatchDialog">打开批量下发弹窗</el-button>
-                  </div>
-                </el-card>
-              </el-col>
-            </el-row>
+                <div
+                  ref="previewRef"
+                  class="nameplate-stage"
+                  :style="stageStyle"
+                  @pointermove="onPreviewMove"
+                  @pointerup="onPreviewUp"
+                  @pointerleave="onPreviewUp"
+                >
+                  <div class="preview-name" :style="nameStyle" @pointerdown.stop="onPreviewDown('name', $event)">{{ singleForm.name || '张三' }}</div>
+                  <div class="preview-title" :style="titleStyle" @pointerdown.stop="onPreviewDown('title', $event)">{{ singleForm.title || '产品经理' }}</div>
+                </div>
+
+                <el-divider />
+                <h4>下发功能 1：下发到指定设备</h4>
+                <el-form :model="singleForm" label-width="88px" size="small">
+                  <el-form-item label="布局ID">
+                    <el-input :model-value="singleForm.layoutId || layoutForm.id || '将自动生成'" disabled />
+                  </el-form-item>
+                  <el-form-item label="目标设备">
+                    <el-select v-model="singleForm.deviceId" filterable style="width:100%" placeholder="选择一台设备">
+                      <el-option v-for="d in deviceStore.devices" :key="d.id" :label="deviceOptionLabel(d)" :value="d.id" />
+                    </el-select>
+                  </el-form-item>
+                  <el-form-item label="姓名"><el-input v-model="singleForm.name" /></el-form-item>
+                  <el-form-item label="职位"><el-input v-model="singleForm.title" /></el-form-item>
+                </el-form>
+                <div class="row-actions">
+                  <el-button type="primary" @click="pushSingle">下发到指定设备</el-button>
+                  <el-button @click="openBatchDialog">打开批量下发弹窗</el-button>
+                </div>
+              </el-card>
+            </div>
 
             <el-card style="margin-top: 12px">
               <template #header>布局列表</template>
@@ -925,20 +1046,38 @@
       </el-table>
     </el-dialog>
 
-    <el-dialog v-model="poolPickerDialogOpen" title="设备池设备选择（框选/筛选）" width="92%">
-      <device-lasso-picker
-        ref="poolPickerRef"
-        :devices="deviceStore.devices"
-        :model-value="poolPickerSelection"
-        @update:model-value="setPoolPickerSelection"
-        @filtered-change="onPoolFilteredChange"
-      />
+    <el-dialog v-model="clusterEditDialogOpen" :title="clusterForm.name ? `编辑设备池：${clusterForm.name}` : '编辑设备池'" width="92%">
+      <div class="cluster-edit-shell">
+        <el-card class="cluster-edit-meta" shadow="never">
+          <template #header>设备池修改</template>
+          <el-form :model="clusterForm" label-width="88px" size="small">
+            <el-form-item label="设备池ID"><el-input v-model="clusterForm.id" disabled /></el-form-item>
+            <el-form-item label="名称"><el-input v-model="clusterForm.name" placeholder="例如：一号会议室" /></el-form-item>
+            <el-form-item label="描述"><el-input v-model="clusterForm.description" placeholder="可选" /></el-form-item>
+          </el-form>
+        </el-card>
+        <el-card shadow="never">
+          <template #header>设备池设备选择（框选/筛选）</template>
+          <div class="row-actions" style="margin-bottom:8px">
+            <el-tag type="warning">已选 {{ poolPickerSelection.length }} 台</el-tag>
+            <el-tag>筛选后 {{ poolFilteredIds.length }} 台</el-tag>
+          </div>
+          <device-lasso-picker
+            ref="poolPickerRef"
+            :devices="deviceStore.devices"
+            :model-value="poolPickerSelection"
+            @update:model-value="setPoolPickerSelection"
+            @filtered-change="onPoolFilteredChange"
+          />
+        </el-card>
+      </div>
       <template #footer>
         <div class="row-actions">
           <el-button @click="poolPickerRef?.selectAllFiltered?.()">全选筛选结果</el-button>
           <el-button @click="poolPickerRef?.invertFilteredSelection?.()">反选筛选结果</el-button>
           <el-button @click="clearPoolPickerSelection">清空选择</el-button>
-          <el-button type="primary" @click="poolPickerDialogOpen = false">完成</el-button>
+          <el-button type="danger" plain @click="deleteCluster">删除设备池</el-button>
+          <el-button type="primary" @click="saveCluster">保存修改</el-button>
         </div>
       </template>
     </el-dialog>
@@ -974,7 +1113,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 import { useAuthStore, type AppRole } from "../stores/auth";
 import { useDeviceStore } from "../stores/devices";
@@ -987,18 +1126,19 @@ const isAdmin = computed(() => props.role === "admin");
 
 const auth = useAuthStore();
 const deviceStore = useDeviceStore();
+const darkMode = ref(false);
 const activePanel = ref("overview");
 const pickerRef = ref<any>(null);
 const filteredDeviceIds = ref<string[]>([]);
 const poolPickerRef = ref<any>(null);
-const poolPickerDialogOpen = ref(false);
+const clusterEditDialogOpen = ref(false);
 const poolPickerSelection = ref<string[]>([]);
 const poolFilteredIds = ref<string[]>([]);
 const dispatchPickerRef = ref<any>(null);
 const dispatchPickerDialogOpen = ref(false);
 const dispatchPickerSelection = ref<string[]>([]);
 const dispatchFilteredIds = ref<string[]>([]);
-const dispatchTargetKey = ref<"todo" | "schedule" | "templates" | "tf" | "remote">("remote");
+const dispatchTargetKey = ref<"todo" | "schedule" | "templates" | "tf" | "remote" | "homepage">("remote");
 
 const loginForm = reactive({ username: props.role === "admin" ? "admin" : "demo", password: props.role === "admin" ? "admin123" : "user123" });
 const loginLoading = ref(false);
@@ -1007,6 +1147,8 @@ const overview = reactive({
   deviceTotal: 0,
   deviceBound: 0,
   deviceUnbound: 0,
+  deviceOnline: 0,
+  deviceOffline: 0,
   todoCount: 0,
   scheduleCount: 0,
   firmwareCount: 0,
@@ -1036,11 +1178,12 @@ const adminResourceForm = reactive({
   targetUserId: "",
 });
 
-const deviceFilters = reactive({ bound: "", status: "", keyword: "" });
+const deviceFilters = reactive({ bound: "", online: "", status: "", keyword: "" });
 const singleDeviceId = ref("");
 const deviceEditForm = reactive({ displayName: "", remark: "", status: "enabled", ownerId: "" });
 const quickEditRows = computed(() => deviceStore.devices.filter((item) => deviceStore.selectedIds.includes(item.id)));
 const bindForm = reactive({ pin: "", ownerId: "" });
+const ownerSelectOptions = computed(() => adminUsers.value.filter((user) => user.status !== "blocked"));
 const todoDeviceId = ref("");
 const todoRows = ref<Array<{ id?: string; content: string; done: boolean; priority: number | null }>>([]);
 const todoDeletedIds = ref<string[]>([]);
@@ -1140,12 +1283,50 @@ const imageFile = ref<File | null>(null);
 const imagePreviewDialogOpen = ref(false);
 const imagePreviewUrl = ref("");
 const remoteClusterIds = ref<string[]>([]);
-const batchTargetDeviceIds = reactive<Record<"todo" | "schedule" | "templates" | "tf" | "remote", string[]>>({
+type HomepageTemplateRow = {
+  id: string;
+  name: string;
+  type: string;
+  html: string;
+  builtin?: boolean;
+};
+const homepageDeviceId = ref("");
+const homepageTemplates = ref<HomepageTemplateRow[]>([]);
+const homepageTemplateDraft = reactive<HomepageTemplateRow>({
+  id: "",
+  name: "",
+  type: "custom_html",
+  html: "",
+  builtin: false,
+});
+const homepageConfigModel = reactive<any>({
+  template: { template_id: "tpl_home_default" },
+  time_overlay: {
+    enabled: true,
+    x: 1820,
+    y: 80,
+    width: 680,
+    height: 180,
+    format: "HH:mm",
+    font_size: 88,
+    refresh_interval_sec: 60,
+  },
+});
+const homepageConfigJson = ref("{}");
+const homepageClusterIds = ref<string[]>([]);
+const homepagePreviewUrl = ref("");
+const homepageEditPreviewUrl = ref("");
+const homepageEditPreviewLoading = ref(false);
+const homepageRenderMeta = reactive<Record<string, any>>({});
+const homepagePreviewMode = ref<"edit" | "delivery">("edit");
+let homepageEditPreviewTimer: ReturnType<typeof setTimeout> | null = null;
+const batchTargetDeviceIds = reactive<Record<"todo" | "schedule" | "templates" | "tf" | "remote" | "homepage", string[]>>({
   todo: [],
   schedule: [],
   templates: [],
   tf: [],
   remote: [],
+  homepage: [],
 });
 
 type LayoutRow = {
@@ -1183,11 +1364,29 @@ type ClusterRow = {
   updatedAt?: string;
 };
 const clusters = ref<ClusterRow[]>([]);
+const clusterCreateForm = reactive<{ name: string; description: string }>({
+  name: "",
+  description: "",
+});
 const clusterForm = reactive<{ id: string; name: string; description: string }>({
   id: "",
   name: "",
   description: "",
 });
+const overviewBoundRate = computed(() => {
+  if (!overview.deviceTotal) return "0%";
+  return `${Math.round((overview.deviceBound / overview.deviceTotal) * 100)}%`;
+});
+const overviewCards = computed(() => [
+  { key: "deviceTotal", label: "设备总数", value: overview.deviceTotal, note: "当前平台已登记设备" },
+  { key: "deviceOnline", label: "在线设备", value: overview.deviceOnline, note: "SSE / WS 有活跃连接" },
+  { key: "deviceBound", label: "已绑定设备", value: overview.deviceBound, note: "已归属到用户账号" },
+  { key: "deviceUnbound", label: "未绑定设备", value: overview.deviceUnbound, note: "待 PIN 或管理员绑定" },
+  { key: "todoCount", label: "TODO 总数", value: overview.todoCount, note: "待办数据条目" },
+  { key: "scheduleCount", label: "日程条目", value: overview.scheduleCount, note: "课程/会议统一统计" },
+  { key: "firmwareCount", label: "固件版本", value: overview.firmwareCount, note: "当前已上传固件" },
+  { key: "deviceOffline", label: "离线设备", value: overview.deviceOffline, note: "当前无在线会话" },
+]);
 
 const fontOptions = ["Microsoft YaHei", "SimSun", "SimHei", "PingFang SC", "Noto Sans SC", "Arial", "Times New Roman"];
 
@@ -1261,6 +1460,7 @@ const dispatchTargetKeyLabel = computed(() => {
     templates: "API模板",
     tf: "文件管理",
     remote: "远程控制",
+    homepage: "主页",
   } as const;
   return map[dispatchTargetKey.value];
 });
@@ -1292,20 +1492,36 @@ const titleStyle = computed(() => buildTextStyle(stageScale.value, "title"));
 const nameDialogStyle = computed(() => buildTextStyle(stageDialogScale.value, "name"));
 const titleDialogStyle = computed(() => buildTextStyle(stageDialogScale.value, "title"));
 
+function applyTheme(mode: boolean) {
+  darkMode.value = mode;
+  const theme = mode ? "dark" : "light";
+  document.documentElement.dataset.theme = theme;
+  localStorage.setItem("ink-screen-theme", theme);
+}
+
+function toggleDarkMode(value: string | number | boolean) {
+  applyTheme(Boolean(value));
+}
+
 function onSelectPanel(index: string) {
   activePanel.value = index;
+  if (["todo", "schedule", "templates", "tf", "remote", "homepage"].includes(index)) {
+    loadClusters();
+  }
   if (index === "overview") {
     refreshOverview();
   } else if (index === "account" && isAdmin.value) {
     loadAdminUsers();
-  } else if (["todo", "schedule", "templates", "tf", "remote"].includes(index)) {
-    loadClusters();
+  } else if (index === "devicePin" && isAdmin.value) {
+    loadAdminUsers();
   } else if (index === "todo") {
     loadTodoRows();
   } else if (index === "schedule") {
     loadScheduleRows();
   } else if (index === "templates") {
     loadTemplateRows();
+  } else if (index === "homepage") {
+    loadHomepageAll();
   } else if (index === "firmware") {
     loadFirmwareRows();
     loadUpgradeJobs();
@@ -1333,10 +1549,9 @@ function onDispatchFilteredChange(ids: string[]) { dispatchFilteredIds.value = i
 function setDispatchPickerSelection(ids: string[]) { dispatchPickerSelection.value = [...ids]; }
 function selectAllFiltered() { pickerRef.value?.selectAllFiltered(); }
 function clearSelection() { deviceStore.clearSelection(); }
-function openPoolPicker() { poolPickerDialogOpen.value = true; }
 function clearPoolPickerSelection() { poolPickerSelection.value = []; }
 function clearDispatchPickerSelection() { dispatchPickerSelection.value = []; }
-function openDispatchPicker(key: "todo" | "schedule" | "templates" | "tf" | "remote") {
+function openDispatchPicker(key: "todo" | "schedule" | "templates" | "tf" | "remote" | "homepage") {
   dispatchTargetKey.value = key;
   dispatchPickerSelection.value = [...(batchTargetDeviceIds[key] || [])];
   dispatchPickerDialogOpen.value = true;
@@ -1357,6 +1572,8 @@ async function doLogin() {
       await loadAdminUsers();
     }
     await loadTemplateRows();
+    await loadHomepageAll();
+    scheduleHomepageEditPreview();
     await loadFirmwareRows();
     await loadUpgradeJobs();
     await loadTfRows();
@@ -1372,6 +1589,10 @@ async function doLogin() {
 
 function logout() { auth.logout(); deviceStore.clearSelection(); }
 
+function openPageStudio() {
+  window.open("/vue-app/#/pagestudio", "_blank");
+}
+
 async function refreshDevices() {
   if (!auth.token) return;
   await deviceStore.fetchDevices(auth.token, deviceFilters);
@@ -1386,6 +1607,9 @@ async function refreshDevices() {
   }
   if (!templateDeviceId.value && deviceStore.devices.length) {
     templateDeviceId.value = deviceStore.devices[0].id;
+  }
+  if (!homepageDeviceId.value && deviceStore.devices.length) {
+    homepageDeviceId.value = deviceStore.devices[0].id;
   }
   if (!singleForm.deviceId && deviceStore.devices.length) singleForm.deviceId = deviceStore.devices[0].id;
   const valid = new Set(deviceStore.devices.map((item) => item.id));
@@ -1406,6 +1630,8 @@ async function refreshOverview() {
   overview.deviceTotal = devices.length;
   overview.deviceBound = devices.filter((d) => d.bindState === "bound").length;
   overview.deviceUnbound = devices.length - overview.deviceBound;
+  overview.deviceOnline = devices.filter((d) => d.online).length;
+  overview.deviceOffline = devices.length - overview.deviceOnline;
   overview.todoCount = todos.length;
   overview.scheduleCount = schedules.length;
   overview.firmwareCount = firmwares.length;
@@ -1455,6 +1681,11 @@ async function saveDeviceQuickEdit(row: any) {
   await refreshDevices();
 }
 
+function ownerOptionLabel(user: AdminUserRow) {
+  const nickname = String(user.nickname || "").trim();
+  return nickname ? `${user.username}（${nickname}）` : `${user.username}（${user.id}）`;
+}
+
 async function deleteCurrentDevice() {
   const row = selectedDevice();
   if (!row) return ElMessage.error("请先选择设备");
@@ -1487,7 +1718,12 @@ async function batchDeleteAllFiltered() {
     token: auth.token,
     body: JSON.stringify({
       deleteAll: true,
-      filters: { status: deviceFilters.status, bound: deviceFilters.bound, keyword: deviceFilters.keyword },
+      filters: {
+        status: deviceFilters.status,
+        bound: deviceFilters.bound,
+        online: deviceFilters.online,
+        keyword: deviceFilters.keyword,
+      },
     }),
   });
   ElMessage.success(`筛选全删完成：成功 ${data.successCount}，失败 ${data.failedCount}`);
@@ -1653,10 +1889,289 @@ async function saveTodoRows() {
   await loadTodoRows();
 }
 
-function resolveBatchTargetDevices(key: "todo" | "schedule" | "templates" | "tf" | "remote") {
+function resolveBatchTargetDevices(key: "todo" | "schedule" | "templates" | "tf" | "remote" | "homepage") {
   const ids = [...(batchTargetDeviceIds[key] || [])];
   if (ids.length) return ids;
   return [...deviceStore.selectedIds];
+}
+
+function syncHomepageConfigJsonFromModel() {
+  homepageConfigJson.value = JSON.stringify(homepageConfigModel, null, 2);
+}
+
+function applyHomepageConfigModel(data: Record<string, any>) {
+  Object.keys(homepageConfigModel).forEach((k) => delete homepageConfigModel[k]);
+  Object.assign(homepageConfigModel, data || {});
+  if (!homepageConfigModel.template) homepageConfigModel.template = { template_id: "tpl_home_default" };
+  if (!homepageConfigModel.time_overlay) {
+    homepageConfigModel.time_overlay = {
+      enabled: true,
+      x: 1820,
+      y: 80,
+      width: 680,
+      height: 180,
+      format: "HH:mm",
+      font_size: 88,
+      refresh_interval_sec: 60,
+    };
+  }
+  syncHomepageConfigJsonFromModel();
+}
+
+function parseHomepageConfigJson() {
+  try {
+    return JSON.parse(homepageConfigJson.value || "{}");
+  } catch (_) {
+    throw new Error("主页配置 JSON 格式错误");
+  }
+}
+
+function buildHomepageConfigPatch() {
+  const patch = parseHomepageConfigJson();
+  patch.template = patch.template || {};
+  patch.template.template_id = String(
+    homepageConfigModel?.template?.template_id || patch.template.template_id || "tpl_home_default"
+  );
+
+  patch.time_overlay = patch.time_overlay || {};
+  const srcOverlay = homepageConfigModel?.time_overlay || {};
+  Object.keys(srcOverlay).forEach((k) => {
+    patch.time_overlay[k] = srcOverlay[k];
+  });
+  return patch;
+}
+
+async function fetchHomepagePreview(url: string) {
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${auth.token}`,
+    },
+  });
+  if (!response.ok) return "";
+  const blob = await response.blob();
+  return URL.createObjectURL(blob);
+}
+
+function clearPreviewRef(target: typeof homepagePreviewUrl | typeof homepageEditPreviewUrl) {
+  if (target.value && target.value.startsWith("blob:")) {
+    URL.revokeObjectURL(target.value);
+  }
+  target.value = "";
+}
+
+function buildHomepageTemplatePatchForRender() {
+  const html = String(homepageTemplateDraft.html || "").trim();
+  if (!html) return undefined;
+  return {
+    id: homepageTemplateDraft.id || homepageConfigModel?.template?.template_id || "tpl_home_default",
+    name: String(homepageTemplateDraft.name || "").trim() || "Homepage Template",
+    type: homepageTemplateDraft.builtin ? "default_html" : "custom_html",
+    html,
+  };
+}
+
+async function applyHomepagePreviewImage(image: Record<string, any>, target: typeof homepagePreviewUrl | typeof homepageEditPreviewUrl) {
+  clearPreviewRef(target);
+  if (!image || typeof image !== "object") return;
+
+  const inlineDataUrl = String(image.preview_data_url || "").trim();
+  if (inlineDataUrl.startsWith("data:image/")) {
+    target.value = inlineDataUrl;
+    return;
+  }
+
+  const url = String(image.admin_preview_url || image.preview_url || "").trim();
+  if (!url) return;
+  const objectUrl = await fetchHomepagePreview(url);
+  if (objectUrl) {
+    target.value = objectUrl;
+  }
+}
+
+async function renderHomepageEditPreview() {
+  if (!auth.token || !homepageDeviceId.value || homepagePreviewMode.value !== "edit") return;
+  homepageEditPreviewLoading.value = true;
+  try {
+    const patch = buildHomepageConfigPatch();
+    const data = await apiRequest<any>("/api/homepages/render", {
+      method: "POST",
+      token: auth.token,
+      body: JSON.stringify({
+        deviceId: homepageDeviceId.value,
+        config: patch,
+        template: buildHomepageTemplatePatchForRender(),
+      }),
+    });
+    Object.keys(homepageRenderMeta).forEach((k) => delete homepageRenderMeta[k]);
+    Object.assign(homepageRenderMeta, data.image || {});
+    await applyHomepagePreviewImage(data.image || {}, homepageEditPreviewUrl);
+    await applyHomepagePreviewImage(data.image || {}, homepagePreviewUrl);
+  } catch (_) {
+    clearPreviewRef(homepageEditPreviewUrl);
+  } finally {
+    homepageEditPreviewLoading.value = false;
+  }
+}
+
+function scheduleHomepageEditPreview() {
+  if (homepageEditPreviewTimer) {
+    clearTimeout(homepageEditPreviewTimer);
+    homepageEditPreviewTimer = null;
+  }
+  if (homepagePreviewMode.value !== "edit") return;
+  homepageEditPreviewTimer = setTimeout(() => {
+    void renderHomepageEditPreview();
+  }, 450);
+}
+
+async function loadHomepageTemplates() {
+  if (!auth.token) return;
+  homepageTemplates.value = await apiRequest<HomepageTemplateRow[]>("/api/homepages/templates", { token: auth.token });
+  if (!homepageTemplateDraft.id && homepageTemplates.value.length) {
+    const first = homepageTemplates.value[0];
+    homepageTemplateDraft.id = first.id;
+    homepageTemplateDraft.name = first.name;
+    homepageTemplateDraft.type = first.type;
+    homepageTemplateDraft.html = first.html;
+    homepageTemplateDraft.builtin = Boolean(first.builtin);
+  }
+}
+
+function onSelectHomepageTemplate(id: string) {
+  const row = homepageTemplates.value.find((item) => item.id === id);
+  if (!row) return;
+  homepageTemplateDraft.id = row.id;
+  homepageTemplateDraft.name = row.name;
+  homepageTemplateDraft.type = row.type;
+  homepageTemplateDraft.html = row.html;
+  homepageTemplateDraft.builtin = Boolean(row.builtin);
+}
+
+async function loadHomepageConfig() {
+  if (!auth.token || !homepageDeviceId.value) return;
+  const data = await apiRequest<any>(`/api/homepages/config?deviceId=${encodeURIComponent(homepageDeviceId.value)}`, { token: auth.token });
+  applyHomepageConfigModel(data);
+  Object.keys(homepageRenderMeta).forEach((k) => delete homepageRenderMeta[k]);
+  Object.assign(homepageRenderMeta, data.image || {});
+  await applyHomepagePreviewImage(data.image || {}, homepagePreviewUrl);
+  scheduleHomepageEditPreview();
+}
+
+async function loadHomepageAll() {
+  await Promise.all([loadHomepageTemplates(), loadHomepageConfig()]);
+}
+
+async function saveHomepageConfig() {
+  if (!homepageDeviceId.value) return ElMessage.error("请先选择设备");
+  try {
+    const patch = buildHomepageConfigPatch();
+    await apiRequest("/api/homepages/config", {
+      method: "POST",
+      token: auth.token,
+      body: JSON.stringify({
+        deviceId: homepageDeviceId.value,
+        config: patch,
+      }),
+    });
+    ElMessage.success("主页配置已保存");
+    await loadHomepageConfig();
+  } catch (error) {
+    ElMessage.error((error as Error).message || "保存主页配置失败");
+  }
+}
+
+async function renderHomepage() {
+  if (!homepageDeviceId.value) return ElMessage.error("请先选择设备");
+  try {
+    const patch = buildHomepageConfigPatch();
+    const data = await apiRequest<any>("/api/homepages/render", {
+      method: "POST",
+      token: auth.token,
+      body: JSON.stringify({
+        deviceId: homepageDeviceId.value,
+        config: patch,
+        template: buildHomepageTemplatePatchForRender(),
+      }),
+    });
+    Object.keys(homepageRenderMeta).forEach((k) => delete homepageRenderMeta[k]);
+    Object.assign(homepageRenderMeta, data.image || {});
+    await applyHomepagePreviewImage(data.image || {}, homepagePreviewUrl);
+    await applyHomepagePreviewImage(data.image || {}, homepageEditPreviewUrl);
+    ElMessage.success("主页渲染完成");
+  } catch (error) {
+    ElMessage.error((error as Error).message || "主页渲染失败");
+  }
+}
+
+async function pushHomepage() {
+  try {
+    const patch = buildHomepageConfigPatch();
+    const deviceIds = resolveBatchTargetDevices("homepage");
+    const clusterIds = [...homepageClusterIds.value];
+    if (!deviceIds.length && !clusterIds.length && !homepageDeviceId.value) {
+      return ElMessage.error("请先选择设备或设备池");
+    }
+    const body: Record<string, any> = { config: patch, template: buildHomepageTemplatePatchForRender() };
+    if (deviceIds.length) body.deviceIds = deviceIds;
+    if (clusterIds.length) body.clusterIds = clusterIds;
+    if (!deviceIds.length && !clusterIds.length && homepageDeviceId.value) body.deviceId = homepageDeviceId.value;
+
+    const result = await apiRequest<any>("/api/homepages/push", {
+      method: "POST",
+      token: auth.token,
+      body: JSON.stringify(body),
+    });
+    ElMessage.success(`主页推送：成功 ${result.successCount || 0}，失败 ${result.failedCount || 0}`);
+    await loadHomepageConfig();
+  } catch (error) {
+    ElMessage.error((error as Error).message || "主页推送失败");
+  }
+}
+
+async function saveHomepageTemplate() {
+  if (!homepageTemplateDraft.name.trim() || !homepageTemplateDraft.html.trim()) {
+    return ElMessage.error("模板名称和 HTML 不能为空");
+  }
+  try {
+    const row = await apiRequest<any>("/api/homepages/templates", {
+      method: "POST",
+      token: auth.token,
+      body: JSON.stringify({
+        id: homepageTemplateDraft.id || undefined,
+        name: homepageTemplateDraft.name.trim(),
+        type: homepageTemplateDraft.builtin ? "default_html" : "custom_html",
+        html: homepageTemplateDraft.html,
+      }),
+    });
+    homepageTemplateDraft.id = row.id;
+    homepageTemplateDraft.builtin = Boolean(row.builtin);
+    ElMessage.success("主页模板已保存");
+    await loadHomepageTemplates();
+    scheduleHomepageEditPreview();
+  } catch (error) {
+    ElMessage.error((error as Error).message || "保存主页模板失败");
+  }
+}
+
+async function deleteHomepageTemplate() {
+  if (!homepageTemplateDraft.id) return;
+  try {
+    await apiRequest(`/api/homepages/templates/${homepageTemplateDraft.id}/delete`, {
+      method: "POST",
+      token: auth.token,
+      body: JSON.stringify({}),
+    });
+    ElMessage.success("主页模板已删除");
+    homepageTemplateDraft.id = "";
+    homepageTemplateDraft.name = "";
+    homepageTemplateDraft.type = "custom_html";
+    homepageTemplateDraft.html = "";
+    homepageTemplateDraft.builtin = false;
+    await loadHomepageTemplates();
+    scheduleHomepageEditPreview();
+  } catch (error) {
+    ElMessage.error((error as Error).message || "删除主页模板失败");
+  }
 }
 
 async function dispatchTodoBatch() {
@@ -1793,41 +2308,55 @@ async function loadClusters() {
   clusters.value = await apiRequest<ClusterRow[]>("/api/clusters", { token: auth.token });
 }
 
-function pickCluster(row: ClusterRow) {
+function openClusterEditor(row: ClusterRow) {
   clusterForm.id = row.id;
   clusterForm.name = row.name || "";
   clusterForm.description = row.description || "";
+  poolPickerSelection.value = Array.isArray(row.deviceIds) ? [...row.deviceIds] : [];
+  clusterEditDialogOpen.value = true;
 }
 
-function resetClusterForm() {
-  clusterForm.id = "";
-  clusterForm.name = "";
-  clusterForm.description = "";
+function resetClusterCreateForm() {
+  clusterCreateForm.name = "";
+  clusterCreateForm.description = "";
+}
+
+async function createCluster() {
+  if (!clusterCreateForm.name.trim()) return ElMessage.error("请填写设备池名称");
+  const row = await apiRequest<ClusterRow>("/api/clusters", {
+    method: "POST",
+    token: auth.token,
+    body: JSON.stringify({
+      name: clusterCreateForm.name.trim(),
+      description: clusterCreateForm.description.trim(),
+    }),
+  });
+  ElMessage.success("设备池已创建");
+  resetClusterCreateForm();
+  await loadClusters();
+  openClusterEditor(row);
 }
 
 async function saveCluster() {
+  if (!clusterForm.id) return ElMessage.error("请先选择设备池");
   if (!clusterForm.name.trim()) return ElMessage.error("请填写设备池名称");
   const payload = {
     name: clusterForm.name.trim(),
     description: clusterForm.description.trim(),
   };
-  if (clusterForm.id) {
-    await apiRequest(`/api/clusters/${clusterForm.id}`, {
-      method: "POST",
-      token: auth.token,
-      body: JSON.stringify(payload),
-    });
-    ElMessage.success("设备池已更新");
-  } else {
-    const row = await apiRequest<ClusterRow>("/api/clusters", {
-      method: "POST",
-      token: auth.token,
-      body: JSON.stringify(payload),
-    });
-    clusterForm.id = row.id;
-    ElMessage.success("设备池已创建");
-  }
+  await apiRequest(`/api/clusters/${clusterForm.id}`, {
+    method: "POST",
+    token: auth.token,
+    body: JSON.stringify(payload),
+  });
+  await apiRequest(`/api/clusters/${clusterForm.id}/devices`, {
+    method: "POST",
+    token: auth.token,
+    body: JSON.stringify({ mode: "replace", deviceIds: [...poolPickerSelection.value] }),
+  });
+  ElMessage.success(`设备池已更新（${poolPickerSelection.value.length} 台设备）`);
   await loadClusters();
+  clusterEditDialogOpen.value = false;
 }
 
 async function deleteCluster() {
@@ -1838,26 +2367,12 @@ async function deleteCluster() {
     body: JSON.stringify({}),
   });
   ElMessage.success("设备池已删除");
-  resetClusterForm();
+  clusterForm.id = "";
+  clusterForm.name = "";
+  clusterForm.description = "";
+  clearPoolPickerSelection();
+  clusterEditDialogOpen.value = false;
   await loadClusters();
-}
-
-async function batchManageClusterDevices(mode: "append" | "remove" | "replace") {
-  try {
-    if (!clusterForm.id) return ElMessage.error("请先选择设备池");
-    const deviceIds = [...poolPickerSelection.value];
-    if (!deviceIds.length) return ElMessage.error("请先在弹窗中选择设备");
-    const tip = mode === "append" ? "已加入设备池" : mode === "remove" ? "已从设备池移除" : "设备池已更新";
-    await apiRequest(`/api/clusters/${clusterForm.id}/devices`, {
-      method: "POST",
-      token: auth.token,
-      body: JSON.stringify({ mode, deviceIds }),
-    });
-    ElMessage.success(`${tip}（${deviceIds.length} 台）`);
-    await loadClusters();
-  } catch (error) {
-    ElMessage.error((error as Error).message || "设备池操作失败");
-  }
 }
 
 function resolveRemoteTargets() {
@@ -2511,6 +3026,7 @@ function onPreviewUp(e: PointerEvent) {
 
 onMounted(async () => {
   window.addEventListener("resize", handleResize);
+  applyTheme((localStorage.getItem("ink-screen-theme") || "light") === "dark");
   if (auth.token) {
     await refreshDevices();
     await refreshOverview();
@@ -2519,6 +3035,7 @@ onMounted(async () => {
       await loadAdminUsers();
     }
     await loadTemplateRows();
+    await loadHomepageAll();
     await loadFirmwareRows();
     await loadUpgradeJobs();
     await loadTfRows();
@@ -2535,23 +3052,58 @@ onBeforeUnmount(() => {
     URL.revokeObjectURL(imagePreviewUrl.value);
     imagePreviewUrl.value = "";
   }
+  if (homepageEditPreviewTimer) {
+    clearTimeout(homepageEditPreviewTimer);
+    homepageEditPreviewTimer = null;
+  }
+  clearPreviewRef(homepagePreviewUrl);
+  clearPreviewRef(homepageEditPreviewUrl);
 });
+
+watch(
+  () => [
+    auth.token,
+    homepageDeviceId.value,
+    homepagePreviewMode.value,
+    homepageConfigJson.value,
+    homepageTemplateDraft.id,
+    homepageTemplateDraft.name,
+    homepageTemplateDraft.html,
+  ],
+  () => {
+    scheduleHomepageEditPreview();
+  }
+);
 </script>
 
 <style scoped>
 .page { padding: 12px; }
-.panel { max-width: 1680px; margin: 0 auto; }
+.panel { max-width: 1680px; margin: 0 auto; border-radius: 20px; overflow: hidden; }
 .header-row { display:flex; justify-content:space-between; align-items:center; }
 .header-user { display:flex; align-items:center; gap:10px; }
 .header-username { color:#374151; font-size:14px; }
+.theme-toggle { display:flex; align-items:center; gap:8px; padding:6px 10px; border-radius:999px; background:rgba(15, 23, 42, 0.05); }
+.theme-label { font-size:12px; color:#475569; }
 .login-wrap { max-width: 460px; }
-.workbench-shell { min-height: 760px; border: 1px solid #e5e7eb; border-radius: 10px; overflow: hidden; }
-.aside-nav { border-right: 1px solid #e5e7eb; background: #fff; }
+.workbench-shell { min-height: 760px; border: 1px solid #e5e7eb; border-radius: 18px; overflow: hidden; background:rgba(255,255,255,0.82); backdrop-filter: blur(16px); }
+.aside-nav { border-right: 1px solid #e5e7eb; background: linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(248,250,252,0.92) 100%); }
 .content-main { display:grid; gap:12px; padding:12px; }
 .section-wrap { display:grid; gap:10px; }
+.stack-vertical { display:grid; gap:12px; }
 .row-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
 .row-between { display:flex; justify-content:space-between; align-items:center; }
 .pool-vertical :deep(.el-col) { max-width: 100%; flex: 0 0 100%; }
+.overview-hero { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; padding:24px 28px; border-radius:24px; background:linear-gradient(135deg, #0f172a 0%, #1d4ed8 58%, #38bdf8 100%); color:#fff; box-shadow:0 22px 50px rgba(37, 99, 235, 0.18); }
+.overview-eyebrow { font-size:12px; letter-spacing:0.16em; text-transform:uppercase; opacity:0.72; margin-bottom:10px; }
+.overview-hero h3 { margin:0; font-size:28px; }
+.overview-summary { margin-top:8px; color:rgba(255,255,255,0.84); max-width:720px; line-height:1.6; }
+.overview-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px; }
+.overview-card { border-radius:18px; border:none; }
+.overview-card-label { font-size:13px; color:#64748b; }
+.overview-card-value { margin-top:10px; font-size:34px; font-weight:700; color:#0f172a; line-height:1; }
+.overview-card-note { margin-top:10px; font-size:12px; color:#94a3b8; line-height:1.5; }
+.cluster-edit-shell { display:grid; gap:12px; }
+.cluster-edit-meta { border-radius:16px; }
 .nameplate-stage { position:relative; margin: 0 auto; border:1px solid #d9dee8; border-radius: 10px; background:#fff; overflow:hidden; }
 .nameplate-stage.dialog { max-width: 100%; }
 .preview-name, .preview-title { position:absolute; line-height:1.1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; user-select:none; }
@@ -2562,4 +3114,22 @@ onBeforeUnmount(() => {
 .image-preview-stage { position:relative; border:1px solid #d9dee8; border-radius:10px; background:#fff; overflow:hidden; }
 .image-preview-img { width:100%; height:100%; object-fit:cover; display:block; }
 .image-preview-empty { height:100%; display:flex; align-items:center; justify-content:center; color:#64748b; font-size:14px; }
+.homepage-edit-preview-frame { width:100%; height:100%; border:0; background:#fff; display:block; }
+.dark-mode .panel { background:rgba(15, 23, 42, 0.82); border-color:#233047; }
+.dark-mode .header-username { color:#dbe7f4; }
+.dark-mode .theme-toggle { background:rgba(148, 163, 184, 0.12); }
+.dark-mode .theme-label { color:#cbd5e1; }
+.dark-mode .workbench-shell { border-color:#253247; background:rgba(15, 23, 42, 0.78); }
+.dark-mode .aside-nav { border-right-color:#253247; background:linear-gradient(180deg, rgba(15,23,42,0.96) 0%, rgba(15,23,42,0.88) 100%); }
+.dark-mode .overview-hero { background:linear-gradient(135deg, #020617 0%, #0f172a 50%, #1d4ed8 100%); box-shadow:0 22px 54px rgba(2, 6, 23, 0.55); }
+.dark-mode .overview-card-label { color:#94a3b8; }
+.dark-mode .overview-card-value { color:#f8fafc; }
+.dark-mode .overview-card-note { color:#64748b; }
+.dark-mode .nameplate-stage,
+.dark-mode .image-preview-stage { border-color:#334155; background:#0f172a; }
+.dark-mode .preview-title { color:#cbd5e1; }
+
+@media (max-width: 900px) {
+  .overview-hero { flex-direction:column; align-items:flex-start; }
+}
 </style>

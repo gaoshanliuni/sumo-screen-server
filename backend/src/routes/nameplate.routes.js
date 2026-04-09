@@ -133,7 +133,7 @@ function getAckWaitMs(input) {
   const raw = Number(input);
   if (!Number.isFinite(raw)) return 2800;
   if (raw < 0) return 0;
-  if (raw > 10000) return 10000;
+  if (raw > 30000) return 30000;
   return Math.floor(raw);
 }
 
