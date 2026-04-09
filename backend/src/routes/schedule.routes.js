@@ -1,4 +1,4 @@
-const express = require("express");
+﻿const express = require("express");
 const asyncHandler = require("../utils/asyncHandler");
 const HttpError = require("../utils/httpError");
 const createId = require("../utils/id");
@@ -44,7 +44,7 @@ function resolveBatchTargets(db, auth, body = {}) {
   const clusterIds = normalizeIdList(body.clusterIds);
   const merged = new Set(resolveTargetDeviceIds(db, deviceIds, clusterIds));
   if (singleId) merged.add(singleId);
-  if (!merged.size) throw new HttpError(400, "至少提供一个目标设备");
+  if (!merged.size) throw new HttpError(400, "At least one target device is required");
 
   const targetIds = [];
   const denied = [];
@@ -53,7 +53,7 @@ function resolveBatchTargets(db, auth, body = {}) {
       ensureDeviceAccess(db, auth, id);
       targetIds.push(id);
     } catch (error) {
-      denied.push({ deviceId: id, reason: error?.message || "无权限或设备不存在" });
+      denied.push({ deviceId: id, reason: error?.message || "No permission or device not found" });
     }
   });
   return { targetIds, denied, requestedCount: merged.size };
@@ -112,7 +112,7 @@ function buildScheduleTitle(body, device) {
     try {
       return source.replace(new RegExp(pattern, "g"), replaceWith);
     } catch (_) {
-      throw new HttpError(400, "正则表达式不合法");
+      throw new HttpError(400, "姝ｅ垯琛ㄨ揪寮忎笉鍚堟硶");
     }
   }
   if (mode === "template") {
@@ -134,7 +134,7 @@ router.post(
         failedCount: target.denied.length,
         successDeviceIds: [],
         failed: target.denied,
-      }, "没有可下发设备");
+      }, "No dispatchable device");
     }
 
     const now = new Date().toISOString();
@@ -154,7 +154,7 @@ router.post(
       target.targetIds.forEach((deviceId) => {
         const device = draft.devices.find((item) => item.id === deviceId);
         if (!device) {
-          failed.push({ deviceId, reason: "设备不存在" });
+          failed.push({ deviceId, reason: "Device not found" });
           return;
         }
 
@@ -162,11 +162,11 @@ router.post(
         try {
           title = String(buildScheduleTitle(req.body || {}, device) || "").trim();
         } catch (error) {
-          failed.push({ deviceId, reason: error?.message || "标题生成失败" });
+          failed.push({ deviceId, reason: error?.message || "鏍囬鐢熸垚澶辫触" });
           return;
         }
         if (!title) {
-          failed.push({ deviceId, reason: "标题不能为空" });
+          failed.push({ deviceId, reason: "鏍囬涓嶈兘涓虹┖" });
           return;
         }
 
@@ -232,7 +232,7 @@ router.post(
       successDeviceIds: success.map((item) => item.deviceId),
       failed,
       results: success,
-    }, success.length ? "批量下发成功" : "批量下发失败");
+    }, success.length ? "鎵归噺涓嬪彂鎴愬姛" : "鎵归噺涓嬪彂澶辫触");
   })
 );
 
@@ -241,9 +241,9 @@ router.post(
   allowRoles("admin", "user"),
   asyncHandler(async (req, res) => {
     const { deviceId, rows = [], deletedIds = [] } = req.body || {};
-    if (!deviceId) throw new HttpError(400, "deviceId不能为空");
+    if (!deviceId) throw new HttpError(400, "deviceId涓嶈兘涓虹┖");
     if (!Array.isArray(rows) || !Array.isArray(deletedIds)) {
-      throw new HttpError(400, "rows/deletedIds必须是数组");
+      throw new HttpError(400, "rows/deletedIds must be arrays");
     }
 
     const db = await readDB();
@@ -318,7 +318,7 @@ router.post(
       detail: { changed: changedRows.length, deleted: deletedIds.length },
     });
 
-    res.success(fresh, "课程表批量保存成功");
+    res.success(fresh, "Schedule batch saved");
   })
 );
 
@@ -328,7 +328,7 @@ router.post(
     const { deviceId } = req.body || {};
     const normalized = normalizeScheduleInput(req.body || {});
     if (!deviceId || !normalized) {
-      throw new HttpError(400, "deviceId/title为必填项");
+      throw new HttpError(400, "deviceId/title涓哄繀濉」");
     }
 
     const db = await readDB();
@@ -376,7 +376,7 @@ router.post(
       detail: { deviceId },
     });
 
-    res.success(row, "课程创建成功");
+    res.success(row, "璇剧▼鍒涘缓鎴愬姛");
   })
 );
 
@@ -405,23 +405,23 @@ router.post(
     const payload = req.body || {};
     const db = await readDB();
     const current = db.schedules.find((item) => item.id === scheduleId);
-    if (!current) throw new HttpError(404, "课程不存在");
+    if (!current) throw new HttpError(404, "Schedule not found");
     ensureDeviceAccess(db, req.auth, current.deviceId);
 
     let updated = null;
     await updateDB((draft) => {
       const target = draft.schedules.find((item) => item.id === scheduleId);
-      if (!target) throw new HttpError(404, "课程不存在");
+      if (!target) throw new HttpError(404, "Schedule not found");
       if (payload.mode !== undefined) target.mode = String(payload.mode).toLowerCase() === "meeting" ? "meeting" : "course";
       if (payload.weekday !== undefined) target.weekday = normalizeWeekday(payload.weekday);
       if (payload.orderIndex !== undefined) {
         const orderRaw = Number(payload.orderIndex);
-        if (!Number.isFinite(orderRaw) || orderRaw <= 0) throw new HttpError(400, "orderIndex必须大于0");
+        if (!Number.isFinite(orderRaw) || orderRaw <= 0) throw new HttpError(400, "orderIndex蹇呴』澶т簬0");
         target.orderIndex = Math.floor(orderRaw);
       }
       if (payload.title !== undefined || payload.courseName !== undefined) {
         target.title = String(payload.title || payload.courseName || "").trim();
-        if (!target.title) throw new HttpError(400, "title不能为空");
+        if (!target.title) throw new HttpError(400, "title涓嶈兘涓虹┖");
         target.courseName = target.title;
       }
       if (payload.content !== undefined || payload.note !== undefined) {
@@ -448,7 +448,7 @@ router.post(
       targetId: scheduleId,
     });
 
-    res.success(updated, "课程已更新");
+    res.success(updated, "Schedule updated");
   })
 );
 
@@ -458,7 +458,7 @@ router.post(
     const { scheduleId } = req.params;
     const db = await readDB();
     const current = db.schedules.find((item) => item.id === scheduleId);
-    if (!current) throw new HttpError(404, "课程不存在");
+    if (!current) throw new HttpError(404, "Schedule not found");
     ensureDeviceAccess(db, req.auth, current.deviceId);
 
     await updateDB((draft) => {
@@ -479,7 +479,7 @@ router.post(
       targetId: scheduleId,
     });
 
-    res.success({ id: scheduleId }, "课程已删除");
+    res.success({ id: scheduleId }, "Schedule deleted");
   })
 );
 
@@ -487,7 +487,7 @@ router.post(
   "/batch-delete",
   asyncHandler(async (req, res) => {
     const { ids = [] } = req.body || {};
-    if (!Array.isArray(ids) || ids.length === 0) throw new HttpError(400, "ids不能为空");
+    if (!Array.isArray(ids) || ids.length === 0) throw new HttpError(400, "ids涓嶈兘涓虹┖");
 
     const db = await readDB();
     const visible = getVisibleDeviceIds(db, req.auth);
@@ -520,7 +520,7 @@ router.post(
       targetId: `count:${removableIds.length}`,
     });
 
-    res.success({ deletedIds: removableIds }, "批量删除完成");
+    res.success({ deletedIds: removableIds }, "鎵归噺鍒犻櫎瀹屾垚");
   })
 );
 
@@ -529,7 +529,7 @@ router.get(
   allowRoles("admin", "user"),
   asyncHandler(async (req, res) => {
     const deviceId = String(req.query?.deviceId || "").trim();
-    if (!deviceId) throw new HttpError(400, "deviceId涓嶈兘涓虹┖");
+    if (!deviceId) throw new HttpError(400, "deviceId is required");
     const status = await getXiqueStatus({ auth: req.auth, deviceId });
     res.success(status, "ok");
   })
@@ -540,9 +540,9 @@ router.post(
   allowRoles("admin", "user"),
   asyncHandler(async (req, res) => {
     const deviceId = String(req.body?.deviceId || "").trim();
-    if (!deviceId) throw new HttpError(400, "deviceId涓嶈兘涓虹┖");
+    if (!deviceId) throw new HttpError(400, "deviceId is required");
     const result = await saveXiqueSyncConfig({ auth: req.auth, deviceId, body: req.body || {} });
-    res.success(result, "喜鹊课程表配置已保存");
+    res.success(result, "鍠滈箠璇剧▼琛ㄩ厤缃凡淇濆瓨");
   })
 );
 
@@ -551,9 +551,9 @@ router.post(
   allowRoles("admin", "user"),
   asyncHandler(async (req, res) => {
     const deviceId = String(req.body?.deviceId || "").trim();
-    if (!deviceId) throw new HttpError(400, "deviceId涓嶈兘涓虹┖");
+    if (!deviceId) throw new HttpError(400, "deviceId is required");
     const result = await prepareXiqueLogin({ auth: req.auth, deviceId, body: req.body || {} });
-    res.success(result, result.captchaRequired ? "需要验证码" : "登录已就绪");
+    res.success(result, result.captchaRequired ? "Captcha required" : "Login ready");
   })
 );
 
@@ -562,9 +562,9 @@ router.post(
   allowRoles("admin", "user"),
   asyncHandler(async (req, res) => {
     const deviceId = String(req.body?.deviceId || "").trim();
-    if (!deviceId) throw new HttpError(400, "deviceId涓嶈兘涓虹┖");
+    if (!deviceId) throw new HttpError(400, "deviceId is required");
     const result = await submitXiqueImport({ auth: req.auth, deviceId, body: req.body || {} });
-    res.success(result, result.status === "imported" ? "喜鹊课程表导入成功" : "需要验证码");
+    res.success(result, result.status === "imported" ? "Xique schedule imported" : "Captcha required");
   })
 );
 
@@ -573,9 +573,9 @@ router.post(
   allowRoles("admin", "user"),
   asyncHandler(async (req, res) => {
     const deviceId = String(req.body?.deviceId || "").trim();
-    if (!deviceId) throw new HttpError(400, "deviceId涓嶈兘涓虹┖");
+    if (!deviceId) throw new HttpError(400, "deviceId is required");
     const result = await reverifyXiqueSession({ auth: req.auth, deviceId, body: req.body || {} });
-    res.success(result, result.captchaRequired ? "需要验证码" : "重新验证已就绪");
+    res.success(result, result.captchaRequired ? "Captcha required" : "Reverify ready");
   })
 );
 

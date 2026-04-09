@@ -1,4 +1,4 @@
-const bcrypt = require("bcryptjs");
+﻿const bcrypt = require("bcryptjs");
 const mysql = require("mysql2/promise");
 const config = require("../config");
 const createId = require("../utils/id");
@@ -79,6 +79,7 @@ function normalizeScheduleSyncConfigRow(row = {}) {
     sampleHtml: normalizeStringField(row.sampleHtml || ""),
     sampleJson: normalizeObjectField(row.sampleJson),
     requireCaptcha: normalizeBooleanField(row.requireCaptcha, false),
+    needRelogin: normalizeBooleanField(row.needRelogin, false),
     needCaptchaReverify: normalizeBooleanField(row.needCaptchaReverify, false),
     paused: normalizeBooleanField(row.paused, false),
     pauseReason: normalizeStringField(row.pauseReason || ""),
@@ -86,6 +87,9 @@ function normalizeScheduleSyncConfigRow(row = {}) {
     failureCount: Number(row.failureCount || 0),
     lastAttemptAt: normalizeStringField(row.lastAttemptAt || ""),
     lastSuccessAt: normalizeStringField(row.lastSuccessAt || ""),
+    lastSyncAt: normalizeStringField(row.lastSyncAt || row.lastSuccessAt || ""),
+    lastSyncStatus: normalizeStringField(row.lastSyncStatus || ""),
+    lastSyncErrorCode: normalizeStringField(row.lastSyncErrorCode || ""),
     lastError: normalizeStringField(row.lastError || ""),
     nextRunAt: normalizeStringField(row.nextRunAt || ""),
     loginUsername: normalizeStringField(row.loginUsername || ""),
@@ -114,6 +118,9 @@ function normalizeXiqueSessionVaultRow(row = {}) {
     needCaptchaReverify: normalizeBooleanField(row.needCaptchaReverify, false),
     lastVerifiedAt: normalizeStringField(row.lastVerifiedAt || ""),
     lastLoginAt: normalizeStringField(row.lastLoginAt || ""),
+    lastSyncAt: normalizeStringField(row.lastSyncAt || ""),
+    lastSyncStatus: normalizeStringField(row.lastSyncStatus || ""),
+    lastSyncErrorCode: normalizeStringField(row.lastSyncErrorCode || ""),
     lastError: normalizeStringField(row.lastError || ""),
     createdAt: normalizeStringField(row.createdAt || now),
     updatedAt: normalizeStringField(row.updatedAt || now),
@@ -239,7 +246,7 @@ async function getDefaultData() {
     apiTemplates: [
       {
         id: "tpl_weather",
-        name: "和风天气",
+        name: "鍜岄澶╂皵",
         slug: "weather",
         method: "GET",
         url: "https://devapi.qweather.com/v7/weather/now",
@@ -249,8 +256,8 @@ async function getDefaultData() {
         defaultParams: { location: "101010100" },
         userInputFields: [
           { name: "cityId", placeholder: "天气城市ID（如 101010100）" },
-          { name: "lang", placeholder: "语言（可空，zh/en）" },
-          { name: "unit", placeholder: "单位（可空，m/i）" },
+          { name: "lang", placeholder: "语言（可选，zh/en）" },
+          { name: "unit", placeholder: "单位（可选，m/i）" },
         ],
         enabled: true,
         builtin: true,
@@ -259,7 +266,7 @@ async function getDefaultData() {
       },
       {
         id: "tpl_zaoan",
-        name: "早安心语",
+        name: "鏃╁畨蹇冭",
         slug: "zaoan",
         method: "GET",
         url: "https://apis.whyta.cn/tx-zaoan",
@@ -274,7 +281,7 @@ async function getDefaultData() {
       },
       {
         id: "tpl_wanan",
-        name: "晚安心语",
+        name: "鏅氬畨蹇冭",
         slug: "wanan",
         method: "GET",
         url: "https://apis.whyta.cn/tx-wanan",
@@ -289,7 +296,7 @@ async function getDefaultData() {
       },
       {
         id: "tpl_bulletin",
-        name: "每日简报",
+        name: "每日日报",
         slug: "bulletin",
         method: "GET",
         url: "https://apis.whyta.cn/tx-bulletin",
@@ -304,7 +311,7 @@ async function getDefaultData() {
       },
       {
         id: "tpl_addressparse",
-        name: "物流地址解析",
+        name: "鐗╂祦鍦板潃瑙ｆ瀽",
         slug: "addressparse",
         method: "GET",
         url: "https://apis.whyta.cn/tx-addressparse",
@@ -319,7 +326,7 @@ async function getDefaultData() {
       },
       {
         id: "tpl_amap_geocode",
-        name: "高德地理编码",
+        name: "楂樺痉鍦扮悊缂栫爜",
         slug: "amap_geocode",
         method: "GET",
         url: "https://restapi.amap.com/v3/geocode/geo",
@@ -332,7 +339,7 @@ async function getDefaultData() {
         createdAt: now,
         updatedAt: now,
       },
-      {
+            {
         id: "tpl_xique_schedule",
         name: "喜鹊课程表",
         slug: "xique_schedule",
@@ -342,7 +349,7 @@ async function getDefaultData() {
         keyIn: ["query"],
         deviceKeyRequired: false,
         defaultParams: {},
-        enabled: false,
+        enabled: true,
         builtin: true,
         createdAt: now,
         updatedAt: now,
@@ -514,7 +521,7 @@ function normalizeStoreShape(state) {
     const now = new Date().toISOString();
     state.apiTemplates.push({
       id: createId("tpl"),
-      name: "高德地理编码",
+      name: "楂樺痉鍦扮悊缂栫爜",
       slug: "amap_geocode",
       method: "GET",
       url: "https://restapi.amap.com/v3/geocode/geo",
@@ -529,6 +536,24 @@ function normalizeStoreShape(state) {
     });
   }
 
+  if (!state.apiTemplates.some((tpl) => tpl.slug === "xique_schedule")) {
+    const now = new Date().toISOString();
+    state.apiTemplates.push({
+      id: createId("tpl"),
+      name: "喜鹊课程表",
+      slug: "xique_schedule",
+      method: "POST",
+      url: "/api/schedules/xique/import",
+      keyField: "",
+      keyIn: ["query"],
+      deviceKeyRequired: false,
+      defaultParams: {},
+      enabled: true,
+      builtin: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
   state.bindingPins.forEach((item) => {
     item.pin = String(item.pin || "");
     item.deviceId = String(item.deviceId || "");
@@ -911,3 +936,5 @@ module.exports = {
   readDBCached,
   updateDB,
 };
+
+

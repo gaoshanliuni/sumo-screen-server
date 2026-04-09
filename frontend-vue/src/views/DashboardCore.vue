@@ -295,6 +295,7 @@
               <el-button @click="loadScheduleRows">刷新</el-button>
               <el-button type="primary" @click="saveScheduleRows">保存</el-button>
             </div>
+            <ScheduleXiquePanel :device-id="scheduleDeviceId" :token="auth.token" :device-label="deviceOptionLabel(deviceStore.devices.find((item) => item.id === scheduleDeviceId) || { id: '', mac: '' })" @updated="loadScheduleRows" />
             <el-card>
               <template #header>批量下发日程（课程/会议）</template>
               <el-form :model="scheduleBatchForm" inline label-width="100px" size="small">
@@ -1209,6 +1210,7 @@ import { useAuthStore, type AppRole } from "../stores/auth";
 import { useDeviceStore } from "../stores/devices";
 import { apiRequest } from "../services/api";
 import DeviceLassoPicker from "../components/DeviceLassoPicker.vue";
+import ScheduleXiquePanel from "../components/ScheduleXiquePanel.vue";
 import TemplateVariablePanel from "../components/TemplateVariablePanel.vue";
 import TemplateAdvancedEditorDialog from "../components/TemplateAdvancedEditorDialog.vue";
 import SegmentTimePreview from "../components/SegmentTimePreview.vue";

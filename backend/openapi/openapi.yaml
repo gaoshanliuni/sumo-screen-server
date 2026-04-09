@@ -139,6 +139,7 @@ components:
         sampleUrl: { type: string }
         sampleHtml: { type: string }
         requireCaptcha: { type: boolean }
+        needRelogin: { type: boolean }
         needCaptchaReverify: { type: boolean }
         paused: { type: boolean }
         pauseReason: { type: string }
@@ -146,6 +147,9 @@ components:
         failureCount: { type: integer }
         lastAttemptAt: { type: string }
         lastSuccessAt: { type: string }
+        lastSyncAt: { type: string }
+        lastSyncStatus: { type: string }
+        lastSyncErrorCode: { type: string }
         lastError: { type: string }
         nextRunAt: { type: string }
         loginUsername: { type: string }
@@ -167,6 +171,9 @@ components:
         needCaptchaReverify: { type: boolean }
         lastVerifiedAt: { type: string }
         lastLoginAt: { type: string }
+        lastSyncAt: { type: string }
+        lastSyncStatus: { type: string }
+        lastSyncErrorCode: { type: string }
         lastError: { type: string }
         hasCredential: { type: boolean }
         hasSession: { type: boolean }
