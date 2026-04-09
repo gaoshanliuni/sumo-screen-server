@@ -13,8 +13,8 @@ const router = createRouter({
     { path: "/admin", component: AdminApp },
     { path: "/simulator", component: SimulatorApp },
     { path: "/docs", component: DocsApp },
-    { path: "/homepage", redirect: "/pagestudio" },
-    { path: "/pagestudio", component: PageStudio },
+    { path: "/homepage", redirect: "/pagestudio" }, // legacy/internal alias, kept for compatibility
+    { path: "/pagestudio", component: PageStudio }, // legacy/internal debug entry
   ],
 });
 

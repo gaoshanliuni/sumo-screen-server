@@ -3,14 +3,18 @@
     <el-card class="panel">
       <template #header>
         <div class="header-row">
-          <strong>{{ title }}</strong>
+          <div class="header-left">
+            <el-button class="menu-toggle" plain @click="toggleSidebar">
+              {{ isMobile ? (mobileNavOpen ? "关闭菜单" : "菜单") : sidebarCollapsed ? "展开侧栏" : "收起侧栏" }}
+            </el-button>
+            <strong>{{ title }}</strong>
+          </div>
           <div v-if="auth.token" class="header-user">
             <div class="theme-toggle">
               <span class="theme-label">{{ darkMode ? "夜间" : "日间" }}</span>
               <el-switch v-model="darkMode" inline-prompt active-text="夜" inactive-text="昼" @change="toggleDarkMode" />
             </div>
             <span class="header-username">当前用户：{{ auth.username }}</span>
-            <el-button plain @click="openPageStudio">PageStudio</el-button>
             <el-button type="danger" plain @click="logout">退出登录</el-button>
           </div>
         </div>
@@ -25,23 +29,31 @@
       </div>
 
       <el-container v-else class="workbench-shell">
-        <el-aside width="220px" class="aside-nav">
-          <el-menu :default-active="activePanel" @select="onSelectPanel">
-            <el-menu-item index="overview">主页概览</el-menu-item>
-            <el-menu-item index="account">账号管理</el-menu-item>
-            <el-menu-item index="devicePin">设备与PIN</el-menu-item>
-            <el-menu-item index="devices">设备管理</el-menu-item>
-            <el-menu-item v-if="isAdmin" index="pools">设备池管理</el-menu-item>
-            <el-menu-item index="todo">TODO</el-menu-item>
-            <el-menu-item index="schedule">日程安排</el-menu-item>
-            <el-menu-item index="tf">文件管理</el-menu-item>
-            <el-menu-item index="remote">远程控制</el-menu-item>
-            <el-menu-item index="homepage">主页</el-menu-item>
-            <el-menu-item index="layout">桌牌设置</el-menu-item>
-            <el-menu-item index="history">桌牌历史</el-menu-item>
-            <el-menu-item index="templates">API模板</el-menu-item>
-            <el-menu-item index="firmware">固件管理</el-menu-item>
-            <el-menu-item v-if="isAdmin" index="logs">日志中心</el-menu-item>
+        <el-drawer v-model="mobileNavOpen" class="mobile-nav-drawer" direction="ltr" :show-close="true" :with-header="false" size="82%">
+          <div class="drawer-shell">
+            <div class="drawer-title">
+              <strong>功能菜单</strong>
+              <span class="drawer-hint">点击切换页面</span>
+            </div>
+            <el-menu :default-active="activePanel" class="drawer-menu" @select="onSelectPanel">
+              <el-menu-item v-for="item in sidebarMenuItems" :key="item.index" :index="item.index">
+                {{ item.label }}
+              </el-menu-item>
+            </el-menu>
+          </div>
+        </el-drawer>
+
+        <el-aside v-if="!isMobile" :width="sidebarCollapsed ? '72px' : '220px'" class="aside-nav" :class="{ collapsed: sidebarCollapsed }">
+          <el-menu
+            :default-active="activePanel"
+            :collapse="sidebarCollapsed"
+            :collapse-transition="false"
+            class="side-menu"
+            @select="onSelectPanel"
+          >
+            <el-menu-item v-for="item in sidebarMenuItems" :key="item.index" :index="item.index">
+              {{ item.label }}
+            </el-menu-item>
           </el-menu>
         </el-aside>
 
@@ -346,6 +358,7 @@
                     <el-button v-if="isAdmin" @click="resetTemplateDraft">新建模板</el-button>
                     <el-button v-if="isAdmin" type="primary" @click="saveTemplateDraft">保存模板</el-button>
                     <el-button v-if="isAdmin && templateDraft.id" type="danger" @click="deleteTemplateDraft">删除模板</el-button>
+                    <el-button v-if="isAdmin" @click="openTemplateAdvancedEditor">配置多步处理</el-button>
                   </div>
                   <el-table :data="templateRows" height="260" size="small" @row-click="pickTemplateRow">
                     <el-table-column prop="name" label="名称" min-width="120" />
@@ -377,6 +390,12 @@
                           <el-button link type="danger" @click="removeTemplateInputField(idx)">删除</el-button>
                         </div>
                         <el-button v-if="isAdmin" link type="primary" @click="addTemplateInputField">新增字段</el-button>
+                      </div>
+                    </el-form-item>
+                    <el-form-item label="多步处理">
+                      <div class="advanced-summary">
+                        <div v-for="line in templateAdvancedSummaryLines" :key="line" class="advanced-summary-line">{{ line }}</div>
+                        <div v-if="!templateAdvancedSummaryLines.length" class="advanced-summary-empty">未配置多步处理</div>
                       </div>
                     </el-form-item>
                     <el-form-item label="需要设备Key"><el-switch v-model="templateDraft.deviceKeyRequired" /></el-form-item>
@@ -770,6 +789,16 @@
                   <div class="image-preview-stage" :style="imagePreviewStageStyle">
                     <img v-if="homepageEditPreviewUrl" :src="homepageEditPreviewUrl" class="image-preview-img" alt="homepage edit preview" />
                     <div v-else class="image-preview-empty">{{ homepageEditPreviewLoading ? "编辑预览渲染中..." : "编辑模板后自动生成预览" }}</div>
+                    <div v-if="showHomepageTimeOverlayPreview" class="time-overlay-preview" :style="homepageTimeOverlayPreviewStyle">
+                      <SegmentTimePreview
+                        :width="homepageTimeOverlayBox.width"
+                        :height="homepageTimeOverlayBox.height"
+                        :format="homepageTimeOverlayFormat"
+                        :font-size="homepageTimeOverlayFontSize"
+                        :align="homepageTimeOverlayAlign"
+                        color="#111111"
+                      />
+                    </div>
                   </div>
                 </div>
                 <template v-else>
@@ -782,6 +811,16 @@
                     <div class="image-preview-stage" :style="imagePreviewStageStyle">
                       <img v-if="homepagePreviewUrl" :src="homepagePreviewUrl" class="image-preview-img" alt="homepage preview" />
                       <div v-else class="image-preview-empty">先执行一次渲染</div>
+                      <div v-if="showHomepageTimeOverlayPreview" class="time-overlay-preview" :style="homepageTimeOverlayPreviewStyle">
+                        <SegmentTimePreview
+                          :width="homepageTimeOverlayBox.width"
+                          :height="homepageTimeOverlayBox.height"
+                          :format="homepageTimeOverlayFormat"
+                          :font-size="homepageTimeOverlayFontSize"
+                          :align="homepageTimeOverlayAlign"
+                          color="#111111"
+                        />
+                      </div>
                     </div>
                   </div>
                 </template>
@@ -837,12 +876,40 @@
                   </el-form-item>
                   <el-form-item label="名称"><el-input v-model="homepageTemplateDraft.name" /></el-form-item>
                   <el-form-item label="HTML">
-                    <el-input v-model="homepageTemplateDraft.html" type="textarea" :rows="13" />
+                    <el-input ref="homepageTemplateHtmlInputRef" v-model="homepageTemplateDraft.html" type="textarea" :rows="13" />
                   </el-form-item>
                 </el-form>
                 <div class="row-actions">
                   <el-button type="primary" @click="saveHomepageTemplate">保存模板</el-button>
                   <el-button type="danger" :disabled="!homepageTemplateDraft.id || homepageTemplateDraft.builtin" @click="deleteHomepageTemplate">删除模板</el-button>
+                  <el-popover
+                    v-model:visible="homepageInsertVarVisible"
+                    trigger="click"
+                    placement="bottom-end"
+                    width="420"
+                    :show-after="0"
+                    :hide-after="120"
+                    @show="loadHomepageTemplateVariables"
+                  >
+                    <template #reference>
+                      <el-button>插入变量</el-button>
+                    </template>
+                    <div class="insert-var-box">
+                      <el-input v-model="homepageInsertVarKeyword" placeholder="搜索变量路径，例如 profile.name" clearable />
+                      <div class="insert-var-list">
+                        <div
+                          v-for="item in filteredHomepageTemplateVariables"
+                          :key="item.path"
+                          class="insert-var-item"
+                          @click="insertHomepageTemplateVariable(item.path)"
+                        >
+                          <div class="path">{{ item.path }}</div>
+                          <div class="example">{{ item.example || item.placeholder }}</div>
+                        </div>
+                        <div v-if="!filteredHomepageTemplateVariables.length" class="insert-var-empty">当前设备暂无可用变量</div>
+                      </div>
+                    </div>
+                  </el-popover>
                 </div>
               </el-card>
             </div>
@@ -1109,6 +1176,13 @@
         </div>
       </div>
     </el-dialog>
+
+    <TemplateAdvancedEditorDialog
+      v-model="templateAdvancedDialogVisible"
+      :title="templateAdvancedEditorTitle"
+      :config="templateDraft.advancedConfig"
+      @save="saveTemplateAdvancedConfig"
+    />
   </div>
 </template>
 
@@ -1119,6 +1193,8 @@ import { useAuthStore, type AppRole } from "../stores/auth";
 import { useDeviceStore } from "../stores/devices";
 import { apiRequest } from "../services/api";
 import DeviceLassoPicker from "../components/DeviceLassoPicker.vue";
+import TemplateAdvancedEditorDialog from "../components/TemplateAdvancedEditorDialog.vue";
+import SegmentTimePreview from "../components/SegmentTimePreview.vue";
 
 const props = defineProps<{ role: AppRole }>();
 const title = props.role === "admin" ? "管理端" : "用户端";
@@ -1128,6 +1204,8 @@ const auth = useAuthStore();
 const deviceStore = useDeviceStore();
 const darkMode = ref(false);
 const activePanel = ref("overview");
+const sidebarCollapsed = ref(false);
+const mobileNavOpen = ref(false);
 const pickerRef = ref<any>(null);
 const filteredDeviceIds = ref<string[]>([]);
 const poolPickerRef = ref<any>(null);
@@ -1142,6 +1220,11 @@ const dispatchTargetKey = ref<"todo" | "schedule" | "templates" | "tf" | "remote
 
 const loginForm = reactive({ username: props.role === "admin" ? "admin" : "demo", password: props.role === "admin" ? "admin123" : "user123" });
 const loginLoading = ref(false);
+const windowWidth = ref(typeof window !== "undefined" ? window.innerWidth : 1440);
+const handleResize = () => {
+  windowWidth.value = window.innerWidth;
+};
+const isMobile = computed(() => windowWidth.value < 900);
 
 const overview = reactive({
   deviceTotal: 0,
@@ -1228,6 +1311,35 @@ type TemplateRow = {
   userInputFields: Array<{ name: string; placeholder?: string }>;
   deviceKeyRequired: boolean;
   enabled: boolean;
+  advancedConfig?: TemplateAdvancedConfig;
+};
+
+type TemplateAdvancedExtract = {
+  type: string;
+  source: string;
+  pattern: string;
+  path: string;
+  saveAs: string;
+  group: string;
+  flags: string;
+};
+
+type TemplateAdvancedStep = {
+  name: string;
+  method: string;
+  url: string;
+  legacyCompat: boolean;
+  passInputParams: boolean;
+  headers: Array<{ key: string; value: string }>;
+  params: Array<{ key: string; value: string }>;
+  body: Array<{ key: string; value: string }>;
+  extract: TemplateAdvancedExtract[];
+};
+
+type TemplateAdvancedConfig = {
+  output: string;
+  timeoutMs: number;
+  steps: TemplateAdvancedStep[];
 };
 const templateRows = ref<TemplateRow[]>([]);
 const templateDraft = reactive<TemplateRow>({
@@ -1241,6 +1353,27 @@ const templateDraft = reactive<TemplateRow>({
   userInputFields: [],
   deviceKeyRequired: true,
   enabled: true,
+  advancedConfig: { output: "", timeoutMs: 8000, steps: [] },
+});
+const templateAdvancedDialogVisible = ref(false);
+const templateAdvancedEditorTitle = computed(() => {
+  const name = String(templateDraft.name || templateDraft.slug || "模板").trim();
+  return `配置多步处理 · ${name}`;
+});
+const templateAdvancedSummaryLines = computed(() => {
+  const cfg = templateDraft.advancedConfig;
+  if (!cfg || !Array.isArray(cfg.steps) || !cfg.steps.length) {
+    return [];
+  }
+  return cfg.steps.map((step, index) => {
+    const method = String(step.method || "GET").toUpperCase();
+    const url = String(step.url || "").trim() || "-";
+    const headerCount = Array.isArray(step.headers) ? step.headers.filter((item) => String(item?.key || "").trim() || String(item?.value || "").trim()).length : 0;
+    const paramCount = Array.isArray(step.params) ? step.params.filter((item) => String(item?.key || "").trim() || String(item?.value || "").trim()).length : 0;
+    const bodyCount = Array.isArray(step.body) ? step.body.filter((item) => String(item?.key || "").trim() || String(item?.value || "").trim()).length : 0;
+    const extractCount = Array.isArray(step.extract) ? step.extract.length : 0;
+    return `${index + 1}. ${String(step.name || `step${index + 1}`)} · ${method} ${url} · H${headerCount}/Q${paramCount}/B${bodyCount}/X${extractCount}`;
+  });
 });
 const templateDeviceId = ref("");
 const templateDeviceKey = ref("");
@@ -1299,6 +1432,11 @@ const homepageTemplateDraft = reactive<HomepageTemplateRow>({
   html: "",
   builtin: false,
 });
+const homepageTemplateVariables = ref<Array<{ path: string; placeholder: string; type: string; example: string }>>([]);
+const homepageInsertVarVisible = ref(false);
+const homepageInsertVarKeyword = ref("");
+const homepageInsertVarLoading = ref(false);
+const homepageTemplateHtmlInputRef = ref<any>(null);
 const homepageConfigModel = reactive<any>({
   template: { template_id: "tpl_home_default" },
   time_overlay: {
@@ -1320,6 +1458,56 @@ const homepageEditPreviewLoading = ref(false);
 const homepageRenderMeta = reactive<Record<string, any>>({});
 const homepagePreviewMode = ref<"edit" | "delivery">("edit");
 let homepageEditPreviewTimer: ReturnType<typeof setTimeout> | null = null;
+
+function toPreviewNum(value: unknown, fallback: number) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : fallback;
+}
+
+const homepageTimeOverlayBox = computed(() => {
+  const overlay = homepageConfigModel?.time_overlay || {};
+  const image = homepageRenderMeta || {};
+  const screen = homepageConfigModel?.screen || {};
+  const sw = Math.max(1, toPreviewNum(screen.width, toPreviewNum(image.image_width, 2560)));
+  const sh = Math.max(1, toPreviewNum(screen.height, toPreviewNum(image.image_height, 1600)));
+  const width = Math.max(1, toPreviewNum(overlay.width, 680));
+  const height = Math.max(1, toPreviewNum(overlay.height, 180));
+  const x = Math.max(0, toPreviewNum(overlay.x, Math.max(0, sw - width - 32)));
+  const y = Math.max(0, toPreviewNum(overlay.y, 80));
+  return { sw, sh, x, y, width, height };
+});
+
+const homepageTimeOverlayAlign = computed<"left" | "center" | "right">(() => {
+  const align = String(homepageConfigModel?.time_overlay?.align || "right").toLowerCase();
+  if (align === "left" || align === "center" || align === "right") {
+    return align;
+  }
+  return "right";
+});
+
+const homepageTimeOverlayFormat = computed(() => String(homepageConfigModel?.time_overlay?.format || "HH:mm"));
+const homepageTimeOverlayFontSize = computed(() => Math.max(12, toPreviewNum(homepageConfigModel?.time_overlay?.font_size, 88)));
+
+const showHomepageTimeOverlayPreview = computed(() => {
+  const overlay = homepageConfigModel?.time_overlay || {};
+  return Boolean(overlay.enabled) && homepageTimeOverlayBox.value.width > 0 && homepageTimeOverlayBox.value.height > 0;
+});
+
+const homepageTimeOverlayPreviewStyle = computed(() => {
+  const box = homepageTimeOverlayBox.value;
+  return {
+    left: `${(box.x / box.sw) * 100}%`,
+    top: `${(box.y / box.sh) * 100}%`,
+    width: `${(box.width / box.sw) * 100}%`,
+    height: `${(box.height / box.sh) * 100}%`,
+    justifyContent:
+      homepageTimeOverlayAlign.value === "left"
+        ? "flex-start"
+        : homepageTimeOverlayAlign.value === "center"
+          ? "center"
+          : "flex-end",
+  };
+});
 const batchTargetDeviceIds = reactive<Record<"todo" | "schedule" | "templates" | "tf" | "remote" | "homepage", string[]>>({
   todo: [],
   schedule: [],
@@ -1416,10 +1604,47 @@ const batchPlans = ref<Array<Record<string, any>>>([]);
 const batchPlanId = ref("");
 const batchPlanName = ref("");
 const batchRows = ref<Array<{ name: string; title: string; mode: "specified" | "random"; deviceIds: string[]; poolDeviceIds: string[]; randomCount: number }>>([]);
-const windowWidth = ref(typeof window !== "undefined" ? window.innerWidth : 1440);
-const handleResize = () => {
-  windowWidth.value = window.innerWidth;
-};
+const sidebarMenuItems = computed(() => {
+  const items = [
+    { index: "overview", label: "主页概览" },
+    { index: "account", label: "账号管理" },
+    { index: "devicePin", label: "设备与PIN" },
+    { index: "devices", label: "设备管理" },
+    { index: "todo", label: "TODO" },
+    { index: "schedule", label: "日程安排" },
+    { index: "tf", label: "文件管理" },
+    { index: "remote", label: "远程控制" },
+    { index: "homepage", label: "主页" },
+    { index: "layout", label: "桌牌设置" },
+    { index: "history", label: "桌牌历史" },
+    { index: "templates", label: "API模板" },
+    { index: "firmware", label: "固件管理" },
+  ];
+  if (isAdmin.value) {
+    items.splice(4, 0, { index: "pools", label: "设备池管理" });
+    items.push({ index: "logs", label: "日志中心" });
+  }
+  return items;
+});
+
+function toggleSidebar() {
+  if (isMobile.value) {
+    mobileNavOpen.value = !mobileNavOpen.value;
+    return;
+  }
+  sidebarCollapsed.value = !sidebarCollapsed.value;
+}
+
+watch(
+  isMobile,
+  (mobile) => {
+    mobileNavOpen.value = false;
+    if (mobile) {
+      sidebarCollapsed.value = true;
+    }
+  },
+  { immediate: true }
+);
 
 const RES_MAP: Record<string, { w: number; h: number }> = {
   "ink-screen": { w: 2560, h: 1600 },
@@ -1505,6 +1730,7 @@ function toggleDarkMode(value: string | number | boolean) {
 
 function onSelectPanel(index: string) {
   activePanel.value = index;
+  mobileNavOpen.value = false;
   if (["todo", "schedule", "templates", "tf", "remote", "homepage"].includes(index)) {
     loadClusters();
   }
@@ -1588,10 +1814,6 @@ async function doLogin() {
 }
 
 function logout() { auth.logout(); deviceStore.clearSelection(); }
-
-function openPageStudio() {
-  window.open("/vue-app/#/pagestudio", "_blank");
-}
 
 async function refreshDevices() {
   if (!auth.token) return;
@@ -1941,6 +2163,123 @@ function buildHomepageConfigPatch() {
   return patch;
 }
 
+function getHomepageTemplateId() {
+  return String(homepageConfigModel?.template?.template_id || "").trim();
+}
+
+function findHomepageTemplateRow(templateId: string) {
+  const id = String(templateId || "").trim();
+  if (!id) return null;
+  return homepageTemplates.value.find((item) => item.id === id) || null;
+}
+
+function syncHomepageTemplateDraftFromConfig() {
+  const templateId = getHomepageTemplateId();
+  if (!templateId) return;
+  const row = findHomepageTemplateRow(templateId);
+  if (!row) return;
+  if (!homepageTemplateDraft.id || homepageTemplateDraft.id === templateId || !homepageTemplates.value.some((item) => item.id === homepageTemplateDraft.id)) {
+    homepageTemplateDraft.id = row.id;
+    homepageTemplateDraft.name = row.name;
+    homepageTemplateDraft.type = row.type;
+    homepageTemplateDraft.html = row.html;
+    homepageTemplateDraft.builtin = Boolean(row.builtin);
+  }
+}
+
+function buildHomepageRenderTemplatePatch() {
+  const selectedId = getHomepageTemplateId();
+  if (!selectedId) return undefined;
+
+  const configTemplate = findHomepageTemplateRow(selectedId);
+  const draftId = String(homepageTemplateDraft.id || "").trim();
+  if (draftId && draftId === selectedId) {
+    const html = String(homepageTemplateDraft.html || "").trim();
+    if (!html) return undefined;
+    return {
+      id: selectedId,
+      name: String(homepageTemplateDraft.name || configTemplate?.name || "Homepage Template").trim() || "Homepage Template",
+      type: String(homepageTemplateDraft.type || configTemplate?.type || "custom_html"),
+      html,
+    };
+  }
+
+  if (configTemplate) {
+    return {
+      id: String(configTemplate.id || selectedId),
+      name: String(configTemplate.name || "Homepage Template"),
+      type: String(configTemplate.type || "custom_html"),
+      html: String(configTemplate.html || ""),
+    };
+  }
+
+  return {
+    id: selectedId,
+    name: "Homepage Template",
+    type: "custom_html",
+    html: "",
+  };
+}
+
+const filteredHomepageTemplateVariables = computed(() => {
+  const keyword = String(homepageInsertVarKeyword.value || "").trim().toLowerCase();
+  const list = Array.isArray(homepageTemplateVariables.value) ? homepageTemplateVariables.value : [];
+  if (!keyword) return list;
+  return list.filter((item) => String(item.path || "").toLowerCase().includes(keyword));
+});
+
+async function loadHomepageTemplateVariables() {
+  if (!auth.token || !homepageDeviceId.value) {
+    homepageTemplateVariables.value = [];
+    return;
+  }
+  if (homepageInsertVarLoading.value) return;
+  homepageInsertVarLoading.value = true;
+  try {
+    const data = await apiRequest<{ variables?: Array<{ path: string; placeholder: string; type: string; example: string }> }>(
+      `/api/homepages/template-variables?deviceId=${encodeURIComponent(homepageDeviceId.value)}`,
+      { token: auth.token }
+    );
+    homepageTemplateVariables.value = Array.isArray(data?.variables) ? data.variables : [];
+  } catch (error) {
+    homepageTemplateVariables.value = [];
+    ElMessage.error((error as Error).message || "加载变量失败");
+  } finally {
+    homepageInsertVarLoading.value = false;
+  }
+}
+
+function openHomepageVariablePopover() {
+  if (!homepageDeviceId.value) {
+    homepageInsertVarVisible.value = false;
+    ElMessage.warning("请先选择主页目标设备");
+    return;
+  }
+  homepageInsertVarVisible.value = true;
+  void loadHomepageTemplateVariables();
+}
+
+function insertHomepageTemplateVariable(path: string) {
+  const variable = `{{${String(path || "").trim()}}}`;
+  const textarea = homepageTemplateHtmlInputRef.value?.textarea as HTMLTextAreaElement | undefined;
+  if (!textarea) {
+    homepageTemplateDraft.html = `${String(homepageTemplateDraft.html || "")}${variable}`;
+    homepageInsertVarVisible.value = false;
+    return;
+  }
+
+  const current = String(homepageTemplateDraft.html || "");
+  const start = textarea.selectionStart ?? current.length;
+  const end = textarea.selectionEnd ?? current.length;
+  homepageTemplateDraft.html = `${current.slice(0, start)}${variable}${current.slice(end)}`;
+  requestAnimationFrame(() => {
+    const pos = start + variable.length;
+    textarea.focus();
+    textarea.setSelectionRange(pos, pos);
+  });
+  homepageInsertVarVisible.value = false;
+}
+
 async function fetchHomepagePreview(url: string) {
   const response = await fetch(url, {
     headers: {
@@ -1960,14 +2299,7 @@ function clearPreviewRef(target: typeof homepagePreviewUrl | typeof homepageEdit
 }
 
 function buildHomepageTemplatePatchForRender() {
-  const html = String(homepageTemplateDraft.html || "").trim();
-  if (!html) return undefined;
-  return {
-    id: homepageTemplateDraft.id || homepageConfigModel?.template?.template_id || "tpl_home_default",
-    name: String(homepageTemplateDraft.name || "").trim() || "Homepage Template",
-    type: homepageTemplateDraft.builtin ? "default_html" : "custom_html",
-    html,
-  };
+  return buildHomepageRenderTemplatePatch();
 }
 
 async function applyHomepagePreviewImage(image: Record<string, any>, target: typeof homepagePreviewUrl | typeof homepageEditPreviewUrl) {
@@ -2027,6 +2359,7 @@ function scheduleHomepageEditPreview() {
 async function loadHomepageTemplates() {
   if (!auth.token) return;
   homepageTemplates.value = await apiRequest<HomepageTemplateRow[]>("/api/homepages/templates", { token: auth.token });
+  syncHomepageTemplateDraftFromConfig();
   if (!homepageTemplateDraft.id && homepageTemplates.value.length) {
     const first = homepageTemplates.value[0];
     homepageTemplateDraft.id = first.id;
@@ -2051,6 +2384,7 @@ async function loadHomepageConfig() {
   if (!auth.token || !homepageDeviceId.value) return;
   const data = await apiRequest<any>(`/api/homepages/config?deviceId=${encodeURIComponent(homepageDeviceId.value)}`, { token: auth.token });
   applyHomepageConfigModel(data);
+  syncHomepageTemplateDraftFromConfig();
   Object.keys(homepageRenderMeta).forEach((k) => delete homepageRenderMeta[k]);
   Object.assign(homepageRenderMeta, data.image || {});
   await applyHomepagePreviewImage(data.image || {}, homepagePreviewUrl);
@@ -2474,15 +2808,65 @@ function resetTemplateDraft() {
   templateDraft.deviceKeyRequired = true;
   templateDraft.enabled = true;
   templateDraft.userInputFields = [];
+  templateDraft.advancedConfig = { output: "", timeoutMs: 8000, steps: [] };
   Object.keys(templateParamValues).forEach((k) => delete templateParamValues[k]);
   templateDeviceKey.value = "";
   templateResultText.value = "";
 }
 
+function normalizeTemplateAdvancedConfig(input?: any): TemplateAdvancedConfig {
+  const source = input && typeof input === "object" ? input : {};
+  const steps = Array.isArray(source.steps) ? source.steps : [];
+  return {
+    output: String(source.output || ""),
+    timeoutMs: Number.isFinite(Number(source.timeoutMs)) ? Number(source.timeoutMs) : 8000,
+    steps: steps.map((step: any) => ({
+      name: String(step?.name || ""),
+      method: String(step?.method || "GET").toUpperCase(),
+      url: String(step?.url || ""),
+      legacyCompat: Boolean(step?.legacyCompat),
+      passInputParams: Boolean(step?.passInputParams),
+      headers: Array.isArray(step?.headers)
+        ? step.headers.map((item: any) => ({ key: String(item?.key || ""), value: String(item?.value || "") }))
+        : [],
+      params: Array.isArray(step?.params)
+        ? step.params.map((item: any) => ({ key: String(item?.key || ""), value: String(item?.value || "") }))
+        : [],
+      body: Array.isArray(step?.body)
+        ? step.body.map((item: any) => ({ key: String(item?.key || ""), value: String(item?.value || "") }))
+        : [],
+      extract: Array.isArray(step?.extract)
+        ? step.extract.map((item: any) => ({
+            type: String(item?.type || "regex"),
+            source: String(item?.source || "body"),
+            pattern: String(item?.pattern || ""),
+            path: String(item?.path || ""),
+            saveAs: String(item?.saveAs || ""),
+            group: String(item?.group || "1"),
+            flags: String(item?.flags || ""),
+          }))
+        : [],
+    })),
+  };
+}
+
+function openTemplateAdvancedEditor() {
+  templateDraft.advancedConfig = normalizeTemplateAdvancedConfig(templateDraft.advancedConfig);
+  templateAdvancedDialogVisible.value = true;
+}
+
+function saveTemplateAdvancedConfig(config: TemplateAdvancedConfig) {
+  templateDraft.advancedConfig = normalizeTemplateAdvancedConfig(config);
+}
+
 async function loadTemplateRows() {
   templateRows.value = await apiRequest<TemplateRow[]>("/api/templates", { token: auth.token });
   if (!templateDraft.id && templateRows.value.length) {
-    pickTemplateRow(templateRows.value[0]);
+    const homepageTemplateId = String(homepageConfigModel?.template?.template_id || "").trim();
+    const preferred = templateRows.value.find((item) => item.id === homepageTemplateId) || templateRows.value[0];
+    if (preferred) {
+      pickTemplateRow(preferred);
+    }
   }
 }
 
@@ -2497,6 +2881,7 @@ function pickTemplateRow(row: TemplateRow) {
   templateDraft.deviceKeyRequired = Boolean(row.deviceKeyRequired);
   templateDraft.enabled = Boolean(row.enabled);
   templateDraft.userInputFields = Array.isArray(row.userInputFields) ? row.userInputFields.map((f) => ({ name: String(f.name || ""), placeholder: String(f.placeholder || "") })) : [];
+  templateDraft.advancedConfig = normalizeTemplateAdvancedConfig(row.advancedConfig);
   Object.keys(templateParamValues).forEach((k) => delete templateParamValues[k]);
   templateDraft.userInputFields.forEach((f) => {
     if (!templateParamValues[f.name]) templateParamValues[f.name] = "";
@@ -2533,6 +2918,7 @@ async function saveTemplateDraft() {
       .filter((f) => f.name),
     deviceKeyRequired: templateDraft.deviceKeyRequired,
     enabled: templateDraft.enabled,
+    advancedConfig: normalizeTemplateAdvancedConfig(templateDraft.advancedConfig),
   };
   if (templateDraft.id) {
     await apiRequest(`/api/templates/${templateDraft.id}`, {
@@ -3065,6 +3451,7 @@ watch(
     auth.token,
     homepageDeviceId.value,
     homepagePreviewMode.value,
+    homepageConfigModel?.template?.template_id,
     homepageConfigJson.value,
     homepageTemplateDraft.id,
     homepageTemplateDraft.name,
@@ -3079,15 +3466,25 @@ watch(
 <style scoped>
 .page { padding: 12px; }
 .panel { max-width: 1680px; margin: 0 auto; border-radius: 20px; overflow: hidden; }
-.header-row { display:flex; justify-content:space-between; align-items:center; }
+.header-row { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
+.header-left { display:flex; align-items:center; gap:10px; min-width:0; }
+.menu-toggle { flex:0 0 auto; }
 .header-user { display:flex; align-items:center; gap:10px; }
 .header-username { color:#374151; font-size:14px; }
 .theme-toggle { display:flex; align-items:center; gap:8px; padding:6px 10px; border-radius:999px; background:rgba(15, 23, 42, 0.05); }
 .theme-label { font-size:12px; color:#475569; }
 .login-wrap { max-width: 460px; }
-.workbench-shell { min-height: 760px; border: 1px solid #e5e7eb; border-radius: 18px; overflow: hidden; background:rgba(255,255,255,0.82); backdrop-filter: blur(16px); }
-.aside-nav { border-right: 1px solid #e5e7eb; background: linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(248,250,252,0.92) 100%); }
-.content-main { display:grid; gap:12px; padding:12px; }
+.workbench-shell { min-height: 760px; max-height: calc(100vh - 180px); border: 1px solid #e5e7eb; border-radius: 18px; overflow: hidden; background:rgba(255,255,255,0.82); backdrop-filter: blur(16px); display:flex; align-items:stretch; }
+.workbench-shell :deep(.el-aside) { overflow:hidden; }
+.aside-nav { border-right: 1px solid #e5e7eb; background: linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(248,250,252,0.92) 100%); display:flex; min-height:0; }
+.aside-nav.collapsed { width:72px; }
+.side-menu { width:100%; min-height:0; flex:1; overflow-y:auto; border-right:none; }
+.content-main { display:grid; gap:12px; padding:12px; flex:1; min-width:0; overflow:auto; }
+.mobile-nav-drawer :deep(.el-drawer__body) { padding:0; }
+.drawer-shell { display:flex; flex-direction:column; gap:12px; height:100%; padding:16px; box-sizing:border-box; }
+.drawer-title { display:flex; flex-direction:column; gap:4px; }
+.drawer-hint { font-size:12px; color:#64748b; }
+.drawer-menu { flex:1; min-height:0; overflow-y:auto; border-right:none; }
 .section-wrap { display:grid; gap:10px; }
 .stack-vertical { display:grid; gap:12px; }
 .row-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
@@ -3130,6 +3527,11 @@ watch(
 .dark-mode .preview-title { color:#cbd5e1; }
 
 @media (max-width: 900px) {
+  .header-row { align-items:flex-start; }
+  .header-user { width:100%; flex-wrap:wrap; justify-content:flex-start; }
+  .workbench-shell { max-height:none; min-height:unset; flex-direction:column; }
+  .content-main { overflow:visible; padding:10px; }
+  .aside-nav { display:none; }
   .overview-hero { flex-direction:column; align-items:flex-start; }
 }
 </style>

@@ -64,6 +64,86 @@ function resolveTargets(db, auth, body) {
   };
 }
 
+function buildVariableExample(value) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value.length > 120 ? `${value.slice(0, 117)}...` : value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  try {
+    const json = JSON.stringify(value);
+    if (!json) return "";
+    return json.length > 120 ? `${json.slice(0, 117)}...` : json;
+  } catch (_) {
+    return "";
+  }
+}
+
+function collectTemplateVariables(model) {
+  const out = [];
+  const seen = new Set();
+  const MAX_DEPTH = 6;
+  const MAX_ROWS = 500;
+
+  const pushPath = (path, value) => {
+    if (!path || seen.has(path) || out.length >= MAX_ROWS) {
+      return;
+    }
+    seen.add(path);
+    const type = Array.isArray(value) ? "array" : value === null ? "null" : typeof value;
+    out.push({
+      path,
+      placeholder: `{{${path}}}`,
+      type,
+      example: buildVariableExample(value),
+    });
+  };
+
+  const walk = (node, path, depth) => {
+    if (out.length >= MAX_ROWS || depth > MAX_DEPTH) {
+      return;
+    }
+    if (node === null || node === undefined) {
+      pushPath(path, node);
+      return;
+    }
+
+    if (typeof node === "string" || typeof node === "number" || typeof node === "boolean") {
+      pushPath(path, node);
+      return;
+    }
+
+    if (Array.isArray(node)) {
+      pushPath(path, node);
+      if (!node.length) {
+        return;
+      }
+      const first = node[0];
+      const childPath = path ? `${path}.0` : "0";
+      walk(first, childPath, depth + 1);
+      return;
+    }
+
+    if (typeof node === "object") {
+      if (path) {
+        pushPath(path, node);
+      }
+      Object.keys(node).forEach((key) => {
+        if (out.length >= MAX_ROWS) return;
+        const nextPath = path ? `${path}.${key}` : key;
+        walk(node[key], nextPath, depth + 1);
+      });
+    }
+  };
+
+  walk(model || {}, "", 0);
+  return out;
+}
+
 function createPageRouter(options) {
   const {
     pageType,
@@ -265,6 +345,38 @@ function createPageRouter(options) {
       const db = await readDB();
       const rows = service.listTemplates(db, req.auth);
       res.success(rows, "ok");
+    })
+  );
+
+  router.get(
+    "/template-variables",
+    asyncHandler(async (req, res) => {
+      const db = await readDB();
+      const requestedId = String(req.query?.deviceId || "").trim();
+
+      let device = null;
+      if (requestedId) {
+        device = ensureDeviceAccess(db, req.auth, requestedId);
+      } else {
+        const rows = db.devices.filter((item) => {
+          if (req.auth.role === "admin") return true;
+          return String(item.ownerId || "") === String(req.auth.userId || "");
+        });
+        device = rows[0] || null;
+      }
+
+      if (!device) throw new HttpError(404, "当前账号无可用设备");
+
+      const dataModel = service.buildDataModel(db, device, {});
+      const variables = collectTemplateVariables(dataModel);
+      res.success(
+        {
+          deviceId: String(device.id || ""),
+          total: variables.length,
+          variables,
+        },
+        "ok"
+      );
     })
   );
 

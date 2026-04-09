@@ -1,4 +1,5 @@
 export type PreviewPageType = "homepage" | "badgepage" | "weatherpage";
+export type PreviewTimeAlign = "left" | "center" | "right";
 
 type AnyObject = Record<string, any>;
 
@@ -87,6 +88,22 @@ export function buildTemplatePreviewModel(overrides?: AnyObject): AnyObject {
   return deepMerge(fallback, isObject(overrides) ? overrides : {});
 }
 
+export function formatPreviewTime(formatRaw: string, inputDate?: Date): string {
+  const format = String(formatRaw || "HH:mm");
+  const now = inputDate instanceof Date ? inputDate : new Date();
+  const hh = String(now.getHours()).padStart(2, "0");
+  const mm = String(now.getMinutes()).padStart(2, "0");
+  const ss = String(now.getSeconds()).padStart(2, "0");
+  return format
+    .replace(/HH/g, hh)
+    .replace(/hh/g, hh)
+    .replace(/mm/g, mm)
+    .replace(/ss/g, ss)
+    .replace(/%H/g, hh)
+    .replace(/%M/g, mm)
+    .replace(/%S/g, ss);
+}
+
 export function buildTemplatePreviewSrcdoc(
   rawHtml: string,
   options?: {
@@ -148,4 +165,3 @@ export function buildTemplatePreviewSrcdoc(
 </body>
 </html>`;
 }
-

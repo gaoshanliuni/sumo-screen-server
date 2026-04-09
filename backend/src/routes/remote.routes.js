@@ -216,7 +216,7 @@ const MAX_ACK_WAIT_MS = 30000;
 
 function getAckWaitMs(body) {
   const raw = Number(body?.ackTimeoutMs);
-  if (!Number.isFinite(raw)) return 2800;
+  if (!Number.isFinite(raw)) return 6000;
   if (raw < 0) return 0;
   if (raw > MAX_ACK_WAIT_MS) return MAX_ACK_WAIT_MS;
   return Math.floor(raw);

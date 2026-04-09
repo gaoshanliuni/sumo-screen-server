@@ -26,6 +26,13 @@
       </div>
 
       <div v-else class="studio-grid">
+        <el-alert
+          type="info"
+          :closable="false"
+          show-icon
+          title="Page Studio 已调整为 legacy / internal 调试入口，正式配置已迁移到主页面板。"
+        />
+
         <el-card>
           <template #header>
             <div class="row between">
@@ -37,8 +44,20 @@
             </div>
           </template>
           <div v-if="previewMode === 'edit'" class="preview-wrap">
-            <img v-if="editPreviewUrl" :src="editPreviewUrl" alt="edit preview" class="preview-img" />
-            <div v-else class="preview-empty">{{ editPreviewLoading ? "编辑预览渲染中..." : "编辑模板后自动生成预览" }}</div>
+            <div class="preview-canvas">
+              <img v-if="editPreviewUrl" :src="editPreviewUrl" alt="edit preview" class="preview-img" />
+              <div v-else class="preview-empty">{{ editPreviewLoading ? "编辑预览渲染中..." : "编辑模板后自动生成预览" }}</div>
+              <div v-if="showTimeOverlayPreview" class="time-overlay-preview" :style="timeOverlayPreviewStyle">
+                <SegmentTimePreview
+                  :width="toPreviewNum(configModel?.time_overlay?.width, 0)"
+                  :height="toPreviewNum(configModel?.time_overlay?.height, 0)"
+                  :format="String(configModel?.time_overlay?.format || 'HH:mm')"
+                  :font-size="toPreviewNum(configModel?.time_overlay?.font_size, 88)"
+                  :align="timeOverlayAlign"
+                  color="#111111"
+                />
+              </div>
+            </div>
           </div>
           <template v-else>
             <div class="preview-meta">
@@ -47,8 +66,20 @@
               <div>size: {{ renderMeta.image_width || 0 }} x {{ renderMeta.image_height || 0 }}</div>
             </div>
             <div class="preview-wrap">
-              <img v-if="previewUrl" :src="previewUrl" alt="preview" class="preview-img" />
-              <div v-else class="preview-empty">先执行一次渲染</div>
+              <div class="preview-canvas">
+                <img v-if="previewUrl" :src="previewUrl" alt="preview" class="preview-img" />
+                <div v-else class="preview-empty">先执行一次渲染</div>
+                <div v-if="showTimeOverlayPreview" class="time-overlay-preview" :style="timeOverlayPreviewStyle">
+                  <SegmentTimePreview
+                    :width="toPreviewNum(configModel?.time_overlay?.width, 0)"
+                    :height="toPreviewNum(configModel?.time_overlay?.height, 0)"
+                    :format="String(configModel?.time_overlay?.format || 'HH:mm')"
+                    :font-size="toPreviewNum(configModel?.time_overlay?.font_size, 88)"
+                    :align="timeOverlayAlign"
+                    color="#111111"
+                  />
+                </div>
+              </div>
             </div>
           </template>
         </el-card>
@@ -135,12 +166,39 @@
             </el-form-item>
             <el-form-item label="名称"><el-input v-model="templateDraft.name" /></el-form-item>
             <el-form-item label="HTML">
-              <el-input v-model="templateDraft.html" type="textarea" :rows="20" />
+              <el-input ref="templateHtmlInputRef" v-model="templateDraft.html" type="textarea" :rows="20" />
             </el-form-item>
           </el-form>
           <div class="row wrap">
             <el-button type="primary" @click="saveTemplate">保存模板</el-button>
             <el-button type="danger" :disabled="!templateDraft.id || templateDraft.builtin" @click="deleteTemplate">删除模板</el-button>
+            <el-popover
+              v-model:visible="insertVarVisible"
+              placement="top-start"
+              width="520"
+              trigger="click"
+              :teleported="false"
+            >
+              <div class="insert-var-box">
+                <el-input v-model="insertVarKeyword" placeholder="搜索变量路径，例如 formatted.hitokoto" size="small" />
+                <div class="insert-var-list">
+                  <button
+                    v-for="item in filteredTemplateVariables"
+                    :key="item.path"
+                    type="button"
+                    class="insert-var-item"
+                    @click="insertTemplateVariable(item.path)"
+                  >
+                    <span class="path">{{ item.placeholder }}</span>
+                    <span class="example">{{ item.example || item.type }}</span>
+                  </button>
+                  <div v-if="!filteredTemplateVariables.length" class="insert-var-empty">当前设备暂无可用变量</div>
+                </div>
+              </div>
+              <template #reference>
+                <el-button @click="loadTemplateVariables">插入变量</el-button>
+              </template>
+            </el-popover>
           </div>
         </el-card>
 
@@ -183,8 +241,9 @@
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
+import SegmentTimePreview from "../components/SegmentTimePreview.vue";
 import { useAuthStore, type AppRole } from "../stores/auth";
 import { apiRequest } from "../services/api";
 
@@ -203,6 +262,13 @@ type PageTemplateRow = {
   builtin?: boolean;
 };
 
+type TemplateVariableRow = {
+  path: string;
+  placeholder: string;
+  type: string;
+  example: string;
+};
+
 type PageType = "homepage" | "badgepage" | "weatherpage";
 
 const auth = useAuthStore();
@@ -214,6 +280,10 @@ const pageType = ref<PageType>("homepage");
 const devices = ref<DeviceRow[]>([]);
 const deviceId = ref("");
 const templates = ref<PageTemplateRow[]>([]);
+const templateVariables = ref<TemplateVariableRow[]>([]);
+const insertVarVisible = ref(false);
+const insertVarKeyword = ref("");
+const templateHtmlInputRef = ref<any>(null);
 const previewUrl = ref("");
 const editPreviewUrl = ref("");
 const editPreviewLoading = ref(false);
@@ -224,6 +294,63 @@ let editPreviewTimer: ReturnType<typeof setTimeout> | null = null;
 
 const remoteView = ref("home");
 const remoteRefreshPageType = ref("homepage");
+
+const filteredTemplateVariables = computed(() => {
+  const keyword = String(insertVarKeyword.value || "").trim().toLowerCase();
+  if (!keyword) {
+    return templateVariables.value.slice(0, 200);
+  }
+  return templateVariables.value
+    .filter((item) => {
+      return (
+        String(item.path || "").toLowerCase().includes(keyword) ||
+        String(item.example || "").toLowerCase().includes(keyword)
+      );
+    })
+    .slice(0, 200);
+});
+
+function toPreviewNum(v: unknown, fallback: number) {
+  const num = Number(v);
+  return Number.isFinite(num) ? num : fallback;
+}
+
+const showTimeOverlayPreview = computed(() => {
+  const overlay = configModel?.time_overlay || {};
+  return Boolean(overlay.enabled) && toPreviewNum(overlay.width, 0) > 0 && toPreviewNum(overlay.height, 0) > 0;
+});
+
+const timeOverlayAlign = computed<"left" | "center" | "right">(() => {
+  const align = String(configModel?.time_overlay?.align || "right").toLowerCase();
+  if (align === "left" || align === "center" || align === "right") {
+    return align;
+  }
+  return "right";
+});
+
+const timeOverlayPreviewStyle = computed(() => {
+  const overlay = configModel?.time_overlay || {};
+  const screen = configModel?.screen || {};
+  const image = renderMeta || {};
+  const sw = Math.max(1, toPreviewNum(screen.width, toPreviewNum(image.image_width, 2560)));
+  const sh = Math.max(1, toPreviewNum(screen.height, toPreviewNum(image.image_height, 1600)));
+  const x = Math.max(0, toPreviewNum(overlay.x, Math.max(0, sw - 680)));
+  const y = Math.max(0, toPreviewNum(overlay.y, 80));
+  const w = Math.max(1, toPreviewNum(overlay.width, 680));
+  const h = Math.max(1, toPreviewNum(overlay.height, 180));
+  const fontSize = Math.max(12, toPreviewNum(overlay.font_size, 88));
+  const align = String(overlay.align || "right").toLowerCase();
+
+  const style: Record<string, string> = {
+    left: `${(x / sw) * 100}%`,
+    top: `${(y / sh) * 100}%`,
+    width: `${(w / sw) * 100}%`,
+    height: `${(h / sh) * 100}%`,
+    fontSize: `${Math.max(10, (fontSize / sh) * 100)}%`,
+  };
+  style.justifyContent = align === "left" ? "flex-start" : align === "center" ? "center" : "flex-end";
+  return style;
+});
 
 const configModel = reactive<any>({
   template: { template_id: "tpl_home_default", render_engine: "auto" },
@@ -363,6 +490,15 @@ async function loadQweatherAssetsIfNeeded() {
   Object.assign(qweatherAssets, data || {});
 }
 
+async function loadTemplateVariables() {
+  if (!deviceId.value) return;
+  const data = await apiRequest<{ variables?: TemplateVariableRow[] }>(
+    `${endpointBase()}/template-variables?deviceId=${encodeURIComponent(deviceId.value)}`,
+    { token: auth.token }
+  );
+  templateVariables.value = Array.isArray(data?.variables) ? data.variables : [];
+}
+
 async function loadConfig() {
   if (!deviceId.value) return;
   const data = await apiRequest<any>(`${endpointBase()}/config?deviceId=${encodeURIComponent(deviceId.value)}`, { token: auth.token });
@@ -370,6 +506,7 @@ async function loadConfig() {
   Object.keys(renderMeta).forEach((k) => delete renderMeta[k]);
   Object.assign(renderMeta, data.image || {});
   await fetchPreview(data.image || {}, previewUrl);
+  await loadTemplateVariables();
   scheduleEditPreview();
 }
 
@@ -377,6 +514,7 @@ async function loadAll() {
   if (!auth.token) return;
   await loadDevices();
   await Promise.all([loadTemplates(), loadConfig(), loadQweatherAssetsIfNeeded()]);
+  await loadTemplateVariables();
 }
 
 function parseConfigJson() {
@@ -492,6 +630,29 @@ function newTemplate() {
   templateDraft.type = "custom_html";
   templateDraft.builtin = false;
   templateDraft.html = defaultTemplateHtml(pageType.value);
+  scheduleEditPreview();
+}
+
+function insertTemplateVariable(path: string) {
+  const variable = `{{${String(path || "").trim()}}}`;
+  if (!path) return;
+
+  const current = String(templateDraft.html || "");
+  const textarea = templateHtmlInputRef.value?.textarea as HTMLTextAreaElement | undefined;
+  if (textarea && typeof textarea.selectionStart === "number" && typeof textarea.selectionEnd === "number") {
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    templateDraft.html = `${current.slice(0, start)}${variable}${current.slice(end)}`;
+    nextTick(() => {
+      const pos = start + variable.length;
+      textarea.focus();
+      textarea.setSelectionRange(pos, pos);
+    });
+  } else {
+    const sep = current.endsWith("\n") || current.length === 0 ? "" : "\n";
+    templateDraft.html = `${current}${sep}${variable}`;
+  }
+  insertVarVisible.value = false;
   scheduleEditPreview();
 }
 
@@ -713,6 +874,11 @@ watch(
   overflow: auto;
   background: #fff;
 }
+.preview-canvas {
+  position: relative;
+  width: fit-content;
+  max-width: 100%;
+}
 .preview-img {
   max-width: 100%;
   display: block;
@@ -720,9 +886,59 @@ watch(
 .preview-empty {
   color: #94a3b8;
 }
+.time-overlay-preview {
+  position: absolute;
+  border: 2px dashed #ef4444;
+  background: rgba(254, 242, 242, 0.7);
+  color: #111827;
+  display: flex;
+  align-items: center;
+  padding: 4px 8px;
+  box-sizing: border-box;
+  pointer-events: none;
+  overflow: hidden;
+}
 .asset-note {
   font-size: 12px;
   line-height: 1.5;
   color: #334155;
+}
+.insert-var-box {
+  display: grid;
+  gap: 8px;
+}
+.insert-var-list {
+  max-height: 280px;
+  overflow: auto;
+  display: grid;
+  gap: 6px;
+}
+.insert-var-item {
+  border: 1px solid #dbe4ef;
+  background: #ffffff;
+  border-radius: 8px;
+  padding: 8px 10px;
+  text-align: left;
+  display: grid;
+  gap: 4px;
+  cursor: pointer;
+}
+.insert-var-item:hover {
+  border-color: #409eff;
+  background: #f0f7ff;
+}
+.insert-var-item .path {
+  font-family: "Consolas", "Courier New", monospace;
+  font-size: 12px;
+  color: #0f172a;
+}
+.insert-var-item .example {
+  font-size: 12px;
+  color: #64748b;
+}
+.insert-var-empty {
+  color: #94a3b8;
+  font-size: 12px;
+  padding: 6px 2px;
 }
 </style>

@@ -21,6 +21,31 @@ let playwrightModule = null;
 let browserLaunchPromise = null;
 let browserCleanupHooked = false;
 
+function parsePositiveInt(value, fallback) {
+  const num = Number(value);
+  if (Number.isFinite(num) && num > 0) {
+    return Math.floor(num);
+  }
+  return Math.floor(Number(fallback) > 0 ? Number(fallback) : 0);
+}
+
+function getBrowserRenderWaitConfig(config) {
+  const template = isObject(config?.template) ? config.template : {};
+  const image = isObject(config?.image) ? config.image : {};
+  const readyTimeoutMs = parsePositiveInt(
+    template.render_ready_timeout_ms ?? template.render_timeout_ms ?? image.render_ready_timeout_ms ?? image.render_timeout_ms,
+    8000
+  );
+  const idleSettleMs = parsePositiveInt(
+    template.render_idle_settle_ms ?? template.render_settle_ms ?? image.render_idle_settle_ms ?? image.render_settle_ms,
+    450
+  );
+  return {
+    readyTimeoutMs: Math.max(1500, readyTimeoutMs),
+    idleSettleMs: Math.max(150, idleSettleMs),
+  };
+}
+
 function deepClone(obj) {
   return JSON.parse(JSON.stringify(obj));
 }
@@ -308,44 +333,125 @@ function safeJsonForInlineScript(value) {
     .replace(/\u2029/g, "\\u2029");
 }
 
-function buildRuntimeModelScript(dataModel, width, height) {
+function buildRuntimeModelScript(dataModel, width, height, waitConfig) {
   const modelJson = safeJsonForInlineScript(dataModel || {});
   const canvasWidth = Number(width) > 0 ? Number(width) : 2560;
   const canvasHeight = Number(height) > 0 ? Number(height) : 1600;
+  const readyTimeoutMs = parsePositiveInt(waitConfig?.readyTimeoutMs, 8000);
+  const idleSettleMs = parsePositiveInt(waitConfig?.idleSettleMs, 450);
   return `<script>
 (() => {
   const model = ${modelJson};
   const pageWidth = ${canvasWidth};
   const pageHeight = ${canvasHeight};
+  const readyTimeoutMs = ${readyTimeoutMs};
+  const idleSettleMs = ${idleSettleMs};
   window.__PAGE_MODEL__ = model;
-  const asyncState = { pending: 0, done: false };
+  const renderState = {
+    pending: 0,
+    ready: false,
+    reason: "loading",
+    lastActivityAt: performance.now(),
+    settleTimer: null,
+    hardTimer: null,
+    observer: null,
+  };
+  window.__PAGE_RENDER_STATE__ = renderState;
+  window.__PAGE_RENDER_READY__ = false;
+  window.__PAGE_RENDER_READY_REASON__ = "loading";
 
-  const markReady = () => {
-    if (asyncState.done) return;
-    asyncState.done = true;
-    window.__PAGE_RENDER_READY__ = true;
+  const clearTimer = (name) => {
+    if (renderState[name]) {
+      clearTimeout(renderState[name]);
+      renderState[name] = null;
+    }
   };
 
-  const markReadyWhenIdle = () => {
-    if (asyncState.pending <= 0) {
-      requestAnimationFrame(() => setTimeout(markReady, 0));
+  const finishReady = (reason) => {
+    if (renderState.ready) return;
+    renderState.ready = true;
+    renderState.reason = reason || "settled";
+    window.__PAGE_RENDER_READY_REASON__ = renderState.reason;
+    window.__PAGE_RENDER_READY__ = true;
+    clearTimer("settleTimer");
+    clearTimer("hardTimer");
+    if (renderState.observer) {
+      try {
+        renderState.observer.disconnect();
+      } catch (_) {
+        // ignore
+      }
+      renderState.observer = null;
     }
+  };
+
+  const scheduleSettledCheck = (reason) => {
+    if (renderState.ready) return;
+    clearTimer("settleTimer");
+    const elapsed = Math.max(0, performance.now() - renderState.lastActivityAt);
+    const delay = Math.max(50, idleSettleMs - elapsed);
+    renderState.settleTimer = setTimeout(() => {
+      if (renderState.ready) return;
+      if (renderState.pending > 0) {
+        scheduleSettledCheck("pending");
+        return;
+      }
+      const idle = Math.max(0, performance.now() - renderState.lastActivityAt);
+      if (idle >= idleSettleMs) {
+        finishReady(reason || "settled");
+        return;
+      }
+      scheduleSettledCheck("activity");
+    }, delay);
+  };
+
+  const noteActivity = () => {
+    if (renderState.ready) return;
+    renderState.lastActivityAt = performance.now();
+    scheduleSettledCheck("activity");
+  };
+
+  const bumpPending = () => {
+    if (renderState.ready) return;
+    renderState.pending += 1;
+    noteActivity();
+  };
+
+  const dropPending = () => {
+    renderState.pending = Math.max(0, renderState.pending - 1);
+    noteActivity();
+  };
+
+  const startHardTimeout = () => {
+    clearTimer("hardTimer");
+    renderState.hardTimer = setTimeout(() => {
+      if (renderState.ready) return;
+      renderState.reason = "timeout";
+      window.__PAGE_RENDER_READY_REASON__ = "timeout";
+      finishReady("timeout");
+    }, readyTimeoutMs);
   };
 
   if (typeof window.fetch === "function") {
     const nativeFetch = window.fetch.bind(window);
     window.fetch = (...args) => {
-      asyncState.pending += 1;
-      return nativeFetch(...args).finally(() => {
-        asyncState.pending = Math.max(0, asyncState.pending - 1);
-        markReadyWhenIdle();
-      });
+      bumpPending();
+      try {
+        const result = nativeFetch(...args);
+        return Promise.resolve(result).finally(() => {
+          dropPending();
+        });
+      } catch (error) {
+        dropPending();
+        throw error;
+      }
     };
   }
 
-  window.__PAGE_RENDER_DONE__ = () => {
-    asyncState.pending = 0;
-    markReady();
+  window.__PAGE_RENDER_DONE__ = (reason) => {
+    renderState.pending = 0;
+    renderState.lastActivityAt = performance.now();
+    finishReady(reason || "manual");
   };
 
   const resolve = (obj, path) => {
@@ -455,12 +561,32 @@ function buildRuntimeModelScript(dataModel, width, height) {
     });
   };
 
-  window.__PAGE_RENDER_READY__ = false;
+  const observeMutations = () => {
+    if (!window.MutationObserver || renderState.observer) return;
+    try {
+      renderState.observer = new MutationObserver(() => {
+        noteActivity();
+      });
+      const root = document.body || document.documentElement;
+      if (root) {
+        renderState.observer.observe(root, {
+          subtree: true,
+          childList: true,
+          attributes: true,
+          characterData: true,
+        });
+      }
+    } catch (_) {
+      renderState.observer = null;
+    }
+  };
+
   const run = () => {
     applyBindings();
     applyDataLayout();
-    markReadyWhenIdle();
-    setTimeout(markReady, 2200);
+    observeMutations();
+    noteActivity();
+    startHardTimeout();
   };
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", run, { once: true });
@@ -471,9 +597,9 @@ function buildRuntimeModelScript(dataModel, width, height) {
 </script>`;
 }
 
-function buildBrowserPreviewDocument(rawHtml, dataModel, width, height) {
+function buildBrowserPreviewDocument(rawHtml, dataModel, width, height, waitConfig) {
   const html = String(rawHtml || "");
-  const runtimeScript = buildRuntimeModelScript(dataModel, width, height);
+  const runtimeScript = buildRuntimeModelScript(dataModel, width, height, waitConfig);
   const baseStyle = `
     html,body{margin:0;padding:0;width:${width}px;height:${height}px;overflow:hidden;background:#fff;color:#111;}
     body{font-family:"Noto Sans SC","Microsoft YaHei",Arial,sans-serif;position:relative;}
@@ -583,7 +709,9 @@ async function getBrowserInstance() {
   }
 }
 
-async function renderWithBrowserEngine({ templateHtml, dataModel, width, height }) {
+async function renderWithBrowserEngine({ templateHtml, dataModel, width, height, config }) {
+  const waitConfig = getBrowserRenderWaitConfig(config);
+  const waitForReadyTimeoutMs = Math.max(waitConfig.readyTimeoutMs + waitConfig.idleSettleMs + 1500, 6000);
   const browser = await getBrowserInstance();
   const context = await browser.newContext({
     viewport: { width, height },
@@ -593,17 +721,49 @@ async function renderWithBrowserEngine({ templateHtml, dataModel, width, height 
 
   try {
     const page = await context.newPage();
-    const doc = buildBrowserPreviewDocument(templateHtml, dataModel, width, height);
+    const doc = buildBrowserPreviewDocument(templateHtml, dataModel, width, height, waitConfig);
     await page.setContent(doc, { waitUntil: "domcontentloaded" });
+    let readyWaitError = null;
     await page
-      .waitForFunction(() => window.__PAGE_RENDER_READY__ === true, undefined, { timeout: 2600 })
-      .catch(() => {});
+      .waitForFunction(() => window.__PAGE_RENDER_READY__ === true, undefined, { timeout: waitForReadyTimeoutMs })
+      .catch((error) => {
+        readyWaitError = error;
+      });
+    const readyMeta = await page.evaluate(() => {
+      const state = window.__PAGE_RENDER_STATE__ || {};
+      return {
+        ready: Boolean(window.__PAGE_RENDER_READY__),
+        reason: String(window.__PAGE_RENDER_READY_REASON__ || state.reason || ""),
+        pending: Number(state.pending || 0),
+        lastActivityDeltaMs: Number.isFinite(Number(state.lastActivityAt))
+          ? Math.max(0, performance.now() - Number(state.lastActivityAt))
+          : -1,
+      };
+    }).catch(() => ({ ready: false, reason: "", pending: -1, lastActivityDeltaMs: -1 }));
     await page.evaluate(async () => {
       if (document && document.fonts && document.fonts.ready) {
         await document.fonts.ready;
       }
     });
     await page.waitForTimeout(120);
+    if (readyWaitError || readyMeta.reason === "timeout") {
+      // eslint-disable-next-line no-console
+      console.warn("[page-render] browser render settled by fallback", {
+        ready: readyMeta.ready,
+        reason: readyMeta.reason || "unknown",
+        pending: readyMeta.pending,
+        lastActivityDeltaMs: readyMeta.lastActivityDeltaMs,
+        timeoutMs: waitForReadyTimeoutMs,
+      });
+    } else {
+      // eslint-disable-next-line no-console
+      console.info("[page-render] browser render ready", {
+        reason: readyMeta.reason || "settled",
+        pending: readyMeta.pending,
+        lastActivityDeltaMs: readyMeta.lastActivityDeltaMs,
+        timeoutMs: waitForReadyTimeoutMs,
+      });
+    }
     return await page.screenshot({ type: "png", clip: { x: 0, y: 0, width, height } });
   } finally {
     await context.close();
@@ -1093,7 +1253,7 @@ async function renderPageBuffers({ config, templateHtml, dataModel, pageType }) 
 
   if (useBrowser) {
     try {
-      const browserPng = await renderWithBrowserEngine({ templateHtml, dataModel, width, height });
+      const browserPng = await renderWithBrowserEngine({ templateHtml, dataModel, width, height, config });
       const browserImage = await loadImage(browserPng);
       ctx.drawImage(browserImage, 0, 0, width, height);
       browserRendered = true;
