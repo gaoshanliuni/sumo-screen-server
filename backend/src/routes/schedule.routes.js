@@ -7,6 +7,13 @@ const { readDB, updateDB } = require("../db/store");
 const { ensureDeviceAccess, getVisibleDeviceIds, resolveTargetDeviceIds } = require("../utils/access");
 const { logOperation } = require("../utils/logging");
 const { publishDeviceEvent } = require("../utils/realtime.hub");
+const {
+  saveXiqueSyncConfig,
+  getXiqueStatus,
+  prepareXiqueLogin,
+  submitXiqueImport,
+  reverifyXiqueSession,
+} = require("../services/xique_sync.service");
 
 const router = express.Router();
 router.use(allowRoles("admin", "user", "device"));
@@ -180,6 +187,12 @@ router.post(
           // Legacy compatibility fields for existing device-side parsers.
           courseName: title,
           note: content,
+          source: "manual",
+          sourceKey: "",
+          termKey: "",
+          xiqueCourseId: "",
+          xiqueClassKey: "",
+          sourceMeta: {},
           createdAt: now,
           updatedAt: now,
         };
@@ -273,6 +286,12 @@ router.post(
             endTime: normalized.endTime,
             courseName: normalized.title,
             note: normalized.content,
+            source: "manual",
+            sourceKey: "",
+            termKey: "",
+            xiqueCourseId: "",
+            xiqueClassKey: "",
+            sourceMeta: {},
             createdAt: now,
             updatedAt: now,
           };
@@ -328,6 +347,12 @@ router.post(
       endTime: normalized.endTime,
       courseName: normalized.title,
       note: normalized.content,
+      source: "manual",
+      sourceKey: "",
+      termKey: "",
+      xiqueCourseId: "",
+      xiqueClassKey: "",
+      sourceMeta: {},
       createdAt: now,
       updatedAt: now,
     };
@@ -496,6 +521,61 @@ router.post(
     });
 
     res.success({ deletedIds: removableIds }, "批量删除完成");
+  })
+);
+
+router.get(
+  "/xique/status",
+  allowRoles("admin", "user"),
+  asyncHandler(async (req, res) => {
+    const deviceId = String(req.query?.deviceId || "").trim();
+    if (!deviceId) throw new HttpError(400, "deviceId涓嶈兘涓虹┖");
+    const status = await getXiqueStatus({ auth: req.auth, deviceId });
+    res.success(status, "ok");
+  })
+);
+
+router.post(
+  "/xique/config",
+  allowRoles("admin", "user"),
+  asyncHandler(async (req, res) => {
+    const deviceId = String(req.body?.deviceId || "").trim();
+    if (!deviceId) throw new HttpError(400, "deviceId涓嶈兘涓虹┖");
+    const result = await saveXiqueSyncConfig({ auth: req.auth, deviceId, body: req.body || {} });
+    res.success(result, "喜鹊课程表配置已保存");
+  })
+);
+
+router.post(
+  "/xique/init-login",
+  allowRoles("admin", "user"),
+  asyncHandler(async (req, res) => {
+    const deviceId = String(req.body?.deviceId || "").trim();
+    if (!deviceId) throw new HttpError(400, "deviceId涓嶈兘涓虹┖");
+    const result = await prepareXiqueLogin({ auth: req.auth, deviceId, body: req.body || {} });
+    res.success(result, result.captchaRequired ? "需要验证码" : "登录已就绪");
+  })
+);
+
+router.post(
+  "/xique/import",
+  allowRoles("admin", "user"),
+  asyncHandler(async (req, res) => {
+    const deviceId = String(req.body?.deviceId || "").trim();
+    if (!deviceId) throw new HttpError(400, "deviceId涓嶈兘涓虹┖");
+    const result = await submitXiqueImport({ auth: req.auth, deviceId, body: req.body || {} });
+    res.success(result, result.status === "imported" ? "喜鹊课程表导入成功" : "需要验证码");
+  })
+);
+
+router.post(
+  "/xique/reverify",
+  allowRoles("admin", "user"),
+  asyncHandler(async (req, res) => {
+    const deviceId = String(req.body?.deviceId || "").trim();
+    if (!deviceId) throw new HttpError(400, "deviceId涓嶈兘涓虹┖");
+    const result = await reverifyXiqueSession({ auth: req.auth, deviceId, body: req.body || {} });
+    res.success(result, result.captchaRequired ? "需要验证码" : "重新验证已就绪");
   })
 );
 

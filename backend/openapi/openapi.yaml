@@ -108,12 +108,103 @@ components:
       properties:
         id: { type: string }
         deviceId: { type: string }
+        mode: { type: string }
         weekday: { type: integer }
         orderIndex: { type: integer }
+        title: { type: string }
+        content: { type: string }
         courseName: { type: string }
         note: { type: string }
+        source: { type: string }
+        sourceKey: { type: string }
+        termKey: { type: string }
+        xiqueCourseId: { type: string }
+        xiqueClassKey: { type: string }
+        sourceMeta: { type: object }
         createdAt: { type: string }
         updatedAt: { type: string }
+    XiqueScheduleConfig:
+      type: object
+      properties:
+        id: { type: string }
+        deviceId: { type: string }
+        source: { type: string, example: xique }
+        enabled: { type: boolean }
+        intervalMinutes:
+          type: integer
+          enum: [10, 30, 60]
+        currentTermKey: { type: string }
+        adapterMode: { type: string, example: mock }
+        baseUrl: { type: string }
+        sampleUrl: { type: string }
+        sampleHtml: { type: string }
+        requireCaptcha: { type: boolean }
+        needCaptchaReverify: { type: boolean }
+        paused: { type: boolean }
+        pauseReason: { type: string }
+        pauseUntil: { type: string }
+        failureCount: { type: integer }
+        lastAttemptAt: { type: string }
+        lastSuccessAt: { type: string }
+        lastError: { type: string }
+        nextRunAt: { type: string }
+        loginUsername: { type: string }
+        loginDisplayName: { type: string }
+        createdAt: { type: string }
+        updatedAt: { type: string }
+    XiqueVault:
+      type: object
+      properties:
+        id: { type: string }
+        configId: { type: string }
+        deviceId: { type: string }
+        state: { type: string }
+        sessionId: { type: string }
+        sessionExpiresAt: { type: string }
+        captchaSession: { type: string }
+        captchaImage: { type: string }
+        captchaExpiresAt: { type: string }
+        needCaptchaReverify: { type: boolean }
+        lastVerifiedAt: { type: string }
+        lastLoginAt: { type: string }
+        lastError: { type: string }
+        hasCredential: { type: boolean }
+        hasSession: { type: boolean }
+    XiqueStatus:
+      type: object
+      properties:
+        deviceId: { type: string }
+        config: { $ref: '#/components/schemas/XiqueScheduleConfig' }
+        session: { $ref: '#/components/schemas/XiqueVault' }
+        logs:
+          type: array
+          items: { type: object }
+    XiqueLoginResponse:
+      type: object
+      properties:
+        deviceId: { type: string }
+        configId: { type: string }
+        loginRequired: { type: boolean }
+        captchaRequired: { type: boolean }
+        captchaSession: { type: string }
+        captchaImage: { type: string }
+        captchaExpiresAt: { type: string }
+    XiqueImportResponse:
+      type: object
+      properties:
+        status: { type: string }
+        deviceId: { type: string }
+        configId: { type: string }
+        termKey: { type: string }
+        nextRunAt: { type: string }
+        result:
+          type: object
+          properties:
+            added: { type: integer }
+            updated: { type: integer }
+            skipped: { type: integer }
+            overwritten: { type: integer }
+            imported: { type: integer }
     Template:
       type: object
       properties:
@@ -966,6 +1057,109 @@ paths:
               type: object
               properties:
                 ids: { type: array, items: { type: string } }
+      responses:
+        '200':
+          description: ok
+
+  /api/schedules/xique/status:
+    get:
+      summary: 喜鹊课程表状态
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: query
+          name: deviceId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/schedules/xique/config:
+    post:
+      summary: 保存喜鹊课程表自动更新配置
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                enabled: { type: boolean }
+                intervalMinutes: { type: integer, enum: [10, 30, 60] }
+                currentTermKey: { type: string }
+                adapterMode: { type: string }
+                baseUrl: { type: string }
+                sampleUrl: { type: string }
+                sampleHtml: { type: string }
+                sampleJson: { type: object }
+                requireCaptcha: { type: boolean }
+                loginUsername: { type: string }
+                loginDisplayName: { type: string }
+                password: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/schedules/xique/init-login:
+    post:
+      summary: 初始化喜鹊登录
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                loginUsername: { type: string }
+                password: { type: string }
+                adapterMode: { type: string }
+                requireCaptcha: { type: boolean }
+                currentTermKey: { type: string }
+                sampleUrl: { type: string }
+                sampleHtml: { type: string }
+                sampleJson: { type: object }
+      responses:
+        '200':
+          description: ok
+
+  /api/schedules/xique/import:
+    post:
+      summary: 提交喜鹊课程表导入
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                captchaSession: { type: string }
+                captchaAnswer: { type: string }
+                forceCaptcha: { type: boolean }
+      responses:
+        '200':
+          description: ok
+
+  /api/schedules/xique/reverify:
+    post:
+      summary: 重新验证喜鹊登录态
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                captchaSession: { type: string }
+                captchaAnswer: { type: string }
+                forceCaptcha: { type: boolean }
       responses:
         '200':
           description: ok

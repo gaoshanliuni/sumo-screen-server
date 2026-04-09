@@ -49,20 +49,28 @@
                   <template #title>
                     <div class="group-title-row">
                       <span class="group-title">{{ group.label }}</span>
-                      <el-tag size="small" type="info">{{ group.items.length }}</el-tag>
+                      <el-tag size="small" type="info">{{ group.total }}</el-tag>
                     </div>
                   </template>
-                  <div class="group-items">
-                    <button
-                      v-for="item in group.items"
-                      :key="item.path"
-                      type="button"
-                      class="variable-item"
-                      @click="insertVariable(item.path)"
-                    >
-                      <div class="variable-path">{{ displayPlaceholder(item) }}</div>
-                      <div class="variable-meta">{{ item.example || item.type || item.path }}</div>
-                    </button>
+                  <div class="group-sections">
+                    <section v-for="bucket in group.buckets" :key="`${group.slug}-${bucket.key}`" class="group-section">
+                      <div class="group-subtitle-row">
+                        <span class="group-subtitle">{{ bucket.label }}</span>
+                        <el-tag size="small" type="success">{{ bucket.items.length }}</el-tag>
+                      </div>
+                      <div class="group-items">
+                        <button
+                          v-for="item in bucket.items"
+                          :key="item.path"
+                          type="button"
+                          class="variable-item"
+                          @click="insertVariable(item.path)"
+                        >
+                          <div class="variable-path">{{ displayPlaceholder(item) }}</div>
+                          <div class="variable-meta">{{ item.example || item.type || item.path }}</div>
+                        </button>
+                      </div>
+                    </section>
                   </div>
                 </el-collapse-item>
               </el-collapse>
@@ -85,12 +93,21 @@ type TemplateVariableItem = {
   source?: "base" | "api";
   slug?: string;
   sourceLabel?: string;
+  categoryKey?: string;
+  categoryLabel?: string;
+};
+
+type ApiVariableBucket = {
+  key: string;
+  label: string;
+  items: TemplateVariableItem[];
 };
 
 type ApiVariableGroup = {
   slug: string;
   label: string;
-  items: TemplateVariableItem[];
+  total: number;
+  buckets: ApiVariableBucket[];
 };
 
 const props = withDefaults(
@@ -202,7 +219,8 @@ function matchesKeyword(item: TemplateVariableItem) {
   const text = String(keyword.value || "").trim().toLowerCase();
   if (!text) return true;
   const slug = String(item.slug || "").toLowerCase();
-  return [item.path, item.placeholder, item.example, item.type, item.sourceLabel, slug]
+  const category = String(item.categoryLabel || item.categoryKey || "").toLowerCase();
+  return [item.path, item.placeholder, item.example, item.type, item.sourceLabel, slug, category]
     .filter(Boolean)
     .some((part) => String(part).toLowerCase().includes(text));
 }
@@ -212,22 +230,57 @@ const filteredBaseVariables = computed(() => {
 });
 
 const filteredApiGroups = computed<ApiVariableGroup[]>(() => {
-  const map = new Map<string, TemplateVariableItem[]>();
+  const map = new Map<string, Map<string, TemplateVariableItem[]>>();
   (props.variables || []).forEach((item) => {
     if ((item.source || "base") !== "api") return;
     const slug = String(item.slug || "latest").trim() || "latest";
     if (!matchesKeyword(item)) return;
-    const list = map.get(slug) || [];
+    const categoryKey = String(item.categoryKey || "base");
+    const slugMap = map.get(slug) || new Map<string, TemplateVariableItem[]>();
+    const list = slugMap.get(categoryKey) || [];
     list.push(item);
-    map.set(slug, list);
+    slugMap.set(categoryKey, list);
+    map.set(slug, slugMap);
   });
 
+  const rankBucket = (value: string) => {
+    const key = String(value || "");
+    if (key === "base") return 0;
+    const step = key.match(/^step-(\d+)$/);
+    if (step?.[1]) return 100 + Number(step[1] || 0);
+    if (key === "final") return 9000;
+    return 9999;
+  };
+
+  const bucketLabel = (key: string, items: TemplateVariableItem[]) => {
+    if (key === "base") return "基础属性";
+    const step = key.match(/^step-(\d+)$/);
+    if (step?.[1]) return `第${step[1]}步`;
+    if (key === "final") return "最终结果";
+    return String(items[0]?.categoryLabel || "其他");
+  };
+
   return [...map.entries()]
-    .map(([slug, items]) => ({
-      slug,
-      label: slug,
-      items: items.sort((a, b) => String(a.path || "").localeCompare(String(b.path || ""))),
-    }))
+    .map(([slug, slugMap]) => {
+      const buckets = [...slugMap.entries()]
+        .map(([key, items]) => ({
+          key,
+          label: bucketLabel(key, items),
+          items: items.sort((a, b) => String(a.path || "").localeCompare(String(b.path || ""))),
+        }))
+        .sort((a, b) => {
+          const rank = rankBucket(a.key) - rankBucket(b.key);
+          if (rank !== 0) return rank;
+          return String(a.label || "").localeCompare(String(b.label || ""));
+        });
+      const total = buckets.reduce((sum, item) => sum + item.items.length, 0);
+      return {
+        slug,
+        label: slug,
+        total,
+        buckets,
+      };
+    })
     .sort((a, b) => String(a.label).localeCompare(String(b.label)));
 });
 
@@ -400,6 +453,24 @@ onBeforeUnmount(() => {
   display: grid;
   gap: 8px;
   padding: 4px 2px 4px 0;
+}
+
+.group-sections {
+  display: grid;
+  gap: 12px;
+}
+
+.group-subtitle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.group-subtitle {
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
 }
 
 .template-variable-panel :deep(.el-collapse) {

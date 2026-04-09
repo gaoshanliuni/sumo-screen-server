@@ -148,7 +148,7 @@ function normalizePageConfig(input, fallback, pageType) {
   merged.time_overlay.font_size = clamp(merged.time_overlay.font_size, 12, 220, 88);
   merged.time_overlay.align = normalizeAlign(merged.time_overlay.align, "right");
   merged.time_overlay.refresh_interval_sec = clamp(merged.time_overlay.refresh_interval_sec, 1, 3600, 60);
-  merged.time_overlay.background_clear_mode = String(merged.time_overlay.background_clear_mode || "fill-white");
+  merged.time_overlay.background_clear_mode = String(merged.time_overlay.background_clear_mode || "none");
   merged.time_overlay.invert = Boolean(merged.time_overlay.invert);
 
   merged.cache_policy = merged.cache_policy || {};
@@ -601,8 +601,8 @@ function buildBrowserPreviewDocument(rawHtml, dataModel, width, height, waitConf
   const html = String(rawHtml || "");
   const runtimeScript = buildRuntimeModelScript(dataModel, width, height, waitConfig);
   const baseStyle = `
-    html,body{margin:0;padding:0;width:${width}px;height:${height}px;overflow:hidden;background:#fff;color:#111;}
-    body{font-family:"Noto Sans SC","Microsoft YaHei",Arial,sans-serif;position:relative;}
+    html,body{margin:0;padding:0;width:${width}px;height:${height}px;overflow:hidden;background:#fff;color:#000;}
+    body{font-family:"Noto Sans SC","Microsoft YaHei",Arial,sans-serif;position:relative;-webkit-font-smoothing:none;text-rendering:optimizeSpeed;}
     #page-root{position:relative;width:${width}px;height:${height}px;overflow:hidden;}
     img{max-width:100%;height:auto;}
   `;
@@ -947,6 +947,9 @@ function drawWeatherIcons(ctx, templateHtml, dataModel, width, height) {
 function reserveTimeOverlay(ctx, config) {
   const overlay = config.time_overlay || {};
   if (!overlay.enabled) return;
+  const mode = String(overlay.background_clear_mode || "").toLowerCase();
+  const reserveRegion = overlay.reserve_region === true || mode === "reserve";
+  if (!reserveRegion) return;
 
   const x = Number(overlay.x || 0);
   const y = Number(overlay.y || 0);

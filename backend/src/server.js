@@ -4,9 +4,11 @@ const app = require("./app");
 const config = require("./config");
 const { initStore } = require("./db/store");
 const setupWebSocketServer = require("./ws");
+const { startXiqueScheduler } = require("./services/xique_scheduler.service");
 
 async function bootstrap() {
   await initStore();
+  startXiqueScheduler();
   const server = http.createServer(app);
   setupWebSocketServer(server);
   server.listen(config.port, () => {

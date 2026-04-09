@@ -811,8 +811,8 @@
                   </div>
                 </template>
                 <div v-if="homepagePreviewMode === 'edit'" class="image-preview-shell">
-                  <div class="image-preview-stage" :style="imagePreviewStageStyle">
-                    <img v-if="homepageEditPreviewUrl" :src="homepageEditPreviewUrl" class="image-preview-img" alt="homepage edit preview" />
+                  <div class="image-preview-stage" :style="homepagePreviewStageStyle">
+                    <img v-if="homepageEditPreviewUrl" :src="homepageEditPreviewUrl" class="homepage-preview-img" alt="homepage edit preview" />
                     <div v-else class="image-preview-empty">{{ homepageEditPreviewLoading ? "编辑预览渲染中..." : "编辑模板后自动生成预览" }}</div>
                     <div v-if="showHomepageTimeOverlayPreview" class="time-overlay-preview" :style="homepageTimeOverlayPreviewStyle">
                       <SegmentTimePreview
@@ -821,7 +821,7 @@
                         :format="homepageTimeOverlayFormat"
                         :font-size="homepageTimeOverlayFontSize"
                         :align="homepageTimeOverlayAlign"
-                        color="#111111"
+                        color="#000000"
                       />
                     </div>
                   </div>
@@ -833,8 +833,8 @@
                     <div>size: {{ homepageRenderMeta.image_width || 0 }} x {{ homepageRenderMeta.image_height || 0 }}</div>
                   </div>
                   <div class="image-preview-shell" style="margin-top:10px">
-                    <div class="image-preview-stage" :style="imagePreviewStageStyle">
-                      <img v-if="homepagePreviewUrl" :src="homepagePreviewUrl" class="image-preview-img" alt="homepage preview" />
+                    <div class="image-preview-stage" :style="homepagePreviewStageStyle">
+                      <img v-if="homepagePreviewUrl" :src="homepagePreviewUrl" class="homepage-preview-img" alt="homepage preview" />
                       <div v-else class="image-preview-empty">先执行一次渲染</div>
                       <div v-if="showHomepageTimeOverlayPreview" class="time-overlay-preview" :style="homepageTimeOverlayPreviewStyle">
                         <SegmentTimePreview
@@ -843,7 +843,7 @@
                           :format="homepageTimeOverlayFormat"
                           :font-size="homepageTimeOverlayFontSize"
                           :align="homepageTimeOverlayAlign"
-                          color="#111111"
+                          color="#000000"
                         />
                       </div>
                     </div>
@@ -879,6 +879,13 @@
                       <el-input-number v-model="homepageConfigModel.time_overlay.font_size" :min="12" :max="220" />
                       <el-input-number v-model="homepageConfigModel.time_overlay.refresh_interval_sec" :min="1" :max="3600" />
                     </div>
+                  </el-form-item>
+                  <el-form-item label="时间对齐">
+                    <el-select v-model="homepageConfigModel.time_overlay.align" style="width:160px">
+                      <el-option label="左对齐" value="left" />
+                      <el-option label="居中" value="center" />
+                      <el-option label="右对齐" value="right" />
+                    </el-select>
                   </el-form-item>
                   <el-form-item label="JSON 高级配置">
                     <el-input v-model="homepageConfigJson" type="textarea" :rows="11" />
@@ -1456,6 +1463,8 @@ type HomepageTemplateVariableRow = {
   source?: "base" | "api";
   slug?: string;
   sourceLabel?: string;
+  categoryKey?: string;
+  categoryLabel?: string;
 };
 const homepageDeviceId = ref("");
 const homepageTemplates = ref<HomepageTemplateRow[]>([]);
@@ -1480,6 +1489,7 @@ const homepageConfigModel = reactive<any>({
     height: 180,
     format: "HH:mm",
     font_size: 88,
+    align: "right",
     refresh_interval_sec: 60,
   },
 });
@@ -1491,23 +1501,46 @@ const homepageEditPreviewLoading = ref(false);
 const homepageRenderMeta = reactive<Record<string, any>>({});
 const homepagePreviewMode = ref<"edit" | "delivery">("edit");
 let homepageEditPreviewTimer: ReturnType<typeof setTimeout> | null = null;
+let homepageEditPreviewRevision = 0;
 
 function toPreviewNum(value: unknown, fallback: number) {
   const num = Number(value);
   return Number.isFinite(num) ? num : fallback;
 }
 
-const homepageTimeOverlayBox = computed(() => {
-  const overlay = homepageConfigModel?.time_overlay || {};
+const homepagePreviewSourceSize = computed(() => {
   const image = homepageRenderMeta || {};
   const screen = homepageConfigModel?.screen || {};
-  const sw = Math.max(1, toPreviewNum(screen.width, toPreviewNum(image.image_width, 2560)));
-  const sh = Math.max(1, toPreviewNum(screen.height, toPreviewNum(image.image_height, 1600)));
+  const sw = Math.max(1, toPreviewNum(image.image_width, toPreviewNum(screen.width, 2560)));
+  const sh = Math.max(1, toPreviewNum(image.image_height, toPreviewNum(screen.height, 1600)));
+  return { sw, sh };
+});
+
+const homepagePreviewLayout = computed(() => {
+  const { sw, sh } = homepagePreviewSourceSize.value;
+  const maxWidth = Math.min(Math.round(windowWidth.value * 0.78), 1200);
+  const scale = Math.min(1, maxWidth / sw);
+  const stageW = Math.max(1, Math.round(sw * scale));
+  const stageH = Math.max(1, Math.round(sh * scale));
+  return { sw, sh, stageW, stageH, scale: stageW / sw };
+});
+
+const homepagePreviewStageStyle = computed(() => {
+  const layout = homepagePreviewLayout.value;
+  return {
+    width: `${layout.stageW}px`,
+    height: `${layout.stageH}px`,
+  };
+});
+
+const homepageTimeOverlayBox = computed(() => {
+  const overlay = homepageConfigModel?.time_overlay || {};
+  const layout = homepagePreviewLayout.value;
   const width = Math.max(1, toPreviewNum(overlay.width, 680));
   const height = Math.max(1, toPreviewNum(overlay.height, 180));
-  const x = Math.max(0, toPreviewNum(overlay.x, Math.max(0, sw - width - 32)));
+  const x = Math.max(0, toPreviewNum(overlay.x, Math.max(0, layout.sw - width - 32)));
   const y = Math.max(0, toPreviewNum(overlay.y, 80));
-  return { sw, sh, x, y, width, height };
+  return { sw: layout.sw, sh: layout.sh, x, y, width, height, scale: layout.scale };
 });
 
 const homepageTimeOverlayAlign = computed<"left" | "center" | "right">(() => {
@@ -1523,24 +1556,17 @@ const homepageTimeOverlayFontSize = computed(() => Math.max(12, toPreviewNum(hom
 
 const showHomepageTimeOverlayPreview = computed(() => {
   const overlay = homepageConfigModel?.time_overlay || {};
-  return Boolean(overlay.enabled) && homepageTimeOverlayBox.value.width > 0 && homepageTimeOverlayBox.value.height > 0;
+  const previewUrl = homepagePreviewMode.value === "edit" ? homepageEditPreviewUrl.value : homepagePreviewUrl.value;
+  return Boolean(overlay.enabled) && Boolean(previewUrl) && homepageTimeOverlayBox.value.width > 0 && homepageTimeOverlayBox.value.height > 0;
 });
 
 const homepageTimeOverlayPreviewStyle = computed(() => {
   const box = homepageTimeOverlayBox.value;
   return {
-    left: `${(box.x / box.sw) * 100}%`,
-    top: `${(box.y / box.sh) * 100}%`,
-    width: `${(box.width / box.sw) * 100}%`,
-    height: `${(box.height / box.sh) * 100}%`,
-    display: "flex",
-    justifyContent:
-      homepageTimeOverlayAlign.value === "left"
-        ? "flex-start"
-        : homepageTimeOverlayAlign.value === "center"
-          ? "center"
-          : "flex-end",
-    alignItems: "center",
+    left: `${Math.round(box.x * box.scale)}px`,
+    top: `${Math.round(box.y * box.scale)}px`,
+    width: `${Math.round(box.width * box.scale)}px`,
+    height: `${Math.round(box.height * box.scale)}px`,
   };
 });
 const batchTargetDeviceIds = reactive<Record<"todo" | "schedule" | "templates" | "tf" | "remote" | "homepage", string[]>>({
@@ -2169,6 +2195,7 @@ function applyHomepageConfigModel(data: Record<string, any>) {
       height: 180,
       format: "HH:mm",
       font_size: 88,
+      align: "right",
       refresh_interval_sec: 60,
     };
   }
@@ -2258,6 +2285,48 @@ function buildHomepageRenderTemplatePatch() {
 
 const homepageBaseVariableRoots = new Set(["profile", "todo_summary", "schedule_summary", "weather", "custom_fields", "meta"]);
 
+function classifyHomepageApiVariable(path: string) {
+  const raw = String(path || "").trim();
+  const stepMatch = raw.match(/(?:^|\.)(?:raw\.)?steps\.(\d+)(?:\.|$)/i);
+  if (stepMatch?.[1]) {
+    const stepNo = Number(stepMatch[1]) + 1;
+    return {
+      categoryKey: `step-${stepNo}`,
+      categoryLabel: `第${stepNo}步`,
+    };
+  }
+
+  const lower = raw.toLowerCase();
+  if (
+    lower.includes(".formatted") ||
+    lower.includes(".raw.output") ||
+    lower.startsWith("formatted_by_slug.") ||
+    lower.startsWith("api.formatted_by_slug.")
+  ) {
+    return {
+      categoryKey: "final",
+      categoryLabel: "最终结果",
+    };
+  }
+
+  if (
+    lower.includes(".template.") ||
+    lower.endsWith(".updated_at") ||
+    lower.includes(".raw.vars") ||
+    lower.includes(".raw.steps")
+  ) {
+    return {
+      categoryKey: "base",
+      categoryLabel: "基础属性",
+    };
+  }
+
+  return {
+    categoryKey: "base",
+    categoryLabel: "基础属性",
+  };
+}
+
 function collectHomepageApiSlugs(rows: HomepageTemplateVariableRow[]) {
   const slugs = new Set<string>();
   (rows || []).forEach((row) => {
@@ -2321,6 +2390,7 @@ function normalizeHomepageTemplateVariables(rows: Array<Record<string, any>>) {
       const inferredSource: "base" | "api" = isBase || (!slug && !knownApiSlugs.has(first) && !knownApiSlugs.has(path)) ? "base" : "api";
       const source = String(item?.source || inferredSource) as "base" | "api";
       const resolvedSlug = source === "api" ? (slug || (knownApiSlugs.has(first) ? first : "latest")) : "";
+      const category = source === "api" ? classifyHomepageApiVariable(path) : { categoryKey: "base", categoryLabel: "基础属性" };
       return {
         path,
         placeholder,
@@ -2329,6 +2399,8 @@ function normalizeHomepageTemplateVariables(rows: Array<Record<string, any>>) {
         source,
         slug: resolvedSlug,
         sourceLabel: source === "api" ? "API模板变量" : "基础变量",
+        categoryKey: category.categoryKey,
+        categoryLabel: category.categoryLabel,
       };
     })
     .filter((item) => Boolean(item.path))
@@ -2434,7 +2506,7 @@ async function applyHomepagePreviewImage(image: Record<string, any>, target: typ
   }
 }
 
-async function renderHomepageEditPreview() {
+async function renderHomepageEditPreview(revision = homepageEditPreviewRevision) {
   if (!auth.token || !homepageDeviceId.value || homepagePreviewMode.value !== "edit") return;
   homepageEditPreviewLoading.value = true;
   try {
@@ -2448,25 +2520,32 @@ async function renderHomepageEditPreview() {
         template: buildHomepageTemplatePatchForRender(),
       }),
     });
+    if (revision !== homepageEditPreviewRevision) return;
     Object.keys(homepageRenderMeta).forEach((k) => delete homepageRenderMeta[k]);
     Object.assign(homepageRenderMeta, data.image || {});
     await applyHomepagePreviewImage(data.image || {}, homepageEditPreviewUrl);
     await applyHomepagePreviewImage(data.image || {}, homepagePreviewUrl);
   } catch (_) {
-    clearPreviewRef(homepageEditPreviewUrl);
+    if (revision === homepageEditPreviewRevision) {
+      clearPreviewRef(homepageEditPreviewUrl);
+    }
   } finally {
-    homepageEditPreviewLoading.value = false;
+    if (revision === homepageEditPreviewRevision) {
+      homepageEditPreviewLoading.value = false;
+    }
   }
 }
 
 function scheduleHomepageEditPreview() {
+  homepageEditPreviewRevision += 1;
+  const revision = homepageEditPreviewRevision;
   if (homepageEditPreviewTimer) {
     clearTimeout(homepageEditPreviewTimer);
     homepageEditPreviewTimer = null;
   }
   if (homepagePreviewMode.value !== "edit") return;
   homepageEditPreviewTimer = setTimeout(() => {
-    void renderHomepageEditPreview();
+    void renderHomepageEditPreview(revision);
   }, 450);
 }
 
@@ -3701,6 +3780,13 @@ watch(
 .image-preview-shell { display:flex; justify-content:center; overflow:auto; }
 .image-preview-stage { position:relative; border:1px solid #d9dee8; border-radius:10px; background:#fff; overflow:hidden; }
 .image-preview-img { width:100%; height:100%; object-fit:cover; display:block; }
+.homepage-preview-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  image-rendering: crisp-edges;
+}
 .image-preview-empty { height:100%; display:flex; align-items:center; justify-content:center; color:#64748b; font-size:14px; }
 .time-overlay-preview { position:absolute; border:none; background:transparent; box-sizing:border-box; pointer-events:none; overflow:hidden; padding:0; margin:0; }
 .time-overlay-preview :deep(.segment-time-preview) { width:100%; height:100%; background:transparent; }

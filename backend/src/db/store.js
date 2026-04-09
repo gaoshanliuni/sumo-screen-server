@@ -42,6 +42,122 @@ function ensureTemplateAdvancedConfig(input, method, url) {
   return buildLegacyAdvancedConfig(method, url);
 }
 
+function normalizeIntervalMinutes(value) {
+  const allowed = new Set([10, 30, 60]);
+  const n = Number(value || 60);
+  if (!Number.isFinite(n)) return 60;
+  const rounded = Math.floor(n);
+  return allowed.has(rounded) ? rounded : 60;
+}
+
+function normalizeObjectField(input) {
+  return input && typeof input === "object" && !Array.isArray(input) ? input : {};
+}
+
+function normalizeStringField(input, fallback = "") {
+  return String(input ?? fallback);
+}
+
+function normalizeBooleanField(input, fallback = false) {
+  if (input === undefined || input === null || input === "") return Boolean(fallback);
+  return Boolean(input);
+}
+
+function normalizeScheduleSyncConfigRow(row = {}) {
+  const now = new Date().toISOString();
+  return {
+    id: normalizeStringField(row.id || createId("xsync")),
+    deviceId: normalizeStringField(row.deviceId || ""),
+    ownerId: normalizeStringField(row.ownerId || ""),
+    source: "xique",
+    enabled: normalizeBooleanField(row.enabled, false),
+    intervalMinutes: normalizeIntervalMinutes(row.intervalMinutes),
+    currentTermKey: normalizeStringField(row.currentTermKey || row.termKey || ""),
+    adapterMode: normalizeStringField(row.adapterMode || "mock"),
+    baseUrl: normalizeStringField(row.baseUrl || ""),
+    sampleUrl: normalizeStringField(row.sampleUrl || ""),
+    sampleHtml: normalizeStringField(row.sampleHtml || ""),
+    sampleJson: normalizeObjectField(row.sampleJson),
+    requireCaptcha: normalizeBooleanField(row.requireCaptcha, false),
+    needCaptchaReverify: normalizeBooleanField(row.needCaptchaReverify, false),
+    paused: normalizeBooleanField(row.paused, false),
+    pauseReason: normalizeStringField(row.pauseReason || ""),
+    pauseUntil: normalizeStringField(row.pauseUntil || ""),
+    failureCount: Number(row.failureCount || 0),
+    lastAttemptAt: normalizeStringField(row.lastAttemptAt || ""),
+    lastSuccessAt: normalizeStringField(row.lastSuccessAt || ""),
+    lastError: normalizeStringField(row.lastError || ""),
+    nextRunAt: normalizeStringField(row.nextRunAt || ""),
+    loginUsername: normalizeStringField(row.loginUsername || ""),
+    loginDisplayName: normalizeStringField(row.loginDisplayName || ""),
+    createdAt: normalizeStringField(row.createdAt || now),
+    updatedAt: normalizeStringField(row.updatedAt || now),
+  };
+}
+
+function normalizeXiqueSessionVaultRow(row = {}) {
+  const now = new Date().toISOString();
+  return {
+    id: normalizeStringField(row.id || createId("xvault")),
+    configId: normalizeStringField(row.configId || ""),
+    deviceId: normalizeStringField(row.deviceId || ""),
+    state: normalizeStringField(row.state || "idle"),
+    sessionId: normalizeStringField(row.sessionId || ""),
+    sessionExpiresAt: normalizeStringField(row.sessionExpiresAt || ""),
+    authCookieCipher: normalizeStringField(row.authCookieCipher || ""),
+    authTokenCipher: normalizeStringField(row.authTokenCipher || ""),
+    credentialCipher: normalizeStringField(row.credentialCipher || ""),
+    captchaSession: normalizeStringField(row.captchaSession || ""),
+    captchaImage: normalizeStringField(row.captchaImage || ""),
+    captchaAnswerHash: normalizeStringField(row.captchaAnswerHash || ""),
+    captchaExpiresAt: normalizeStringField(row.captchaExpiresAt || ""),
+    needCaptchaReverify: normalizeBooleanField(row.needCaptchaReverify, false),
+    lastVerifiedAt: normalizeStringField(row.lastVerifiedAt || ""),
+    lastLoginAt: normalizeStringField(row.lastLoginAt || ""),
+    lastError: normalizeStringField(row.lastError || ""),
+    createdAt: normalizeStringField(row.createdAt || now),
+    updatedAt: normalizeStringField(row.updatedAt || now),
+  };
+}
+
+function normalizeSyncLogRow(row = {}) {
+  const now = new Date().toISOString();
+  return {
+    id: normalizeStringField(row.id || createId("xslog")),
+    configId: normalizeStringField(row.configId || ""),
+    deviceId: normalizeStringField(row.deviceId || ""),
+    action: normalizeStringField(row.action || ""),
+    status: normalizeStringField(row.status || "info"),
+    detail: normalizeObjectField(row.detail),
+    createdAt: normalizeStringField(row.createdAt || now),
+  };
+}
+
+function normalizeScheduleRow(row = {}) {
+  const now = new Date().toISOString();
+  return {
+    id: normalizeStringField(row.id || createId("sch")),
+    deviceId: normalizeStringField(row.deviceId || ""),
+    mode: normalizeStringField(String(row.mode || "course")).toLowerCase() === "meeting" ? "meeting" : "course",
+    weekday: Number.isFinite(Number(row.weekday || 0)) ? Math.max(1, Math.min(7, Math.floor(Number(row.weekday || 1)))) : 1,
+    orderIndex: Number.isFinite(Number(row.orderIndex || 0)) && Number(row.orderIndex || 0) > 0 ? Math.floor(Number(row.orderIndex || 0)) : 1,
+    title: normalizeStringField(row.title || row.courseName || ""),
+    content: normalizeStringField(row.content || row.note || ""),
+    startTime: normalizeStringField(row.startTime || ""),
+    endTime: normalizeStringField(row.endTime || ""),
+    courseName: normalizeStringField(row.courseName || row.title || ""),
+    note: normalizeStringField(row.note || row.content || ""),
+    source: normalizeStringField(row.source || "manual"),
+    sourceKey: normalizeStringField(row.sourceKey || ""),
+    termKey: normalizeStringField(row.termKey || row.sourceTermKey || ""),
+    xiqueCourseId: normalizeStringField(row.xiqueCourseId || ""),
+    xiqueClassKey: normalizeStringField(row.xiqueClassKey || ""),
+    sourceMeta: normalizeObjectField(row.sourceMeta),
+    createdAt: normalizeStringField(row.createdAt || now),
+    updatedAt: normalizeStringField(row.updatedAt || now),
+  };
+}
+
 function tableName() {
   return `\`${String(config.mysql.stateTable).replace(/`/g, "")}\``;
 }
@@ -216,6 +332,21 @@ async function getDefaultData() {
         createdAt: now,
         updatedAt: now,
       },
+      {
+        id: "tpl_xique_schedule",
+        name: "喜鹊课程表",
+        slug: "xique_schedule",
+        method: "POST",
+        url: "/api/schedules/xique/import",
+        keyField: "",
+        keyIn: ["query"],
+        deviceKeyRequired: false,
+        defaultParams: {},
+        enabled: false,
+        builtin: true,
+        createdAt: now,
+        updatedAt: now,
+      },
     ],
     operationLogs: [],
     apiLogs: [],
@@ -232,6 +363,9 @@ async function getDefaultData() {
     weatherpageConfigs: [],
     weatherpageImages: [],
     remoteCommandAcks: [],
+    scheduleSyncConfigs: [],
+    xiqueSessionVault: [],
+    syncLogs: [],
   };
 }
 
@@ -269,6 +403,13 @@ function normalizeStoreShape(state) {
   state.weatherpageConfigs = Array.isArray(state.weatherpageConfigs) ? state.weatherpageConfigs : [];
   state.weatherpageImages = Array.isArray(state.weatherpageImages) ? state.weatherpageImages : [];
   state.remoteCommandAcks = Array.isArray(state.remoteCommandAcks) ? state.remoteCommandAcks : [];
+  state.scheduleSyncConfigs = Array.isArray(state.scheduleSyncConfigs) ? state.scheduleSyncConfigs : [];
+  state.xiqueSessionVault = Array.isArray(state.xiqueSessionVault) ? state.xiqueSessionVault : [];
+  state.syncLogs = Array.isArray(state.syncLogs) ? state.syncLogs : [];
+
+  state.schedules.forEach((row) => {
+    Object.assign(row, normalizeScheduleRow(row));
+  });
 
   state.devices.forEach((device) => {
     device.ownerId = device.ownerId || "";
@@ -572,6 +713,19 @@ function normalizeStoreShape(state) {
   });
   if (state.remoteCommandAcks.length > 8000) {
     state.remoteCommandAcks = state.remoteCommandAcks.slice(0, 8000);
+  }
+
+  state.scheduleSyncConfigs.forEach((row) => {
+    Object.assign(row, normalizeScheduleSyncConfigRow(row));
+  });
+  state.xiqueSessionVault.forEach((row) => {
+    Object.assign(row, normalizeXiqueSessionVaultRow(row));
+  });
+  state.syncLogs.forEach((row) => {
+    Object.assign(row, normalizeSyncLogRow(row));
+  });
+  if (state.syncLogs.length > 2000) {
+    state.syncLogs = state.syncLogs.slice(0, 2000);
   }
 }
 

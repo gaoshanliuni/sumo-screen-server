@@ -8,7 +8,8 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "nodemon src/server.js"
+    "dev": "nodemon src/server.js",
+    "test:xique": "node scripts/test_xique_sync.js"
   },
   "dependencies": {
     "@napi-rs/canvas": "^0.1.96",
