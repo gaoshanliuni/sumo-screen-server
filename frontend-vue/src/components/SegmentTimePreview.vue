@@ -138,14 +138,14 @@ const boxHeight = computed(() => Math.max(1, Number(props.height || 0) || 0));
 
 const layout = computed(() => {
   const rawText = displayText.value;
-  const baseFont = clamp(Number(props.fontSize || 88), 16, Math.max(16, boxHeight.value || 88));
-  const baseThick = Math.max(3, Math.round(baseFont / 7));
-  const baseDigitW = Math.max(18, Math.round(baseFont * 0.62));
-  const baseColonW = Math.max(8, Math.round(baseThick * 1.5));
-  const baseSpaceW = Math.max(8, Math.round(baseThick * 1.2));
-  const baseGap = Math.max(3, Math.round(baseThick * 0.6));
-  const padX = Math.max(6, Math.round(baseFont / 6));
-  const padY = Math.max(4, Math.round(baseFont / 6));
+  const baseFont = clamp(Number(props.fontSize || 88), 18, Math.max(18, boxHeight.value || 88));
+  const baseThick = Math.max(4, Math.round(baseFont / 6));
+  const baseDigitW = Math.max(20, Math.round(baseFont * 0.68));
+  const baseColonW = Math.max(10, Math.round(baseThick * 1.35));
+  const baseSpaceW = Math.max(8, Math.round(baseThick * 1.1));
+  const baseGap = Math.max(2, Math.round(baseThick * 0.45));
+  const padX = Math.max(4, Math.round(baseFont / 10));
+  const padY = Math.max(2, Math.round(baseFont / 10));
 
   const measure = [...rawText].reduce((sum, ch) => {
     const kind = classifyChar(ch);
@@ -160,11 +160,11 @@ const layout = computed(() => {
   const availH = Math.max(1, boxHeight.value - padY * 2);
   const ratioW = needW > 0 ? availW / needW : 1;
   const ratioH = needH > 0 ? availH / needH : 1;
-  const scale = clamp(Math.min(1, ratioW, ratioH), 0.35, 1);
+  const scale = clamp(Math.min(1, ratioW, ratioH), 0.5, 1);
 
   const fontSize = Math.max(16, Math.round(baseFont * scale));
-  const thick = Math.max(3, Math.round(baseThick * scale));
-  const digitW = Math.max(16, Math.round(baseDigitW * scale));
+  const thick = Math.max(4, Math.round(baseThick * scale));
+  const digitW = Math.max(18, Math.round(baseDigitW * scale));
   const colonW = Math.max(8, Math.round(baseColonW * scale));
   const spaceW = Math.max(8, Math.round(baseSpaceW * scale));
   const gap = Math.max(2, Math.round(baseGap * scale));
@@ -175,7 +175,7 @@ const layout = computed(() => {
     return sum + spaceW;
   }, 0) + Math.max(0, rawText.length - 1) * gap;
 
-  const innerH = Math.max(fontSize, 16);
+  const innerH = Math.max(fontSize, 18);
   const align = props.align;
   const startX = align === "left" ? padX : align === "center" ? Math.max(padX, Math.round((boxWidth.value - contentW) / 2)) : Math.max(padX, boxWidth.value - padX - contentW);
   const startY = Math.max(padY, Math.round((boxHeight.value - innerH) / 2));

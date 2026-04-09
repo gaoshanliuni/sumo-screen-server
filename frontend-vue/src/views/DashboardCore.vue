@@ -4,7 +4,7 @@
       <template #header>
         <div class="header-row">
           <div class="header-left">
-            <el-button class="menu-toggle" plain @click="toggleSidebar">
+            <el-button v-if="isMobile || !sidebarCollapsed" class="menu-toggle" plain @click="toggleSidebar">
               {{ isMobile ? (mobileNavOpen ? "关闭菜单" : "菜单") : sidebarCollapsed ? "展开侧栏" : "收起侧栏" }}
             </el-button>
             <strong>{{ title }}</strong>
@@ -43,11 +43,9 @@
           </div>
         </el-drawer>
 
-        <el-aside v-if="!isMobile" :width="sidebarCollapsed ? '72px' : '220px'" class="aside-nav" :class="{ collapsed: sidebarCollapsed }">
+        <el-aside v-if="!isMobile && !sidebarCollapsed" width="220px" class="aside-nav">
           <el-menu
             :default-active="activePanel"
-            :collapse="sidebarCollapsed"
-            :collapse-transition="false"
             class="side-menu"
             @select="onSelectPanel"
           >
@@ -56,6 +54,10 @@
             </el-menu-item>
           </el-menu>
         </el-aside>
+
+        <div v-if="!isMobile && sidebarCollapsed" class="sidebar-rail">
+          <el-button class="sidebar-rail-button" plain @click="toggleSidebar">☰</el-button>
+        </div>
 
         <el-main class="content-main">
           <section v-if="activePanel === 'overview'" class="section-wrap">
@@ -882,34 +884,7 @@
                 <div class="row-actions">
                   <el-button type="primary" @click="saveHomepageTemplate">保存模板</el-button>
                   <el-button type="danger" :disabled="!homepageTemplateDraft.id || homepageTemplateDraft.builtin" @click="deleteHomepageTemplate">删除模板</el-button>
-                  <el-popover
-                    v-model:visible="homepageInsertVarVisible"
-                    trigger="click"
-                    placement="bottom-end"
-                    width="420"
-                    :show-after="0"
-                    :hide-after="120"
-                    @show="loadHomepageTemplateVariables"
-                  >
-                    <template #reference>
-                      <el-button>插入变量</el-button>
-                    </template>
-                    <div class="insert-var-box">
-                      <el-input v-model="homepageInsertVarKeyword" placeholder="搜索变量路径，例如 profile.name" clearable />
-                      <div class="insert-var-list">
-                        <div
-                          v-for="item in filteredHomepageTemplateVariables"
-                          :key="item.path"
-                          class="insert-var-item"
-                          @click="insertHomepageTemplateVariable(item.path)"
-                        >
-                          <div class="path">{{ item.path }}</div>
-                          <div class="example">{{ item.example || item.placeholder }}</div>
-                        </div>
-                        <div v-if="!filteredHomepageTemplateVariables.length" class="insert-var-empty">当前设备暂无可用变量</div>
-                      </div>
-                    </div>
-                  </el-popover>
+                  <el-button @click="openHomepageVariablePanel">插入变量</el-button>
                 </div>
               </el-card>
             </div>
@@ -1026,6 +1001,17 @@
         </el-main>
       </el-container>
     </el-card>
+
+    <TemplateVariablePanel
+      v-model="homepageInsertVarVisible"
+      :variables="homepageTemplateVariables"
+      :loading="homepageInsertVarLoading"
+      :is-mobile="isMobile"
+      title="主页变量"
+      subtitle="基础变量 / API模板变量"
+      @refresh="loadHomepageTemplateVariables"
+      @insert="insertHomepageTemplateVariable"
+    />
 
     <el-dialog v-model="previewDialogOpen" title="桌牌等比例预览" width="80%">
       <div class="dialog-preview-wrap">
@@ -1193,6 +1179,7 @@ import { useAuthStore, type AppRole } from "../stores/auth";
 import { useDeviceStore } from "../stores/devices";
 import { apiRequest } from "../services/api";
 import DeviceLassoPicker from "../components/DeviceLassoPicker.vue";
+import TemplateVariablePanel from "../components/TemplateVariablePanel.vue";
 import TemplateAdvancedEditorDialog from "../components/TemplateAdvancedEditorDialog.vue";
 import SegmentTimePreview from "../components/SegmentTimePreview.vue";
 
@@ -1423,6 +1410,15 @@ type HomepageTemplateRow = {
   html: string;
   builtin?: boolean;
 };
+type HomepageTemplateVariableRow = {
+  path: string;
+  placeholder: string;
+  type: string;
+  example: string;
+  source?: "base" | "api";
+  slug?: string;
+  sourceLabel?: string;
+};
 const homepageDeviceId = ref("");
 const homepageTemplates = ref<HomepageTemplateRow[]>([]);
 const homepageTemplateDraft = reactive<HomepageTemplateRow>({
@@ -1432,9 +1428,8 @@ const homepageTemplateDraft = reactive<HomepageTemplateRow>({
   html: "",
   builtin: false,
 });
-const homepageTemplateVariables = ref<Array<{ path: string; placeholder: string; type: string; example: string }>>([]);
+const homepageTemplateVariables = ref<HomepageTemplateVariableRow[]>([]);
 const homepageInsertVarVisible = ref(false);
-const homepageInsertVarKeyword = ref("");
 const homepageInsertVarLoading = ref(false);
 const homepageTemplateHtmlInputRef = ref<any>(null);
 const homepageConfigModel = reactive<any>({
@@ -1500,12 +1495,14 @@ const homepageTimeOverlayPreviewStyle = computed(() => {
     top: `${(box.y / box.sh) * 100}%`,
     width: `${(box.width / box.sw) * 100}%`,
     height: `${(box.height / box.sh) * 100}%`,
+    display: "flex",
     justifyContent:
       homepageTimeOverlayAlign.value === "left"
         ? "flex-start"
         : homepageTimeOverlayAlign.value === "center"
           ? "center"
           : "flex-end",
+    alignItems: "center",
   };
 });
 const batchTargetDeviceIds = reactive<Record<"todo" | "schedule" | "templates" | "tf" | "remote" | "homepage", string[]>>({
@@ -2221,12 +2218,91 @@ function buildHomepageRenderTemplatePatch() {
   };
 }
 
-const filteredHomepageTemplateVariables = computed(() => {
-  const keyword = String(homepageInsertVarKeyword.value || "").trim().toLowerCase();
-  const list = Array.isArray(homepageTemplateVariables.value) ? homepageTemplateVariables.value : [];
-  if (!keyword) return list;
-  return list.filter((item) => String(item.path || "").toLowerCase().includes(keyword));
-});
+const homepageBaseVariableRoots = new Set(["profile", "todo_summary", "schedule_summary", "weather", "custom_fields", "meta"]);
+
+function collectHomepageApiSlugs(rows: HomepageTemplateVariableRow[]) {
+  const slugs = new Set<string>();
+  (rows || []).forEach((row) => {
+    const path = String(row?.path || "").trim();
+    const patterns = [
+      /^api\.third\.([^.]+)/,
+      /^api\.formatted_by_slug\.([^.]+)/,
+      /^api\.raw_by_slug\.([^.]+)/,
+      /^third\.([^.]+)/,
+      /^third_formatted\.([^.]+)/,
+      /^third_raw\.([^.]+)/,
+      /^formatted_by_slug\.([^.]+)/,
+      /^raw_by_slug\.([^.]+)/,
+    ];
+    patterns.some((pattern) => {
+      const match = path.match(pattern);
+      if (!match?.[1]) return false;
+      slugs.add(String(match[1]).trim());
+      return true;
+    });
+  });
+  return slugs;
+}
+
+function normalizeHomepageTemplateVariables(rows: Array<Record<string, any>>) {
+  const rawRows = Array.isArray(rows) ? rows : [];
+  const knownApiSlugs = collectHomepageApiSlugs(
+    rawRows.map((item) => ({
+      path: String(item?.path || ""),
+      placeholder: String(item?.placeholder || ""),
+      type: String(item?.type || ""),
+      example: String(item?.example || ""),
+      source: String(item?.source || "") as "base" | "api" | undefined,
+      slug: String(item?.slug || ""),
+      sourceLabel: String(item?.sourceLabel || ""),
+    }))
+  );
+
+  return rawRows
+    .map((item) => {
+      const path = String(item?.path || "").trim();
+      const placeholder = String(item?.placeholder || `{{${path}}}`);
+      const type = String(item?.type || "string");
+      const example = String(item?.example || "");
+      const first = path.split(".")[0] || "";
+      const matchers = [
+        /^api\.third\.([^.]+)/,
+        /^api\.formatted_by_slug\.([^.]+)/,
+        /^api\.raw_by_slug\.([^.]+)/,
+        /^third\.([^.]+)/,
+        /^third_formatted\.([^.]+)/,
+        /^third_raw\.([^.]+)/,
+        /^formatted_by_slug\.([^.]+)/,
+        /^raw_by_slug\.([^.]+)/,
+      ];
+      const apiMatch = matchers
+        .map((pattern) => path.match(pattern))
+        .find((match) => Boolean(match?.[1]));
+      const slug = String(item?.slug || apiMatch?.[1] || "").trim();
+      const isBase = homepageBaseVariableRoots.has(first) || ["formatted", "raw", "third_latest"].includes(first) || path === "formatted" || path === "raw";
+      const inferredSource: "base" | "api" = isBase || (!slug && !knownApiSlugs.has(first) && !knownApiSlugs.has(path)) ? "base" : "api";
+      const source = String(item?.source || inferredSource) as "base" | "api";
+      const resolvedSlug = source === "api" ? (slug || (knownApiSlugs.has(first) ? first : "latest")) : "";
+      return {
+        path,
+        placeholder,
+        type,
+        example,
+        source,
+        slug: resolvedSlug,
+        sourceLabel: source === "api" ? "API模板变量" : "基础变量",
+      };
+    })
+    .filter((item) => Boolean(item.path))
+    .sort((a, b) => {
+      const sourceRank = (value: string) => (value === "api" ? 1 : 0);
+      const sourceDelta = sourceRank(a.source || "base") - sourceRank(b.source || "base");
+      if (sourceDelta !== 0) return sourceDelta;
+      const slugDelta = String(a.slug || "").localeCompare(String(b.slug || ""));
+      if (slugDelta !== 0) return slugDelta;
+      return String(a.path || "").localeCompare(String(b.path || ""));
+    });
+}
 
 async function loadHomepageTemplateVariables() {
   if (!auth.token || !homepageDeviceId.value) {
@@ -2240,7 +2316,7 @@ async function loadHomepageTemplateVariables() {
       `/api/homepages/template-variables?deviceId=${encodeURIComponent(homepageDeviceId.value)}`,
       { token: auth.token }
     );
-    homepageTemplateVariables.value = Array.isArray(data?.variables) ? data.variables : [];
+    homepageTemplateVariables.value = normalizeHomepageTemplateVariables(Array.isArray(data?.variables) ? data.variables : []);
   } catch (error) {
     homepageTemplateVariables.value = [];
     ElMessage.error((error as Error).message || "加载变量失败");
@@ -2249,7 +2325,7 @@ async function loadHomepageTemplateVariables() {
   }
 }
 
-function openHomepageVariablePopover() {
+function openHomepageVariablePanel() {
   if (!homepageDeviceId.value) {
     homepageInsertVarVisible.value = false;
     ElMessage.warning("请先选择主页目标设备");
@@ -3477,8 +3553,10 @@ watch(
 .workbench-shell { min-height: 760px; max-height: calc(100vh - 180px); border: 1px solid #e5e7eb; border-radius: 18px; overflow: hidden; background:rgba(255,255,255,0.82); backdrop-filter: blur(16px); display:flex; align-items:stretch; }
 .workbench-shell :deep(.el-aside) { overflow:hidden; }
 .aside-nav { border-right: 1px solid #e5e7eb; background: linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(248,250,252,0.92) 100%); display:flex; min-height:0; }
-.aside-nav.collapsed { width:72px; }
 .side-menu { width:100%; min-height:0; flex:1; overflow-y:auto; border-right:none; }
+.sidebar-rail { flex:0 0 48px; width:48px; border-right:1px solid #e5e7eb; background:linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(248,250,252,0.92) 100%); display:flex; align-items:stretch; justify-content:center; }
+.sidebar-rail-button { width:100%; height:100%; border:none; border-radius:0; font-size:20px; font-weight:700; color:#334155; background:transparent; }
+.sidebar-rail-button:hover { background:rgba(59,130,246,0.08); color:#2563eb; }
 .content-main { display:grid; gap:12px; padding:12px; flex:1; min-width:0; overflow:auto; }
 .mobile-nav-drawer :deep(.el-drawer__body) { padding:0; }
 .drawer-shell { display:flex; flex-direction:column; gap:12px; height:100%; padding:16px; box-sizing:border-box; }
@@ -3511,6 +3589,8 @@ watch(
 .image-preview-stage { position:relative; border:1px solid #d9dee8; border-radius:10px; background:#fff; overflow:hidden; }
 .image-preview-img { width:100%; height:100%; object-fit:cover; display:block; }
 .image-preview-empty { height:100%; display:flex; align-items:center; justify-content:center; color:#64748b; font-size:14px; }
+.time-overlay-preview { position:absolute; border:2px solid rgba(239, 68, 68, 0.85); background:transparent; box-sizing:border-box; pointer-events:none; overflow:hidden; padding:0; margin:0; }
+.time-overlay-preview :deep(.segment-time-preview) { width:100%; height:100%; background:transparent; }
 .homepage-edit-preview-frame { width:100%; height:100%; border:0; background:#fff; display:block; }
 .dark-mode .panel { background:rgba(15, 23, 42, 0.82); border-color:#233047; }
 .dark-mode .header-username { color:#dbe7f4; }
@@ -3532,6 +3612,7 @@ watch(
   .workbench-shell { max-height:none; min-height:unset; flex-direction:column; }
   .content-main { overflow:visible; padding:10px; }
   .aside-nav { display:none; }
+  .sidebar-rail { display:none; }
   .overview-hero { flex-direction:column; align-items:flex-start; }
 }
 </style>
