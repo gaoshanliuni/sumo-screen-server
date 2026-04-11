@@ -102,6 +102,27 @@ function createHardwareAuth(db, device) {
   };
 }
 
+function toHardwareDevicePayload(device = {}) {
+  return {
+    id: String(device.id || ""),
+    mac: String(device.mac || ""),
+    ownerId: String(device.ownerId || ""),
+    type: String(device.type || "ink-screen"),
+    remark: String(device.remark || ""),
+    displayName: String(device.displayName || ""),
+    defaultView: String(device.defaultView || "home"),
+    status: String(device.status || "enabled"),
+    firmwareVersion: String(device.firmwareVersion || ""),
+    simulated: Boolean(device.simulated),
+    bindState: String(device.bindState || "pending"),
+    boundAt: String(device.boundAt || ""),
+    boundBy: String(device.boundBy || ""),
+    createdAt: String(device.createdAt || ""),
+    updatedAt: String(device.updatedAt || ""),
+    lastLoginAt: String(device.lastLoginAt || ""),
+  };
+}
+
 function extractToken(req) {
   if (req.query?.token) return String(req.query.token);
   const authHeader = req.headers.authorization || "";
@@ -248,7 +269,7 @@ function applyAutoRegisterOnDraft({
     device.updatedAt = nowIso;
     resultPayload = {
       mode: "already_bound",
-      device,
+      device: toHardwareDevicePayload(device),
       hardwareAuth: createHardwareAuth(draft, device),
     };
     return { resultPayload, publishQueue };
@@ -294,7 +315,7 @@ function applyAutoRegisterOnDraft({
 
   resultPayload = {
     mode: "pending_bind",
-    device,
+    device: toHardwareDevicePayload(device),
     bind: {
       pin,
       expiresAt,
@@ -408,7 +429,7 @@ router.get(
         device.updatedAt = nowIso;
         resultPayload = {
           bound: true,
-          device,
+          device: toHardwareDevicePayload(device),
           hardwareAuth: createHardwareAuth(draft, device),
         };
         return;

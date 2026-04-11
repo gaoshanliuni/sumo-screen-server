@@ -431,8 +431,77 @@
                     <el-tag type="warning">已选设备 {{ batchTargetDeviceIds.templates.length }} 台</el-tag>
                   </div>
                   <el-divider />
+                  <el-form v-if="isWeatherTemplate || isXiqueTemplate" label-width="100px" size="small">
+                    <el-form-item v-if="isWeatherTemplate" label="城市ID">
+                      <el-input v-model="templateParamValues.cityId" placeholder="例如 101010100" />
+                    </el-form-item>
+                    <template v-if="isXiqueTemplate">
+                      <el-form-item label="喜鹊账号">
+                        <el-select v-model="xiqueAccountMode" style="width:100%">
+                          <el-option label="使用已登录账号" value="existing" />
+                          <el-option label="登录新账号" value="new" />
+                        </el-select>
+                      </el-form-item>
+                      <el-form-item v-if="xiqueAccountMode === 'existing'" label="已登录账号">
+                        <el-select v-model="xiqueSelectedAccount" style="width:100%" placeholder="请选择账号" @change="applyXiqueAccountSelection">
+                          <el-option v-for="row in xiqueKnownAccounts" :key="row.value" :label="row.label" :value="row.value" />
+                        </el-select>
+                      </el-form-item>
+                      <el-form-item v-else label="新账号">
+                        <el-input v-model="templateParamValues.loginUsername" placeholder="教务系统账号" />
+                      </el-form-item>
+                      <el-form-item v-if="xiqueAccountMode === 'new'" label="新密码">
+                        <el-input v-model="templateParamValues.password" show-password placeholder="教务系统密码（仅本次调用使用）" />
+                      </el-form-item>
+                      <el-form-item v-if="!xiqueTemplateAutoOcrEnabled" label="验证码">
+                        <el-input
+                          v-model="templateParamValues.captchaAnswer"
+                          placeholder="需要验证码时填写"
+                          @focus="handleXiqueTemplateCaptchaInputFocus"
+                        />
+                      </el-form-item>
+                      <el-form-item label="自动识别验证码">
+                        <el-switch
+                          v-model="templateParamValues.autoOcrEnabled"
+                          active-value="1"
+                          inactive-value="0"
+                        />
+                      </el-form-item>
+                      <el-form-item v-if="!xiqueTemplateAutoOcrEnabled" label="验证码图片">
+                        <div style="display:grid; gap:8px; width:100%">
+                          <img
+                            v-if="xiqueCaptchaImage"
+                            :src="xiqueCaptchaImage"
+                            alt="xique-captcha"
+                            style="max-width:240px; border:1px solid #e5e7eb; border-radius:8px; background:#fff; cursor:pointer"
+                            @click="refreshXiqueTemplateCaptcha"
+                          />
+                          <div v-else style="font-size:12px; color:#64748b">当前未返回验证码，调用后如需手动验证会自动显示。</div>
+                          <div style="font-size:12px; color:#64748b">
+                            会话: {{ xiqueCaptchaSession || "-" }} ｜过期: {{ xiqueCaptchaExpiresAt || "-" }}
+                          </div>
+                          <div class="row-actions">
+                            <el-button size="small" :loading="xiqueStatusLoading" @click="refreshXiqueTemplateCaptcha">刷新验证码</el-button>
+                          </div>
+                        </div>
+                      </el-form-item>
+                      <el-form-item v-else label="验证码">
+                        <div style="font-size:12px; color:#64748b">
+                          已开启自动识别验证码，界面不展示验证码图片与输入框。仅当自动识别失败时再切换为手动输入。
+                        </div>
+                      </el-form-item>
+                      <el-form-item label="学年/学期">
+                        <el-input v-model="templateParamValues.currentTermKey" placeholder="例如 2026-S1" />
+                      </el-form-item>
+                      <div class="row-actions">
+                        <el-button type="primary" plain :loading="xiqueStatusLoading" @click="loginXiqueTemplate">登录验证</el-button>
+                        <el-button :loading="xiqueStatusLoading" @click="refreshXiqueTemplateStatus">刷新喜鹊状态</el-button>
+                        <el-tag>{{ xiqueStatusSummary || "未获取状态" }}</el-tag>
+                      </div>
+                    </template>
+                  </el-form>
                   <div style="display:grid; gap:8px">
-                    <div v-for="(field, idx) in templateDraft.userInputFields" :key="`param-${idx}`">
+                    <div v-for="(field, idx) in templateVisibleInputFields" :key="`param-${idx}`">
                       <el-input v-model="templateParamValues[field.name]" :placeholder="field.placeholder || field.name" />
                     </div>
                   </div>
@@ -913,6 +982,7 @@
                   </el-form-item>
                 </el-form>
                 <div class="row-actions">
+                  <el-button @click="newHomepageTemplate">新建模板</el-button>
                   <el-button type="primary" @click="saveHomepageTemplate">保存模板</el-button>
                   <el-button type="danger" :disabled="!homepageTemplateDraft.id || homepageTemplateDraft.builtin" @click="deleteHomepageTemplate">删除模板</el-button>
                   <el-button @click="openHomepageVariablePanel">插入变量</el-button>
@@ -1399,6 +1469,43 @@ const templateDeviceKey = ref("");
 const templateParamValues = reactive<Record<string, string>>({});
 const templateResultText = ref("");
 const templateBatchClusterIds = ref<string[]>([]);
+const xiqueStatusLoading = ref(false);
+const xiqueKnownAccounts = ref<Array<{ value: string; label: string }>>([]);
+const xiqueAccountMode = ref<"existing" | "new">("existing");
+const xiqueSelectedAccount = ref("");
+const xiqueStatusSummary = ref("");
+const xiqueCaptchaImage = ref("");
+const xiqueCaptchaSession = ref("");
+const xiqueCaptchaExpiresAt = ref("");
+const xiqueTemplateCaptchaFocusAt = ref(0);
+const isWeatherTemplate = computed(() => String(templateDraft.slug || "").trim() === "weather");
+const isXiqueTemplate = computed(() => String(templateDraft.slug || "").trim() === "xique_schedule");
+const xiqueTemplateAutoOcrEnabled = computed(() => {
+  const raw = String(templateParamValues.autoOcrEnabled || "1").trim().toLowerCase();
+  return !["0", "false", "off", "no"].includes(raw);
+});
+const templateVisibleInputFields = computed(() => {
+  const rows = Array.isArray(templateDraft.userInputFields) ? templateDraft.userInputFields : [];
+  const hiddenForWeather = new Set(["cityId", "location", "cityID"]);
+  const hiddenForXique = new Set([
+    "cityId",
+    "loginUsername",
+    "username",
+    "password",
+    "autoOcrEnabled",
+    "captchaAnswer",
+    "captchaSession",
+    "currentTermKey",
+    "termKey",
+  ]);
+  return rows.filter((row) => {
+    const name = String(row?.name || "").trim();
+    if (!name) return false;
+    if (isWeatherTemplate.value && hiddenForWeather.has(name)) return false;
+    if (isXiqueTemplate.value && hiddenForXique.has(name)) return false;
+    return true;
+  });
+});
 
 type FirmwareRow = {
   id: string;
@@ -2355,17 +2462,22 @@ function collectHomepageApiSlugs(rows: HomepageTemplateVariableRow[]) {
 
 function normalizeHomepageTemplateVariables(rows: Array<Record<string, any>>) {
   const rawRows = Array.isArray(rows) ? rows : [];
-  const knownApiSlugs = collectHomepageApiSlugs(
-    rawRows.map((item) => ({
-      path: String(item?.path || ""),
-      placeholder: String(item?.placeholder || ""),
-      type: String(item?.type || ""),
-      example: String(item?.example || ""),
-      source: String(item?.source || "") as "base" | "api" | undefined,
-      slug: String(item?.slug || ""),
-      sourceLabel: String(item?.sourceLabel || ""),
-    }))
-  );
+  const knownApiSlugs = new Set<string>([
+    ...collectHomepageApiSlugs(
+      rawRows.map((item) => ({
+        path: String(item?.path || ""),
+        placeholder: String(item?.placeholder || ""),
+        type: String(item?.type || ""),
+        example: String(item?.example || ""),
+        source: String(item?.source || "") as "base" | "api" | undefined,
+        slug: String(item?.slug || ""),
+        sourceLabel: String(item?.sourceLabel || ""),
+      }))
+    ),
+    ...((templateRows.value || [])
+      .map((tpl) => String(tpl?.slug || "").trim())
+      .filter(Boolean)),
+  ]);
 
   return rawRows
     .map((item) => {
@@ -2389,9 +2501,11 @@ function normalizeHomepageTemplateVariables(rows: Array<Record<string, any>>) {
         .find((match) => Boolean(match?.[1]));
       const slug = String(item?.slug || apiMatch?.[1] || "").trim();
       const isBase = homepageBaseVariableRoots.has(first) || ["formatted", "raw", "third_latest"].includes(first) || path === "formatted" || path === "raw";
-      const inferredSource: "base" | "api" = isBase || (!slug && !knownApiSlugs.has(first) && !knownApiSlugs.has(path)) ? "base" : "api";
+      const inferredSource: "base" | "api" =
+        isBase || (!slug && !knownApiSlugs.has(first) && !knownApiSlugs.has(path)) ? "base" : "api";
       const source = String(item?.source || inferredSource) as "base" | "api";
-      const resolvedSlug = source === "api" ? (slug || (knownApiSlugs.has(first) ? first : "latest")) : "";
+      const resolvedSlug =
+        source === "api" ? (slug || (knownApiSlugs.has(first) ? first : "latest")) : "";
       const category = source === "api" ? classifyHomepageApiVariable(path) : { categoryKey: "base", categoryLabel: "基础属性" };
       return {
         path,
@@ -2573,6 +2687,23 @@ function onSelectHomepageTemplate(id: string) {
   homepageTemplateDraft.type = row.type;
   homepageTemplateDraft.html = row.html;
   homepageTemplateDraft.builtin = Boolean(row.builtin);
+}
+
+function defaultHomepageTemplateHtml() {
+  const selected = findHomepageTemplateRow(getHomepageTemplateId());
+  if (selected?.html) return String(selected.html);
+  const builtin = homepageTemplates.value.find((item) => Boolean(item.builtin)) || homepageTemplates.value[0];
+  if (builtin?.html) return String(builtin.html);
+  return `<div data-x="120" data-y="120" data-size="120" data-weight="700">主页模板</div>`;
+}
+
+function newHomepageTemplate() {
+  homepageTemplateDraft.id = "";
+  homepageTemplateDraft.name = "";
+  homepageTemplateDraft.type = "custom_html";
+  homepageTemplateDraft.builtin = false;
+  homepageTemplateDraft.html = defaultHomepageTemplateHtml();
+  scheduleHomepageEditPreview();
 }
 
 async function loadHomepageConfig() {
@@ -3054,6 +3185,175 @@ function saveTemplateAdvancedConfig(config: TemplateAdvancedConfig) {
   templateDraft.advancedConfig = normalizeTemplateAdvancedConfig(config);
 }
 
+function resetXiqueTemplateState() {
+  xiqueStatusSummary.value = "";
+  xiqueKnownAccounts.value = [];
+  xiqueSelectedAccount.value = "";
+  xiqueAccountMode.value = "existing";
+  xiqueCaptchaImage.value = "";
+  xiqueCaptchaSession.value = "";
+  xiqueCaptchaExpiresAt.value = "";
+  templateParamValues.autoOcrEnabled = "1";
+}
+
+function applyXiqueAccountSelection() {
+  const username = String(xiqueSelectedAccount.value || "").trim();
+  if (!username) return;
+  templateParamValues.loginUsername = username;
+  templateParamValues.username = username;
+}
+
+async function refreshXiqueTemplateStatus() {
+  if (!auth.token || !templateDeviceId.value || !isXiqueTemplate.value) return;
+  xiqueStatusLoading.value = true;
+  try {
+    const data = await apiRequest<any>(`/api/schedules/xique/status?deviceId=${encodeURIComponent(templateDeviceId.value)}`, {
+      token: auth.token,
+    });
+    const cfg = data?.config || {};
+    const session = data?.session || {};
+    const username = String(cfg.loginUsername || "").trim();
+    const hasCredentialUsable = Boolean(session?.hasCredentialUsable);
+    const options = username ? [{ value: username, label: `${username}（已登录）` }] : [];
+    xiqueKnownAccounts.value = options;
+    if (options.length > 0) {
+      if (!xiqueSelectedAccount.value || !options.some((item) => item.value === xiqueSelectedAccount.value)) {
+        xiqueSelectedAccount.value = options[0].value;
+      }
+      if (xiqueAccountMode.value !== "new") {
+        xiqueAccountMode.value = "existing";
+        applyXiqueAccountSelection();
+      }
+    } else {
+      xiqueAccountMode.value = "new";
+    }
+    if (!templateParamValues.currentTermKey) {
+      templateParamValues.currentTermKey = String(cfg.currentTermKey || "");
+    }
+    if (!templateParamValues.baseUrl) {
+      templateParamValues.baseUrl = String(cfg.baseUrl || "");
+    }
+    if (!String(templateParamValues.autoOcrEnabled || "").trim()) {
+      templateParamValues.autoOcrEnabled = "1";
+    }
+    xiqueCaptchaImage.value = String(data?.session?.captchaImage || "");
+    xiqueCaptchaSession.value = String(data?.session?.captchaSession || "");
+    xiqueCaptchaExpiresAt.value = String(data?.session?.captchaExpiresAt || "");
+    if (xiqueCaptchaSession.value) {
+      templateParamValues.captchaSession = xiqueCaptchaSession.value;
+    }
+    if (username && !hasCredentialUsable) {
+      xiqueStatusSummary.value = "已登录账号凭证不可用，请切换“登录新账号”重新验证";
+      xiqueAccountMode.value = "new";
+    } else if (Boolean(cfg.needCaptchaReverify)) {
+      xiqueStatusSummary.value = "登录态失效，需要重新验证";
+    } else if (username) {
+      xiqueStatusSummary.value = "已检测到可复用登录态";
+    } else {
+      xiqueStatusSummary.value = "未检测到已登录账号";
+    }
+  } catch (error) {
+    xiqueKnownAccounts.value = [];
+    xiqueStatusSummary.value = (error as Error).message || "状态读取失败";
+  } finally {
+    xiqueStatusLoading.value = false;
+  }
+}
+
+async function refreshXiqueTemplateCaptcha() {
+  if (!auth.token || !templateDeviceId.value || !isXiqueTemplate.value) return;
+  if (xiqueTemplateAutoOcrEnabled.value) {
+    xiqueStatusSummary.value = "已开启自动识别验证码，无需手动刷新验证码。";
+    return;
+  }
+  xiqueStatusLoading.value = true;
+  try {
+    const payload: Record<string, any> = {
+      deviceId: templateDeviceId.value,
+      adapterMode: "remote",
+      requireCaptcha: true,
+      forceCaptcha: true,
+      loginUsername: String(templateParamValues.loginUsername || templateParamValues.username || "").trim(),
+      currentTermKey: String(templateParamValues.currentTermKey || "").trim(),
+    };
+    const data = await apiRequest<any>("/api/schedules/xique/init-login", {
+      method: "POST",
+      token: auth.token,
+      body: JSON.stringify(payload),
+    });
+    xiqueCaptchaImage.value = String(data?.captchaImage || "");
+    xiqueCaptchaSession.value = String(data?.captchaSession || "");
+    xiqueCaptchaExpiresAt.value = String(data?.captchaExpiresAt || "");
+    templateParamValues.captchaSession = xiqueCaptchaSession.value;
+    ElMessage.success("验证码已刷新");
+  } catch (error) {
+    ElMessage.error((error as Error).message || "刷新验证码失败");
+  } finally {
+    xiqueStatusLoading.value = false;
+  }
+}
+
+async function handleXiqueTemplateCaptchaInputFocus() {
+  if (xiqueTemplateAutoOcrEnabled.value) return;
+  const now = Date.now();
+  if (now - xiqueTemplateCaptchaFocusAt.value < 800) return;
+  xiqueTemplateCaptchaFocusAt.value = now;
+  await refreshXiqueTemplateCaptcha();
+}
+
+async function loginXiqueTemplate() {
+  if (!auth.token || !templateDeviceId.value || !isXiqueTemplate.value) return;
+  xiqueStatusLoading.value = true;
+  try {
+    const username = String(templateParamValues.loginUsername || templateParamValues.username || "").trim();
+    const autoOcrEnabled = xiqueTemplateAutoOcrEnabled.value;
+    const captchaAnswer = String(templateParamValues.captchaAnswer || "").trim();
+    const payload: Record<string, any> = {
+      deviceId: templateDeviceId.value,
+      adapterMode: "remote",
+      requireCaptcha: !autoOcrEnabled,
+      forceCaptcha: !autoOcrEnabled && !captchaAnswer,
+      autoOcrEnabled,
+      loginUsername: username,
+      currentTermKey: String(templateParamValues.currentTermKey || "").trim(),
+      captchaAnswer,
+      captchaSession: String(templateParamValues.captchaSession || xiqueCaptchaSession.value || "").trim(),
+    };
+    if (xiqueAccountMode.value === "new") {
+      payload.password = String(templateParamValues.password || "").trim();
+    }
+    const data = await apiRequest<any>("/api/schedules/xique/init-login", {
+      method: "POST",
+      token: auth.token,
+      body: JSON.stringify(payload),
+      timeoutMs: 120000,
+    });
+    xiqueCaptchaImage.value = String(data?.captchaImage || "");
+    xiqueCaptchaSession.value = String(data?.captchaSession || "");
+    xiqueCaptchaExpiresAt.value = String(data?.captchaExpiresAt || "");
+    templateParamValues.captchaSession = xiqueCaptchaSession.value;
+    if (Boolean(data?.captchaRequired)) {
+      if (autoOcrEnabled) {
+        xiqueStatusSummary.value = "自动识别未完成，需切换手动验证码模式";
+        ElMessage.warning("自动识别失败，请关闭“自动识别验证码”后手动输入验证码");
+      } else {
+        xiqueStatusSummary.value = "需要验证码，已更新验证码图片";
+        ElMessage.warning("请填写验证码后再次点“登录验证”");
+      }
+    } else {
+      xiqueStatusSummary.value = "登录验证成功";
+      templateParamValues.captchaAnswer = "";
+      ElMessage.success("喜鹊登录验证成功");
+      await refreshXiqueTemplateStatus();
+    }
+  } catch (error) {
+    xiqueStatusSummary.value = (error as Error).message || "登录验证失败";
+    ElMessage.error(xiqueStatusSummary.value);
+  } finally {
+    xiqueStatusLoading.value = false;
+  }
+}
+
 async function loadTemplateRows() {
   templateRows.value = await apiRequest<TemplateRow[]>("/api/templates", { token: auth.token });
   if (!templateDraft.id && templateRows.value.length) {
@@ -3081,6 +3381,9 @@ function pickTemplateRow(row: TemplateRow) {
   templateDraft.userInputFields.forEach((f) => {
     if (!templateParamValues[f.name]) templateParamValues[f.name] = "";
   });
+  if (String(row.slug || "").trim() === "xique_schedule" && !String(templateParamValues.autoOcrEnabled || "").trim()) {
+    templateParamValues.autoOcrEnabled = "1";
+  }
   loadTemplateDeviceState();
 }
 
@@ -3145,7 +3448,10 @@ async function deleteTemplateDraft() {
 }
 
 async function loadTemplateDeviceState() {
-  if (!templateDeviceId.value || !templateDraft.slug) return;
+  if (!templateDeviceId.value || !templateDraft.slug) {
+    resetXiqueTemplateState();
+    return;
+  }
   const [keys, params] = await Promise.all([
     apiRequest<Record<string, string>>(`/api/templates/device/${templateDeviceId.value}/keys`, { token: auth.token }),
     apiRequest<Record<string, any>>(`/api/devices/${templateDeviceId.value}/third-params?slug=${encodeURIComponent(templateDraft.slug)}`, { token: auth.token }),
@@ -3158,6 +3464,23 @@ async function loadTemplateDeviceState() {
     const value = params && params[key] !== undefined ? params[key] : "";
     templateParamValues[key] = value === null || value === undefined ? "" : String(value);
   });
+  if (isWeatherTemplate.value) {
+    const city = String(params?.cityId || params?.location || templateParamValues.cityId || "101010100").trim();
+    templateParamValues.cityId = city;
+  }
+  if (isXiqueTemplate.value) {
+    if (String(params?.loginUsername || params?.username || "").trim()) {
+      templateParamValues.loginUsername = String(params?.loginUsername || params?.username || "").trim();
+      templateParamValues.username = String(params?.loginUsername || params?.username || "").trim();
+      xiqueAccountMode.value = "existing";
+      xiqueSelectedAccount.value = templateParamValues.loginUsername;
+    } else {
+      xiqueAccountMode.value = "new";
+    }
+    await refreshXiqueTemplateStatus();
+  } else {
+    resetXiqueTemplateState();
+  }
 }
 
 async function saveTemplateDeviceKey() {
@@ -3177,6 +3500,48 @@ function buildTemplateParamsPayload() {
     if (!key) return;
     payload[key] = String(templateParamValues[key] || "").trim();
   });
+  if (isWeatherTemplate.value) {
+    const city = String(templateParamValues.cityId || payload.cityId || payload.location || "").trim();
+    if (city) {
+      payload.cityId = city;
+      payload.location = city;
+    }
+  }
+  if (isXiqueTemplate.value) {
+    if (xiqueAccountMode.value === "existing") {
+      const username = String(xiqueSelectedAccount.value || templateParamValues.loginUsername || "").trim();
+      if (username) {
+        payload.loginUsername = username;
+        payload.username = username;
+      }
+      delete payload.password;
+    } else {
+      const username = String(templateParamValues.loginUsername || templateParamValues.username || "").trim();
+      if (username) {
+        payload.loginUsername = username;
+        payload.username = username;
+      }
+      const password = String(templateParamValues.password || "").trim();
+      if (password) payload.password = password;
+    }
+    const captcha = String(templateParamValues.captchaAnswer || "").trim();
+    if (captcha) payload.captchaAnswer = captcha;
+    const autoOcrRaw = String(templateParamValues.autoOcrEnabled || "1").trim().toLowerCase();
+    payload.autoOcrEnabled = ["0", "false", "off", "no"].includes(autoOcrRaw) ? "false" : "true";
+    const captchaSession = String(templateParamValues.captchaSession || xiqueCaptchaSession.value || "").trim();
+    if (captchaSession) {
+      payload.captchaSession = captchaSession;
+      payload.sessionId = captchaSession;
+    }
+    const term = String(templateParamValues.currentTermKey || templateParamValues.termKey || "").trim();
+    if (term) {
+      payload.currentTermKey = term;
+      payload.termKey = term;
+    }
+    if (!String(payload.adapterMode || "").trim()) {
+      payload.adapterMode = "remote";
+    }
+  }
   return payload;
 }
 
@@ -3200,6 +3565,26 @@ async function testTemplateApi() {
     token: auth.token,
     body: JSON.stringify({ deviceId: templateDeviceId.value, params: buildTemplateParamsPayload() }),
   });
+  if (isXiqueTemplate.value) {
+    xiqueCaptchaImage.value = String(data?.formatted?.captchaImage || data?.captchaImage || "");
+    xiqueCaptchaSession.value = String(data?.formatted?.captchaSession || data?.captchaSession || "");
+    xiqueCaptchaExpiresAt.value = String(data?.formatted?.captchaExpiresAt || data?.captchaExpiresAt || "");
+    if (xiqueCaptchaSession.value) {
+      templateParamValues.captchaSession = xiqueCaptchaSession.value;
+    }
+    if (Boolean(data?.formatted?.needRelogin || data?.needRelogin)) {
+      ElMessage.warning("已登录账号凭证不可用，请切换“登录新账号”并重新验证");
+      xiqueAccountMode.value = "new";
+    }
+    if (String(data?.formatted?.status || data?.status || "").trim() === "need_manual_captcha") {
+      const attempts = Number(data?.formatted?.ocrAttempts || data?.ocrAttempts || data?.formatted?.ocrFailCount || 0);
+      if (attempts > 0) {
+        ElMessage.warning(`自动识别已尝试 ${attempts} 次，现请手动输入验证码后再次调用`);
+      } else {
+        ElMessage.warning("当前需要手动输入验证码后再次调用");
+      }
+    }
+  }
   templateResultText.value = JSON.stringify(data, null, 2);
 }
 
@@ -3714,6 +4099,31 @@ onBeforeUnmount(() => {
   clearPreviewRef(homepagePreviewUrl);
   clearPreviewRef(homepageEditPreviewUrl);
 });
+
+watch(
+  () => [templateDraft.slug, templateDeviceId.value, auth.token],
+  () => {
+    if (!auth.token || !templateDeviceId.value) {
+      resetXiqueTemplateState();
+      return;
+    }
+    if (isXiqueTemplate.value) {
+      void refreshXiqueTemplateStatus();
+    } else {
+      resetXiqueTemplateState();
+    }
+  },
+  { immediate: true }
+);
+
+watch(
+  () => xiqueAccountMode.value,
+  (mode) => {
+    if (mode === "existing") {
+      applyXiqueAccountSelection();
+    }
+  }
+);
 
 watch(
   () => [

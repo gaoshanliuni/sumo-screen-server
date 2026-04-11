@@ -7,6 +7,11 @@ const { readDB, updateDB } = require("../db/store");
 const { ensureDeviceAccess } = require("../utils/access");
 const { logApi } = require("../utils/logging");
 const config = require("../config");
+const {
+  saveXiqueSyncConfig,
+  submitXiqueImport,
+  getXiqueStatus,
+} = require("../services/xique_sync.service");
 
 const router = express.Router();
 
@@ -85,6 +90,348 @@ function formatBuiltin(slug, raw) {
   return raw;
 }
 
+function parsePeriodRangeFromSourceKey(raw = "", fallbackStart = 1) {
+  const text = String(raw || "");
+  const fullMatch = text.match(/:(\d{1,2}):(\d{1,2})-(\d{1,2})(?::|$)/);
+  if (fullMatch) {
+    const startPeriod = Math.max(1, Number(fullMatch[2] || fallbackStart || 1));
+    const endPeriod = Math.max(startPeriod, Number(fullMatch[3] || startPeriod));
+    return { startPeriod, endPeriod };
+  }
+
+  const simpleMatch = text.match(/(\d{1,2})-(\d{1,2})/);
+  if (simpleMatch) {
+    const startPeriod = Math.max(1, Number(simpleMatch[1] || fallbackStart || 1));
+    const endPeriod = Math.max(startPeriod, Number(simpleMatch[2] || startPeriod));
+    return { startPeriod, endPeriod };
+  }
+
+  const start = Math.max(1, Number(fallbackStart || 1));
+  return { startPeriod: start, endPeriod: start };
+}
+
+function parseContentMeta(raw = "") {
+  const out = {};
+  String(raw || "")
+    .split(";")
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .forEach((part) => {
+      const idx = part.indexOf(":");
+      if (idx <= 0) return;
+      const key = String(part.slice(0, idx) || "").trim().toLowerCase();
+      const value = String(part.slice(idx + 1) || "").trim();
+      if (!value) return;
+      out[key] = value;
+    });
+  return out;
+}
+
+function getWeekdayLabel(weekday) {
+  const map = {
+    1: "Monday",
+    2: "Tuesday",
+    3: "Wednesday",
+    4: "Thursday",
+    5: "Friday",
+    6: "Saturday",
+    7: "Sunday",
+  };
+  return map[Number(weekday) || 1] || "Monday";
+}
+
+function normalizeXiqueScheduleRow(row = {}) {
+  const weekday = Math.max(1, Math.min(7, Number(row.weekday || 1)));
+  const fallbackStart = Math.max(1, Number(row.orderIndex || 1));
+  const fromSourceKey = parsePeriodRangeFromSourceKey(row.sourceKey, fallbackStart);
+  const fromClassKey = parsePeriodRangeFromSourceKey(row.xiqueClassKey, fromSourceKey.startPeriod);
+  const startPeriod = Math.max(1, Number(fromClassKey.startPeriod || fromSourceKey.startPeriod || fallbackStart));
+  const endPeriod = Math.max(startPeriod, Number(fromClassKey.endPeriod || fromSourceKey.endPeriod || startPeriod));
+
+  const sourceMeta =
+    row.sourceMeta && typeof row.sourceMeta === "object" && !Array.isArray(row.sourceMeta) ? row.sourceMeta : {};
+  const parsedContent = parseContentMeta(row.content || row.note || "");
+  const teacherName = String(sourceMeta.teacherName || parsedContent.teacher || "").trim();
+  const location = String(sourceMeta.location || parsedContent.location || "").trim();
+
+  return {
+    id: String(row.id || ""),
+    deviceId: String(row.deviceId || ""),
+    termKey: String(row.termKey || ""),
+    source: String(row.source || ""),
+    sourceKey: String(row.sourceKey || ""),
+    xiqueCourseId: String(row.xiqueCourseId || ""),
+    xiqueClassKey: String(row.xiqueClassKey || ""),
+    courseName: String(row.courseName || row.title || "").trim(),
+    title: String(row.title || row.courseName || "").trim(),
+    content: String(row.content || row.note || "").trim(),
+    teacherName,
+    location,
+    weekday,
+    weekdayLabel: getWeekdayLabel(weekday),
+    position: {
+      startPeriod,
+      endPeriod,
+      slotKey: `${weekday}-${startPeriod}-${endPeriod}`,
+    },
+    timeRange: {
+      startTime: String(row.startTime || "").trim(),
+      endTime: String(row.endTime || "").trim(),
+    },
+    updatedAt: String(row.updatedAt || row.createdAt || ""),
+  };
+}
+
+function buildXiqueScheduleDataset(db, { deviceId, termKey = "" } = {}) {
+  const safeDb = db && typeof db === "object" ? db : {};
+  const allRows = Array.isArray(safeDb.schedules) ? safeDb.schedules : [];
+  const normalizedDeviceId = String(deviceId || "").trim();
+  const normalizedTermKey = String(termKey || "").trim();
+
+  let candidateRows = allRows.filter(
+    (item) => String(item?.deviceId || "") === normalizedDeviceId && String(item?.source || "") === "xique"
+  );
+
+  if (normalizedTermKey) {
+    candidateRows = candidateRows.filter((item) => String(item?.termKey || "") === normalizedTermKey);
+  } else {
+    const latestTerm = candidateRows
+      .map((item) => String(item?.termKey || "").trim())
+      .filter(Boolean)
+      .sort((a, b) => b.localeCompare(a))[0];
+    if (latestTerm) {
+      candidateRows = candidateRows.filter((item) => String(item?.termKey || "") === latestTerm);
+    }
+  }
+
+  const courses = candidateRows
+    .map((item) => normalizeXiqueScheduleRow(item))
+    .sort((a, b) => {
+      if (a.weekday !== b.weekday) return a.weekday - b.weekday;
+      if (a.position.startPeriod !== b.position.startPeriod) return a.position.startPeriod - b.position.startPeriod;
+      if (a.position.endPeriod !== b.position.endPeriod) return a.position.endPeriod - b.position.endPeriod;
+      return String(a.courseName || "").localeCompare(String(b.courseName || ""));
+    });
+
+  const byDay = [];
+  for (let day = 1; day <= 7; day += 1) {
+    const dayCourses = courses.filter((item) => item.weekday === day);
+    byDay.push({
+      weekday: day,
+      weekdayLabel: getWeekdayLabel(day),
+      count: dayCourses.length,
+      courses: dayCourses,
+    });
+  }
+
+  const slotMap = new Map();
+  courses.forEach((item) => {
+    const key = String(item?.position?.slotKey || "");
+    if (!key) return;
+    if (!slotMap.has(key)) {
+      slotMap.set(key, {
+        slotKey: key,
+        weekday: Number(item.weekday || 1),
+        weekdayLabel: getWeekdayLabel(item.weekday),
+        startPeriod: Number(item.position.startPeriod || 1),
+        endPeriod: Number(item.position.endPeriod || 1),
+        courses: [],
+      });
+    }
+    slotMap.get(key).courses.push(item);
+  });
+
+  const bySlot = Array.from(slotMap.values()).sort((a, b) => {
+    if (a.weekday !== b.weekday) return a.weekday - b.weekday;
+    if (a.startPeriod !== b.startPeriod) return a.startPeriod - b.startPeriod;
+    if (a.endPeriod !== b.endPeriod) return a.endPeriod - b.endPeriod;
+    return String(a.slotKey || "").localeCompare(String(b.slotKey || ""));
+  });
+
+  return {
+    schema: "xique_schedule_v1",
+    deviceId: normalizedDeviceId,
+    termKey: normalizedTermKey || (courses[0] ? String(courses[0].termKey || "") : ""),
+    totalCourses: courses.length,
+    byDay,
+    bySlot,
+    courses,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+function getTodayWeekdayInfo() {
+  const tz = String(config.timezone || "Asia/Shanghai");
+  let weekdayLabel = "Monday";
+  try {
+    weekdayLabel = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "long" }).format(new Date());
+  } catch (_) {
+    weekdayLabel = new Intl.DateTimeFormat("en-US", { weekday: "long" }).format(new Date());
+  }
+  const map = {
+    Monday: 1,
+    Tuesday: 2,
+    Wednesday: 3,
+    Thursday: 4,
+    Friday: 5,
+    Saturday: 6,
+    Sunday: 7,
+  };
+  const normalizedLabel = map[weekdayLabel] ? weekdayLabel : "Monday";
+  return {
+    todayWeekday: map[normalizedLabel] || 1,
+    todayWeekdayLabel: normalizedLabel,
+  };
+}
+
+function buildTimeText(startTime = "", endTime = "") {
+  const start = String(startTime || "").trim();
+  const end = String(endTime || "").trim();
+  return `${start}-${end}`;
+}
+
+function sanitizeXiqueScheduleDataset(input = {}) {
+  const safe = input && typeof input === "object" ? input : {};
+  const schema = String(safe.schema || "xique_schedule_v1");
+  const deviceId = String(safe.deviceId || "");
+  const termKey = String(safe.termKey || "");
+  const totalCourses = Number(safe.totalCourses || 0);
+  const generatedAt = String(safe.generatedAt || new Date().toISOString());
+
+  const normalizeCourse = (item = {}) => {
+    const row = item && typeof item === "object" ? item : {};
+    const positionRaw = row.position && typeof row.position === "object" ? row.position : {};
+    const timeRaw = row.timeRange && typeof row.timeRange === "object" ? row.timeRange : {};
+    const weekday = Math.max(1, Math.min(7, Number(row.weekday || 1)));
+    const startPeriod = Math.max(1, Number(positionRaw.startPeriod || 1));
+    const endPeriod = Math.max(startPeriod, Number(positionRaw.endPeriod || startPeriod));
+    const startTime = String(timeRaw.startTime || "").trim();
+    const endTime = String(timeRaw.endTime || "").trim();
+    return {
+      id: String(row.id || ""),
+      deviceId: String(row.deviceId || ""),
+      termKey: String(row.termKey || ""),
+      source: String(row.source || "xique"),
+      sourceKey: String(row.sourceKey || ""),
+      xiqueCourseId: String(row.xiqueCourseId || ""),
+      xiqueClassKey: String(row.xiqueClassKey || ""),
+      courseName: String(row.courseName || row.title || ""),
+      title: String(row.title || row.courseName || ""),
+      content: String(row.content || ""),
+      teacherName: String(row.teacherName || ""),
+      location: String(row.location || ""),
+      weekday,
+      weekdayLabel: String(row.weekdayLabel || getWeekdayLabel(weekday)),
+      position: {
+        startPeriod,
+        endPeriod,
+        slotKey: String(positionRaw.slotKey || `${weekday}-${startPeriod}-${endPeriod}`),
+      },
+      timeRange: {
+        startTime,
+        endTime,
+      },
+      updatedAt: String(row.updatedAt || ""),
+    };
+  };
+
+  const courses = Array.isArray(safe.courses) ? safe.courses.map((item) => normalizeCourse(item)) : [];
+  const byDay = Array.isArray(safe.byDay)
+    ? safe.byDay.map((item, idx) => {
+        const row = item && typeof item === "object" ? item : {};
+        const weekday = Math.max(1, Math.min(7, Number(row.weekday || idx + 1)));
+        const dayCourses = Array.isArray(row.courses) ? row.courses.map((it) => normalizeCourse(it)) : [];
+        return {
+          weekday,
+          weekdayLabel: String(row.weekdayLabel || getWeekdayLabel(weekday)),
+          count: Number(row.count || dayCourses.length),
+          courses: dayCourses,
+        };
+      })
+    : [];
+
+  const bySlot = Array.isArray(safe.bySlot)
+    ? safe.bySlot.map((item) => {
+        const row = item && typeof item === "object" ? item : {};
+        const weekday = Math.max(1, Math.min(7, Number(row.weekday || 1)));
+        const startPeriod = Math.max(1, Number(row.startPeriod || 1));
+        const endPeriod = Math.max(startPeriod, Number(row.endPeriod || startPeriod));
+        const slotCourses = Array.isArray(row.courses) ? row.courses.map((it) => normalizeCourse(it)) : [];
+        return {
+          slotKey: String(row.slotKey || `${weekday}-${startPeriod}-${endPeriod}`),
+          weekday,
+          weekdayLabel: String(row.weekdayLabel || getWeekdayLabel(weekday)),
+          startPeriod,
+          endPeriod,
+          courses: slotCourses,
+        };
+      })
+    : [];
+
+  return {
+    schema,
+    deviceId,
+    termKey,
+    totalCourses: Number.isFinite(totalCourses) ? totalCourses : courses.length,
+    byDay,
+    bySlot,
+    courses,
+    generatedAt,
+  };
+}
+
+function buildTodayViewFromSchedule(schedule = {}) {
+  const safeSchedule = sanitizeXiqueScheduleDataset(schedule);
+  const { todayWeekday, todayWeekdayLabel } = getTodayWeekdayInfo();
+  const todayRow =
+    safeSchedule.byDay.find((item) => Number(item.weekday || 0) === todayWeekday) || {
+      weekday: todayWeekday,
+      weekdayLabel: todayWeekdayLabel,
+      count: 0,
+      courses: [],
+    };
+
+  const todayCourses = (Array.isArray(todayRow.courses) ? todayRow.courses : []).map((item) => {
+    const row = item && typeof item === "object" ? item : {};
+    const title = String(row.title || row.courseName || "");
+    const teacherName = String(row.teacherName || "");
+    const location = String(row.location || "");
+    const startTime = String(row.timeRange?.startTime || "");
+    const endTime = String(row.timeRange?.endTime || "");
+    return {
+      title,
+      teacherName,
+      location,
+      startTime,
+      endTime,
+      timeText: buildTimeText(startTime, endTime),
+    };
+  });
+
+  const todayCourseCount = todayCourses.length;
+  const hasCourseToday = todayCourseCount > 0;
+  const todayCourseText = hasCourseToday
+    ? todayCourses
+        .map((item, idx) => {
+          const timeText = String(item.timeText || "").trim() || "--";
+          const title = String(item.title || "").trim() || "-";
+          const teacherName = String(item.teacherName || "").trim() || "-";
+          const location = String(item.location || "").trim() || "-";
+          return `${idx + 1}. ${timeText}\n${title}｜${teacherName}｜${location}`;
+        })
+        .join("\n\n")
+    : "今天没有课程";
+
+  return {
+    todayWeekday,
+    todayWeekdayLabel,
+    todayCourseCount,
+    todayCourses,
+    todayCourseText,
+    hasCourseToday,
+  };
+}
+
 function buildVarMap(device, tpl, inputParams, vars) {
   const map = {};
   Object.keys(inputParams || {}).forEach((key) => {
@@ -123,6 +470,18 @@ function resolveTemplateObject(obj, varMap) {
     return next;
   }
   return resolveTemplateString(obj, varMap);
+}
+
+function resolveRequestUrl(rawUrl) {
+  const url = String(rawUrl || "").trim();
+  if (!url) return "";
+  if (/^https?:\/\//i.test(url)) return url;
+  if (url.startsWith("//")) return `http:${url}`;
+  if (url.startsWith("/")) return `http://127.0.0.1:${Number(config.port || 8890)}${url}`;
+  if (/^[a-z0-9.-]+:\d+\//i.test(url) || /^[a-z0-9.-]+\//i.test(url)) {
+    return `http://${url}`;
+  }
+  return url;
 }
 
 function getByPath(payload, path) {
@@ -324,7 +683,7 @@ async function runAdvancedTemplate(tpl, device, inputParams) {
   for (let index = 0; index < steps.length; index += 1) {
     const step = steps[index] || {};
     const varMap = buildVarMap(device, tpl, inputParams, vars);
-    const url = resolveTemplateString(step.url || "", varMap);
+    const url = resolveRequestUrl(resolveTemplateString(step.url || "", varMap));
     if (!url) throw new HttpError(400, `高级配置 step${index + 1} url 为空`);
 
     const method = String(step.method || "GET").toUpperCase();
@@ -453,6 +812,114 @@ router.post(
     }
 
     try {
+      if (slug === "xique_schedule") {
+        await saveXiqueSyncConfig({
+          auth: req.auth,
+          deviceId,
+          body: {
+            deviceId,
+            enabled: false,
+            intervalMinutes: 60,
+            loginUsername: String(baseParams.loginUsername || baseParams.username || "").trim(),
+            currentTermKey: String(baseParams.currentTermKey || baseParams.termKey || "").trim(),
+            adapterMode: String(baseParams.adapterMode || "remote").trim(),
+            baseUrl: String(baseParams.baseUrl || "").trim(),
+            requireCaptcha: false,
+          },
+        });
+
+        const xiqueResult = await submitXiqueImport({
+          auth: req.auth,
+          deviceId,
+          body: {
+            loginUsername: String(baseParams.loginUsername || baseParams.username || "").trim(),
+            username: String(baseParams.username || "").trim(),
+            password: String(baseParams.password || "").trim(),
+            captchaAnswer: String(baseParams.captchaAnswer || "").trim(),
+            captchaSession: String(baseParams.captchaSession || "").trim(),
+            currentTermKey: String(baseParams.currentTermKey || baseParams.termKey || "").trim(),
+            termKey: String(baseParams.termKey || "").trim(),
+            adapterMode: String(baseParams.adapterMode || "").trim(),
+            baseUrl: String(baseParams.baseUrl || "").trim(),
+            forceCaptcha: Boolean(baseParams.forceCaptcha),
+          },
+        });
+
+        const xiqueStatus = await getXiqueStatus({ auth: req.auth, deviceId });
+        const latestDb = await readDB();
+        const rawSchedule = buildXiqueScheduleDataset(latestDb, {
+          deviceId,
+          termKey: String(xiqueResult?.termKey || xiqueResult?.result?.termKey || ""),
+        });
+        const schedule = sanitizeXiqueScheduleDataset(rawSchedule);
+        const view = buildTodayViewFromSchedule(schedule);
+        const formatted = {
+          status: String(xiqueResult?.status || "unknown"),
+          termKey: String(xiqueResult?.termKey || xiqueResult?.result?.termKey || ""),
+          imported: Number(xiqueResult?.result?.imported || 0),
+          added: Number(xiqueResult?.result?.added || 0),
+          updated: Number(xiqueResult?.result?.updated || 0),
+          skipped: Number(xiqueResult?.result?.skipped || 0),
+          overwritten: Number(xiqueResult?.result?.overwritten || 0),
+          reason: String(xiqueResult?.reason || ""),
+          needRelogin: Boolean(xiqueResult?.needRelogin),
+          needCaptchaReverify: Boolean(xiqueStatus?.config?.needCaptchaReverify),
+          needManualCaptcha: Boolean(xiqueResult?.needManualCaptcha),
+          taskId: String(xiqueResult?.taskId || xiqueResult?.configId || ""),
+          captchaSession: String(xiqueResult?.captchaSession || ""),
+          captchaImage: String(xiqueResult?.captchaImage || ""),
+          captchaExpiresAt: String(xiqueResult?.captchaExpiresAt || ""),
+          loginUsername: String(xiqueStatus?.config?.loginUsername || ""),
+          schedule,
+          view,
+        };
+        const advancedResult = {
+          output: formatted,
+          vars: {},
+          steps: [
+            {
+              name: "xique_import",
+              status: 200,
+              output: formatted,
+              raw: xiqueResult,
+            },
+          ],
+        };
+        const latencyMs = Date.now() - start;
+        await logApi({
+          callerRole: req.auth.role,
+          callerId: req.auth.userId || req.auth.deviceId || "",
+          deviceId,
+          templateSlug: slug,
+          success: true,
+          statusCode: 200,
+          latencyMs,
+        });
+
+        const cacheEntry = buildThirdCacheEntry(tpl, advancedResult);
+        await updateDB((draft) => {
+          draft.devices = Array.isArray(draft.devices) ? draft.devices : [];
+          const target = draft.devices.find((item) => String(item.id || "") === String(deviceId || ""));
+          if (!target) return;
+          target.thirdApiCache =
+            target.thirdApiCache && typeof target.thirdApiCache === "object" && !Array.isArray(target.thirdApiCache)
+              ? target.thirdApiCache
+              : {};
+          target.thirdApiCache[slug] = cacheEntry;
+          target.updatedAt = new Date().toISOString();
+        });
+
+        return res.success(
+          {
+            template: { slug: tpl.slug, name: tpl.name },
+            deviceId,
+            formatted,
+            raw: advancedResult,
+          },
+          formatted.status === "imported" ? "调用成功" : "调用成功（需要验证码或重验证）"
+        );
+      }
+
       const runtimeTpl = {
         ...tpl,
         advancedConfig: ensureAdvancedTemplateConfig(tpl),
