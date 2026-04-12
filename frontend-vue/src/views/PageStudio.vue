@@ -19,8 +19,8 @@
               <el-option label="用户" value="user" />
             </el-select>
           </el-form-item>
-          <el-form-item label="用户名"><el-input v-model="loginForm.username" /></el-form-item>
-          <el-form-item label="密码"><el-input v-model="loginForm.password" show-password /></el-form-item>
+          <el-form-item label="用户名"><el-input v-model="loginForm.username" autocomplete="off" /></el-form-item>
+          <el-form-item label="密码"><el-input v-model="loginForm.password" show-password autocomplete="new-password" /></el-form-item>
           <el-button type="primary" :loading="loginLoading" @click="doLogin">登录</el-button>
         </el-form>
       </div>
@@ -38,8 +38,8 @@
             <div class="row between">
               <strong>渲染预览</strong>
               <el-radio-group v-model="previewMode" size="small">
-                <el-radio-button label="edit">编辑预览</el-radio-button>
-                <el-radio-button label="delivery">下发预览</el-radio-button>
+                <el-radio-button value="edit">编辑预览</el-radio-button>
+                <el-radio-button value="delivery">下发预览</el-radio-button>
               </el-radio-group>
             </div>
           </template>
@@ -109,10 +109,10 @@
                 <el-option v-for="tpl in templates" :key="tpl.id" :label="tpl.name" :value="tpl.id" />
               </el-select>
             </el-form-item>
-            <el-form-item label="渲染引擎">
-              <el-select v-model="configModel.template.render_engine" style="width: 100%">
-                <el-option label="auto（推荐）" value="auto" />
-                <el-option label="browser（支持 HTML+JS）" value="browser" />
+            <el-form-item label="渲染模式">
+              <el-select v-model="configModel.template.render_mode" style="width: 100%">
+                <el-option label="hybrid（推荐，标准HTML+兼容data-*）" value="hybrid" />
+                <el-option label="web（标准网页渲染）" value="web" />
                 <el-option label="legacy（仅兼容 data-x/data-y）" value="legacy" />
               </el-select>
             </el-form-item>
@@ -274,7 +274,7 @@ type PageType = "homepage" | "badgepage" | "weatherpage";
 const auth = useAuthStore();
 const role = ref<AppRole>("admin");
 const loginLoading = ref(false);
-const loginForm = reactive({ username: "admin", password: "admin123" });
+const loginForm = reactive({ username: "", password: "" });
 
 const pageType = ref<PageType>("homepage");
 const devices = ref<DeviceRow[]>([]);
@@ -353,7 +353,7 @@ const timeOverlayPreviewStyle = computed(() => {
 });
 
 const configModel = reactive<any>({
-  template: { template_id: "tpl_home_default", render_engine: "auto" },
+  template: { template_id: "tpl_home_default", render_engine: "auto", render_mode: "hybrid" },
   time_overlay: {
     enabled: true,
     x: 1820,
@@ -448,8 +448,12 @@ function syncConfigJsonFromModel() {
 function applyConfigModel(data: Record<string, any>) {
   Object.keys(configModel).forEach((k) => delete configModel[k]);
   Object.assign(configModel, data || {});
-  if (!configModel.template) configModel.template = { template_id: "tpl_home_default", render_engine: "auto" };
+  if (!configModel.template) configModel.template = { template_id: "tpl_home_default", render_engine: "auto", render_mode: "hybrid" };
   if (!configModel.template.render_engine) configModel.template.render_engine = "auto";
+  if (!configModel.template.render_mode) {
+    const engine = String(configModel.template.render_engine || "auto").toLowerCase();
+    configModel.template.render_mode = engine === "legacy" ? "legacy" : engine === "browser" ? "web" : "hybrid";
+  }
   if (!configModel.time_overlay) {
     configModel.time_overlay = {
       enabled: true,
@@ -529,7 +533,13 @@ function buildConfigPatch() {
   const patch = parseConfigJson();
   patch.template = patch.template || {};
   patch.template.template_id = String(configModel?.template?.template_id || patch.template.template_id || "tpl_home_default");
-  patch.template.render_engine = String(configModel?.template?.render_engine || patch.template.render_engine || "auto");
+  patch.template.render_mode = String(configModel?.template?.render_mode || patch.template.render_mode || "hybrid");
+  patch.template.render_engine =
+    patch.template.render_mode === "legacy"
+      ? "legacy"
+      : patch.template.render_mode === "web"
+        ? "browser"
+        : "auto";
 
   patch.time_overlay = patch.time_overlay || {};
   const srcOverlay = configModel?.time_overlay || {};

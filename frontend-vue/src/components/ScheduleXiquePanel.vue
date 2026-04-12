@@ -1,10 +1,10 @@
-<template>
+﻿<template>
   <el-card class="xique-panel" shadow="never">
     <template #header>
       <div class="xique-header">
         <div class="xique-header-left">
           <strong>从喜鹊导入</strong>
-          <div class="xique-subtitle">每天 06:00-24:00 按频率自动同步，00:00-06:00 暂停；登录失效后需重新验证。</div>
+          <div class="xique-subtitle">每天 06:00-24:00 按频率自动同步，00:00-06:00 暂停；优先自动识别验证码，连续失败 2 次后回退手动输入。</div>
         </div>
         <div class="xique-header-right">
           <el-tag :type="stateTagType" effect="light">{{ stateTagLabel }}</el-tag>
@@ -42,9 +42,9 @@
 
         <div class="xique-note">
           <div>说明：</div>
-          <div>1. 自动同步只在 06:00-24:00 执行，00:00-06:00 暂停。</div>
+          <div>1. 自动同步仅在 06:00-24:00 执行，00:00-06:00 暂停。</div>
           <div>2. 登录态失效、验证码失效或连续失败时，会提示重新验证。</div>
-          <div>3. 这里的自动更新设置只作用于课程表同步，不会影响主页下发逻辑。</div>
+          <div>3. 这里的自动更新设置仅作用于课程表同步，不影响主页下发逻辑。</div>
         </div>
       </el-col>
 
@@ -97,6 +97,7 @@
     :title="dialogTitle"
     width="min(92vw, 980px)"
     top="6vh"
+    append-to-body
     destroy-on-close
     @closed="resetDialogSecrets"
   >
@@ -124,15 +125,24 @@
               <el-option label="1小时" :value="60" />
             </el-select>
           </el-form-item>
+          <el-form-item label="自动识别验证码">
+            <el-switch v-model="dialogForm.preferAutoOcr" />
+          </el-form-item>
         </el-col>
 
         <el-col :xs="24" :md="12">
           <el-form-item v-if="captchaVisible" label="验证码输入">
-            <el-input v-model="dialogForm.captchaAnswer" placeholder="请输入验证码" autocomplete="off" />
+            <el-input
+              v-model="dialogForm.captchaAnswer"
+              placeholder="请输入验证码"
+              autocomplete="off"
+              @focus="handleCaptchaInputFocus"
+            />
           </el-form-item>
           <el-form-item v-if="captchaVisible" label="验证码图片">
             <div class="captcha-box">
-              <img :src="dialogForm.captchaImage" alt="captcha" class="captcha-image" />
+              <img :src="dialogForm.captchaImage" alt="captcha" class="captcha-image captcha-image-clickable" @click="reloadCaptcha" />
+              <el-button size="small" :loading="dialogOpening" @click="reloadCaptcha">刷新验证码</el-button>
               <div class="captcha-meta">
                 <div>验证码会话：{{ shortId(dialogForm.captchaSession) || "-" }}</div>
                 <div>过期时间：{{ formatDateTime(dialogForm.captchaExpiresAt) }}</div>
@@ -140,7 +150,7 @@
             </div>
           </el-form-item>
           <el-form-item v-else label="验证码">
-            <div class="captcha-placeholder">当前未检测到验证码，提交时如需验证码会自动提示。</div>
+            <div class="captcha-placeholder">当前未检测到验证码。若开启“自动识别验证码”，提交时会先自动识别，失败后再回退手动输入。</div>
           </el-form-item>
         </el-col>
       </el-row>
@@ -163,11 +173,12 @@ import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 import {
   fetchXiqueStatus,
-  importXiqueSchedule,
   initXiqueLogin,
   normalizeXiqueConfig,
   reverifyXiqueLogin,
   saveXiqueConfig,
+  startXiqueImport,
+  verifyXiqueCaptcha,
   type XiqueImportResponse,
   type XiqueInitLoginResponse,
   type XiqueScheduleConfig,
@@ -197,6 +208,8 @@ const dialogAlertType = ref<"info" | "warning" | "success" | "error">("info");
 const status = ref<XiqueStatusResponse | null>(null);
 const configSaveLocked = ref(false);
 const configSaveTimer = ref<ReturnType<typeof setTimeout> | null>(null);
+const lastCaptchaRefreshAt = ref(0);
+const dialogTaskId = ref("");
 
 const configDraft = reactive({
   enabled: false,
@@ -210,11 +223,13 @@ const dialogForm = reactive({
   currentTermKey: "",
   enabled: false,
   intervalMinutes: 60 as 10 | 30 | 60,
+  preferAutoOcr: true,
   captchaSession: "",
   captchaAnswer: "",
   captchaImage: "",
   captchaExpiresAt: "",
 });
+
 
 function shortId(value: string) {
   const raw = String(value || "").trim();
@@ -264,6 +279,7 @@ function cloneConfig(input?: XiqueScheduleConfig | null) {
 function resetDialogSecrets() {
   dialogForm.password = "";
   dialogForm.captchaAnswer = "";
+  dialogTaskId.value = "";
 }
 
 function syncConfigDraft(next?: XiqueScheduleConfig | null) {
@@ -289,6 +305,10 @@ function syncDialogCaptcha(response?: Partial<XiqueInitLoginResponse> | Partial<
   dialogForm.captchaSession = String(response?.captchaSession || "");
   dialogForm.captchaImage = String(response?.captchaImage || "");
   dialogForm.captchaExpiresAt = String(response?.captchaExpiresAt || "");
+  dialogForm.captchaAnswer = "";
+  if (response?.taskId || response?.configId) {
+    dialogTaskId.value = String(response?.taskId || response?.configId || "");
+  }
 }
 
 const recentLogs = computed(() => {
@@ -315,18 +335,18 @@ const stateTagType = computed<"info" | "success" | "warning" | "danger">(() => {
 });
 
 const statusText = computed(() => {
-  if (!props.deviceId) return "请先选择课程表设备";
-  if (status.value?.config?.needCaptchaReverify || status.value?.session?.needCaptchaReverify) return "需要重新验证喜鹊登录";
-  if (status.value?.config?.paused) return `已暂停：${status.value?.config?.pauseReason || "未知原因"}`;
-  if (status.value?.config?.enabled) return `自动更新已开启（${status.value?.config?.intervalMinutes || 60} 分钟）`;
-  return "仅手动导入";
+  if (!props.deviceId) return "Please select a schedule device.";
+  if (status.value?.config?.needCaptchaReverify || status.value?.session?.needCaptchaReverify) return "Need Xique reverify.";
+  if (status.value?.config?.paused) return `Paused: ${status.value?.config?.pauseReason || "unknown reason"}`;
+  if (status.value?.config?.enabled) return `Auto sync enabled (${status.value?.config?.intervalMinutes || 60} min)`;
+  return "Manual import only";
 });
 
 const statusAlertText = computed(() => {
-  if (!props.deviceId) return "请选择一个课程表设备后再进行喜鹊导入。";
-  if (status.value?.config?.needCaptchaReverify || status.value?.session?.needCaptchaReverify) return "当前喜鹊登录态已失效，需要重新验证后才能继续自动同步。";
-  if (status.value?.config?.paused) return `自动同步已暂停：${status.value?.config?.pauseReason || "请检查连续失败原因"}`;
-  return "喜鹊导入与课程表自动更新只影响课程表数据，不会触发主页/桌牌下发。";
+  if (!props.deviceId) return "Please select a schedule device first.";
+  if (status.value?.config?.needCaptchaReverify || status.value?.session?.needCaptchaReverify) return "Xique login expired. Please reverify.";
+  if (status.value?.config?.paused) return `Auto sync paused: ${status.value?.config?.pauseReason || "check repeated failures"}`;
+  return "Xique import/sync only updates schedule data.";
 });
 
 const statusAlertType = computed<"info" | "warning" | "success" | "error">(() => {
@@ -336,7 +356,7 @@ const statusAlertType = computed<"info" | "warning" | "success" | "error">(() =>
   return "info";
 });
 
-const captchaVisible = computed(() => Boolean(dialogForm.captchaImage));
+const captchaVisible = computed(() => Boolean(dialogForm.captchaImage) && !dialogForm.preferAutoOcr);
 const dialogTitle = computed(() => (dialogMode.value === "reverify" ? "重新验证喜鹊登录" : "从喜鹊导入课程表"));
 
 async function loadStatus(silent = false) {
@@ -398,6 +418,7 @@ async function saveConfigNow(overrides?: Partial<{ loginUsername: string; loginD
 
 function prepareDialogFromStatus() {
   syncDialogBase(status.value?.config || null);
+  dialogForm.preferAutoOcr = true;
   resetDialogSecrets();
   syncDialogCaptcha(null);
   dialogAlertText.value = "正在请求登录态，请稍候...";
@@ -416,6 +437,8 @@ async function openImportDialog() {
   try {
     const response = await initXiqueLogin(props.token, {
       deviceId: props.deviceId,
+      adapterMode: "remote",
+      autoOcrEnabled: dialogForm.preferAutoOcr,
       currentTermKey: dialogForm.currentTermKey,
       enabled: dialogForm.enabled,
       intervalMinutes: dialogForm.intervalMinutes,
@@ -424,11 +447,16 @@ async function openImportDialog() {
     syncDialogBase(status.value?.config || null);
     if (response.captchaRequired) {
       syncDialogCaptcha(response);
-      dialogAlertText.value = "后端已检测到验证码，请填写验证码后继续导入。";
-      dialogAlertType.value = "warning";
+      if (dialogForm.preferAutoOcr) {
+        dialogAlertText.value = "已检测到验证码，提交时将优先自动识别；若失败会回退手动输入。";
+        dialogAlertType.value = "info";
+      } else {
+        dialogAlertText.value = "后端已检测到验证码，请填写验证码后继续导入。";
+        dialogAlertType.value = "warning";
+      }
     } else {
       syncDialogCaptcha(null);
-      dialogAlertText.value = response.loginRequired ? "请填写账号密码后开始导入。" : "登录态已就绪，可以直接导入课程表。";
+      dialogAlertText.value = response.loginRequired ? "Please input account/password to continue." : "Login session ready, you can import now.";
       dialogAlertType.value = "success";
     }
   } catch (error) {
@@ -454,6 +482,8 @@ async function openReverifyDialog() {
   try {
     const response = await reverifyXiqueLogin(props.token, {
       deviceId: props.deviceId,
+      adapterMode: "remote",
+      autoOcrEnabled: dialogForm.preferAutoOcr,
       currentTermKey: dialogForm.currentTermKey,
       enabled: dialogForm.enabled,
       intervalMinutes: dialogForm.intervalMinutes,
@@ -462,8 +492,13 @@ async function openReverifyDialog() {
     syncDialogBase(status.value?.config || null);
     if (response.captchaRequired) {
       syncDialogCaptcha(response);
-      dialogAlertText.value = "请输入验证码完成重新验证。";
-      dialogAlertType.value = "warning";
+      if (dialogForm.preferAutoOcr) {
+        dialogAlertText.value = "将优先自动识别验证码完成重验证；失败后可改为手动输入。";
+        dialogAlertType.value = "info";
+      } else {
+        dialogAlertText.value = "请输入验证码完成重新验证。";
+        dialogAlertType.value = "warning";
+      }
     } else {
       syncDialogCaptcha(null);
       dialogAlertText.value = "重新验证已就绪，无需验证码。";
@@ -479,11 +514,54 @@ async function openReverifyDialog() {
 }
 
 async function reloadCaptcha() {
-  if (dialogMode.value === "reverify") {
-    await openReverifyDialog();
+  if (!props.token || !props.deviceId) {
+    ElMessage.warning("请先选择课程表设备");
     return;
   }
-  await openImportDialog();
+  dialogOpening.value = true;
+  try {
+    const payload = {
+      deviceId: props.deviceId,
+      adapterMode: "remote",
+      currentTermKey: dialogForm.currentTermKey,
+      enabled: dialogForm.enabled,
+      intervalMinutes: dialogForm.intervalMinutes,
+      autoOcrEnabled: dialogForm.preferAutoOcr,
+      loginUsername: dialogForm.loginUsername,
+      requireCaptcha: true,
+      forceCaptcha: dialogMode.value === "reverify",
+    };
+    const response = dialogMode.value === "reverify"
+      ? await reverifyXiqueLogin(props.token, payload)
+      : await initXiqueLogin(props.token, payload);
+    if (response.captchaRequired) {
+      syncDialogCaptcha(response);
+      if (dialogForm.preferAutoOcr) {
+        dialogAlertText.value = "验证码已刷新，自动识别模式下将不显示验证码输入框。";
+        dialogAlertType.value = "info";
+      } else {
+        dialogAlertText.value = "验证码已刷新，请输入新验证码。";
+        dialogAlertType.value = "warning";
+      }
+    } else {
+      syncDialogCaptcha(null);
+      dialogAlertText.value = "当前会话无需验证码，可直接导入。";
+      dialogAlertType.value = "success";
+    }
+  } catch (error) {
+    dialogAlertText.value = (error as Error).message || "刷新验证码失败";
+    dialogAlertType.value = "error";
+    ElMessage.error(dialogAlertText.value);
+  } finally {
+    dialogOpening.value = false;
+  }
+}
+
+async function handleCaptchaInputFocus() {
+  const now = Date.now();
+  if (now - lastCaptchaRefreshAt.value < 800) return;
+  lastCaptchaRefreshAt.value = now;
+  await reloadCaptcha();
 }
 
 async function submitDialog() {
@@ -502,23 +580,53 @@ async function submitDialog() {
 
   dialogSubmitting.value = true;
   try {
-    const response = await importXiqueSchedule(props.token, {
+    const commonPayload = {
       deviceId: props.deviceId,
+      adapterMode: "remote",
       loginUsername: dialogForm.loginUsername.trim(),
       password: dialogForm.password,
       currentTermKey: dialogForm.currentTermKey.trim(),
       enabled: Boolean(dialogForm.enabled),
-      intervalMinutes: dialogForm.intervalMinutes,
-      captchaSession: dialogForm.captchaSession,
-      captchaAnswer: dialogForm.captchaAnswer.trim(),
-      forceCaptcha: dialogMode.value === "reverify",
-    });
+      intervalMinutes: dialogForm.intervalMinutes as 10 | 30 | 60,
+    };
 
-    if (response.status === "captcha_required") {
+    const manualCaptcha = dialogForm.captchaAnswer.trim();
+    const autoCaptchaEnabled = Boolean(dialogForm.preferAutoOcr);
+    if (!manualCaptcha && captchaVisible.value && !autoCaptchaEnabled) {
+      ElMessage.warning("请先输入验证码，或开启“自动识别验证码”");
+      dialogSubmitting.value = false;
+      return;
+    }
+
+    let response: XiqueImportResponse;
+    if (manualCaptcha) {
+      response = await verifyXiqueCaptcha(props.token, {
+        ...commonPayload,
+        taskId: dialogTaskId.value || undefined,
+        configId: dialogTaskId.value || undefined,
+        captchaSession: dialogForm.captchaSession,
+        sessionId: dialogForm.captchaSession,
+        captchaCode: manualCaptcha,
+      });
+    } else {
+      response = await startXiqueImport(props.token, {
+        ...commonPayload,
+        forceCaptcha: dialogMode.value === "reverify",
+        autoOcrEnabled: autoCaptchaEnabled,
+      });
+    }
+
+    if (response.status === "need_manual_captcha" || response.status === "captcha_required") {
+      if (dialogForm.preferAutoOcr) {
+        dialogForm.preferAutoOcr = false;
+      }
       syncDialogCaptcha(response);
-      dialogAlertText.value = "验证码仍需确认，请重新输入后继续导入。";
+      const attempts = Number(response.ocrAttempts || response.ocrFailCount || 0);
+      dialogAlertText.value = attempts > 0
+        ? `自动识别已尝试 ${attempts} 次，现需手动输入验证码。`
+        : "当前需要手动输入验证码后继续。";
       dialogAlertType.value = "warning";
-      ElMessage.warning("验证码还未通过，请重新输入后再提交");
+      ElMessage.warning("请手动输入验证码");
       return;
     }
 
@@ -534,7 +642,10 @@ async function submitDialog() {
       currentTermKey: dialogForm.currentTermKey.trim(),
     });
 
-    dialogAlertText.value = "喜鹊课程表导入成功。";
+    const ocrAttempts = Number(response.ocrAttempts || 0);
+    dialogAlertText.value = ocrAttempts > 0
+      ? `喜鹊课程表导入成功（自动识别尝试 ${ocrAttempts} 次）。`
+      : "喜鹊课程表导入成功。";
     dialogAlertType.value = "success";
     dialogVisible.value = false;
     ElMessage.success("喜鹊课程表导入成功");
@@ -544,6 +655,9 @@ async function submitDialog() {
     dialogAlertText.value = (error as Error).message || "导入失败";
     dialogAlertType.value = "error";
     ElMessage.error(dialogAlertText.value);
+    if (/captcha/i.test(dialogAlertText.value)) {
+      await reloadCaptcha();
+    }
   } finally {
     dialogSubmitting.value = false;
   }
@@ -703,6 +817,10 @@ onBeforeUnmount(() => {
   background: #fff;
 }
 
+.captcha-image-clickable {
+  cursor: pointer;
+}
+
 .captcha-meta {
   font-size: 12px;
   color: #64748b;
@@ -737,3 +855,7 @@ onBeforeUnmount(() => {
   }
 }
 </style>
+
+
+
+

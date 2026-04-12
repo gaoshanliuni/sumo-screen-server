@@ -3,11 +3,14 @@
 const asyncHandler = require("../utils/asyncHandler");
 const HttpError = require("../utils/httpError");
 const createId = require("../utils/id");
+const config = require("../config");
 const { allowRoles } = require("../middleware/auth");
 const { readDB, updateDB } = require("../db/store");
 const { ensureDeviceAccess, resolveTargetDeviceIds } = require("../utils/access");
 const { publishDeviceEvent } = require("../utils/realtime.hub");
 const { logOperation } = require("../utils/logging");
+const { renderAndPersistForDevice: renderAndPersistForDeviceShared, publishPagePushEvents } = require("../services/page_push.service");
+const { normalizeAutoRenderPushConfig } = require("../services/homepage_auto_push_time.service");
 const {
   configKeyForPage,
   imageKeyForPage,
@@ -87,7 +90,7 @@ function collectTemplateVariables(model) {
   const out = [];
   const seen = new Set();
   const MAX_DEPTH = 6;
-  const MAX_ROWS = 500;
+  const MAX_ROWS = 2000;
 
   const pushPath = (path, value) => {
     if (!path || seen.has(path) || out.length >= MAX_ROWS) {
@@ -139,6 +142,32 @@ function collectTemplateVariables(model) {
       });
     }
   };
+
+  // Ensure every API template slug has at least canonical variable roots exposed,
+  // even when total variable count reaches truncation threshold.
+  const formattedBySlug =
+    model && model.api && typeof model.api === "object" && model.api.formatted_by_slug && typeof model.api.formatted_by_slug === "object"
+      ? model.api.formatted_by_slug
+      : {};
+  const rawBySlug =
+    model && model.api && typeof model.api === "object" && model.api.raw_by_slug && typeof model.api.raw_by_slug === "object"
+      ? model.api.raw_by_slug
+      : {};
+  const thirdBySlug = model && model.third && typeof model.third === "object" ? model.third : {};
+
+  Object.keys(formattedBySlug).forEach((slug) => {
+    if (!slug) return;
+    if (Object.prototype.hasOwnProperty.call(formattedBySlug, slug)) {
+      pushPath(`api.formatted_by_slug.${slug}`, formattedBySlug[slug]);
+      pushPath(`${slug}`, formattedBySlug[slug]);
+    }
+    if (Object.prototype.hasOwnProperty.call(rawBySlug, slug)) {
+      pushPath(`api.raw_by_slug.${slug}`, rawBySlug[slug]);
+    }
+    if (Object.prototype.hasOwnProperty.call(thirdBySlug, slug)) {
+      pushPath(`third.${slug}`, thirdBySlug[slug]);
+    }
+  });
 
   walk(model || {}, "", 0);
   return out;
@@ -227,6 +256,7 @@ function createPageRouter(options) {
       preview_data_url: `data:image/png;base64,${rendered.pngBuffer.toString("base64")}`,
       preview_only: true,
     };
+    payload.render_debug = rendered.debug || {};
 
     return {
       device,
@@ -524,17 +554,39 @@ function createPageRouter(options) {
 
         if (current) {
           const mergedConfig = service.deepMerge(current.config || {}, configPatch);
-          current.config = service.normalizeConfig(mergedConfig);
+          const normalizedConfig = service.normalizeConfig(mergedConfig);
+          if (pageType === "homepage") {
+            normalizedConfig.auto_render_push = normalizeAutoRenderPushConfig(
+              normalizedConfig.auto_render_push || {},
+              {
+                now: new Date(),
+                timeZone: config.timezone || "Asia/Shanghai",
+                recomputeNext: true,
+              }
+            );
+          }
+          current.config = normalizedConfig;
           current.version = Number(current.version || 0) + 1;
           current.updatedAt = now;
           current.updatedBy = String(req.auth.userId || "");
           row = { ...current };
         } else {
+          const normalizedConfig = service.normalizeConfig(configPatch);
+          if (pageType === "homepage") {
+            normalizedConfig.auto_render_push = normalizeAutoRenderPushConfig(
+              normalizedConfig.auto_render_push || {},
+              {
+                now: new Date(),
+                timeZone: config.timezone || "Asia/Shanghai",
+                recomputeNext: true,
+              }
+            );
+          }
           row = {
             id: createId("hpc"),
             ownerId,
             deviceId,
-            config: service.normalizeConfig(configPatch),
+            config: normalizedConfig,
             version: 1,
             createdAt: now,
             updatedAt: now,
@@ -624,44 +676,20 @@ function createPageRouter(options) {
 
       for (const deviceId of target.targetIds) {
         try {
-          const rendered = await renderAndPersistForDevice({
+          const rendered = await renderAndPersistForDeviceShared({
             auth: req.auth,
             deviceId,
             dataPatch: req.body?.data,
             configPatch: req.body?.config,
             templatePatch: req.body?.template,
+            pageType,
+            service,
           });
 
-          publishDeviceEvent({
-            type: `${eventPrefix}.config.updated`,
+          publishPagePushEvents({
+            eventPrefix,
             deviceId,
-            payload: {
-              version: rendered.payload.version,
-              templateId: rendered.payload.template.template_id,
-            },
-          });
-          publishDeviceEvent({
-            type: `${eventPrefix}.image.updated`,
-            deviceId,
-            payload: {
-              etag: rendered.payload.image.etag,
-              imageUrl: rendered.payload.image.image_url,
-              imageId: rendered.payload.image.image_id,
-              width: rendered.payload.image.image_width,
-              height: rendered.payload.image.image_height,
-              format: rendered.payload.image.format,
-            },
-          });
-          publishDeviceEvent({
-            type: `${eventPrefix}.updated`,
-            deviceId,
-            payload: {
-              configVersion: rendered.payload.version,
-              image: rendered.payload.image,
-              time_overlay: rendered.payload.time_overlay,
-              refresh_control: rendered.payload.refresh_control || {},
-              fallback: rendered.payload.fallback,
-            },
+            payload: rendered.payload,
           });
 
           success.push({

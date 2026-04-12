@@ -4,6 +4,7 @@
     :title="title"
     width="92vw"
     top="5vh"
+    append-to-body
     destroy-on-close
     @update:model-value="emit('update:modelValue', $event)"
   >

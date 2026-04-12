@@ -72,6 +72,17 @@ function applyTemplate(raw, device) {
   return text.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, key) => String(vars[key] ?? ""));
 }
 
+function parseBoolean(value, fallback = false) {
+  if (value === undefined || value === null) return Boolean(fallback);
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return Boolean(fallback);
+  if (["1", "true", "yes", "on"].includes(raw)) return true;
+  if (["0", "false", "no", "off"].includes(raw)) return false;
+  return Boolean(fallback);
+}
+
 function normalizeWeekday(value) {
   const n = Number(value || 0);
   if (!Number.isFinite(n) || n < 1 || n > 7) return 1;
@@ -112,7 +123,7 @@ function buildScheduleTitle(body, device) {
     try {
       return source.replace(new RegExp(pattern, "g"), replaceWith);
     } catch (_) {
-      throw new HttpError(400, "姝ｅ垯琛ㄨ揪寮忎笉鍚堟硶");
+      throw new HttpError(400, "Invalid regex pattern");
     }
   }
   if (mode === "template") {
@@ -162,11 +173,11 @@ router.post(
         try {
           title = String(buildScheduleTitle(req.body || {}, device) || "").trim();
         } catch (error) {
-          failed.push({ deviceId, reason: error?.message || "鏍囬鐢熸垚澶辫触" });
+          failed.push({ deviceId, reason: error?.message || "Title generation failed" });
           return;
         }
         if (!title) {
-          failed.push({ deviceId, reason: "鏍囬涓嶈兘涓虹┖" });
+          failed.push({ deviceId, reason: "Title cannot be empty" });
           return;
         }
 
@@ -232,7 +243,7 @@ router.post(
       successDeviceIds: success.map((item) => item.deviceId),
       failed,
       results: success,
-    }, success.length ? "鎵归噺涓嬪彂鎴愬姛" : "鎵归噺涓嬪彂澶辫触");
+    }, success.length ? "Batch dispatch success" : "Batch dispatch failed");
   })
 );
 
@@ -241,7 +252,7 @@ router.post(
   allowRoles("admin", "user"),
   asyncHandler(async (req, res) => {
     const { deviceId, rows = [], deletedIds = [] } = req.body || {};
-    if (!deviceId) throw new HttpError(400, "deviceId涓嶈兘涓虹┖");
+    if (!deviceId) throw new HttpError(400, "deviceId is required");
     if (!Array.isArray(rows) || !Array.isArray(deletedIds)) {
       throw new HttpError(400, "rows/deletedIds must be arrays");
     }
@@ -328,7 +339,7 @@ router.post(
     const { deviceId } = req.body || {};
     const normalized = normalizeScheduleInput(req.body || {});
     if (!deviceId || !normalized) {
-      throw new HttpError(400, "deviceId/title涓哄繀濉」");
+      throw new HttpError(400, "deviceId and title are required");
     }
 
     const db = await readDB();
@@ -376,7 +387,7 @@ router.post(
       detail: { deviceId },
     });
 
-    res.success(row, "璇剧▼鍒涘缓鎴愬姛");
+    res.success(row, "Schedule created");
   })
 );
 
@@ -416,12 +427,12 @@ router.post(
       if (payload.weekday !== undefined) target.weekday = normalizeWeekday(payload.weekday);
       if (payload.orderIndex !== undefined) {
         const orderRaw = Number(payload.orderIndex);
-        if (!Number.isFinite(orderRaw) || orderRaw <= 0) throw new HttpError(400, "orderIndex蹇呴』澶т簬0");
+        if (!Number.isFinite(orderRaw) || orderRaw <= 0) throw new HttpError(400, "orderIndex must be > 0");
         target.orderIndex = Math.floor(orderRaw);
       }
       if (payload.title !== undefined || payload.courseName !== undefined) {
         target.title = String(payload.title || payload.courseName || "").trim();
-        if (!target.title) throw new HttpError(400, "title涓嶈兘涓虹┖");
+        if (!target.title) throw new HttpError(400, "title cannot be empty");
         target.courseName = target.title;
       }
       if (payload.content !== undefined || payload.note !== undefined) {
@@ -487,7 +498,7 @@ router.post(
   "/batch-delete",
   asyncHandler(async (req, res) => {
     const { ids = [] } = req.body || {};
-    if (!Array.isArray(ids) || ids.length === 0) throw new HttpError(400, "ids涓嶈兘涓虹┖");
+    if (!Array.isArray(ids) || ids.length === 0) throw new HttpError(400, "ids is required");
 
     const db = await readDB();
     const visible = getVisibleDeviceIds(db, req.auth);
@@ -520,7 +531,7 @@ router.post(
       targetId: `count:${removableIds.length}`,
     });
 
-    res.success({ deletedIds: removableIds }, "鎵归噺鍒犻櫎瀹屾垚");
+    res.success({ deletedIds: removableIds }, "Batch delete completed");
   })
 );
 
@@ -542,7 +553,7 @@ router.post(
     const deviceId = String(req.body?.deviceId || "").trim();
     if (!deviceId) throw new HttpError(400, "deviceId is required");
     const result = await saveXiqueSyncConfig({ auth: req.auth, deviceId, body: req.body || {} });
-    res.success(result, "鍠滈箠璇剧▼琛ㄩ厤缃凡淇濆瓨");
+    res.success(result, "Xique schedule config saved");
   })
 );
 
@@ -552,7 +563,12 @@ router.post(
   asyncHandler(async (req, res) => {
     const deviceId = String(req.body?.deviceId || "").trim();
     if (!deviceId) throw new HttpError(400, "deviceId is required");
-    const result = await prepareXiqueLogin({ auth: req.auth, deviceId, body: req.body || {} });
+    const result = await prepareXiqueLogin({
+      auth: req.auth,
+      deviceId,
+      body: req.body || {},
+      forceCaptcha: parseBoolean(req.body?.forceCaptcha, false),
+    });
     res.success(result, result.captchaRequired ? "Captcha required" : "Login ready");
   })
 );
@@ -563,8 +579,78 @@ router.post(
   asyncHandler(async (req, res) => {
     const deviceId = String(req.body?.deviceId || "").trim();
     if (!deviceId) throw new HttpError(400, "deviceId is required");
-    const result = await submitXiqueImport({ auth: req.auth, deviceId, body: req.body || {} });
-    res.success(result, result.status === "imported" ? "Xique schedule imported" : "Captcha required");
+    const result = await submitXiqueImport({
+      auth: req.auth,
+      deviceId,
+      body: {
+        ...(req.body || {}),
+        autoOcrEnabled: parseBoolean(req.body?.autoOcrEnabled, true),
+      },
+    });
+    const message = result.status === "imported"
+      ? "Xique schedule imported"
+      : result.status === "need_manual_captcha"
+        ? "Need manual captcha"
+        : "Captcha required";
+    res.success(result, message);
+  })
+);
+
+router.post(
+  "/xique/import/start",
+  allowRoles("admin", "user"),
+  asyncHandler(async (req, res) => {
+    const deviceId = String(req.body?.deviceId || "").trim();
+    if (!deviceId) throw new HttpError(400, "deviceId is required");
+    const result = await submitXiqueImport({
+      auth: req.auth,
+      deviceId,
+      body: {
+        ...(req.body || {}),
+        autoOcrEnabled: true,
+      },
+    });
+    const message = result.status === "imported"
+      ? "Xique schedule imported"
+      : result.status === "need_manual_captcha"
+        ? "Need manual captcha"
+        : "Captcha required";
+    res.success(result, message);
+  })
+);
+
+router.post(
+  "/xique/import/verify-captcha",
+  allowRoles("admin", "user"),
+  asyncHandler(async (req, res) => {
+    const deviceId = String(req.body?.deviceId || "").trim();
+    if (!deviceId) throw new HttpError(400, "deviceId is required");
+    const captchaCode = String(req.body?.captchaCode || req.body?.captchaAnswer || "").trim();
+    if (!captchaCode) throw new HttpError(400, "captchaCode is required");
+    const taskId = String(req.body?.taskId || req.body?.configId || "").trim();
+    const captchaSession = String(req.body?.captchaSession || req.body?.sessionId || "").trim();
+
+    const db = await readDB();
+    ensureDeviceAccess(db, req.auth, deviceId);
+    const cfg = (db.scheduleSyncConfigs || []).find((item) => String(item.deviceId || "") === deviceId);
+    if (!cfg) throw new HttpError(404, "xique config not found");
+    if (taskId && String(cfg.id || "") !== taskId) {
+      throw new HttpError(400, "taskId mismatch");
+    }
+
+    const result = await submitXiqueImport({
+      auth: req.auth,
+      deviceId,
+      body: {
+        ...(req.body || {}),
+        captchaAnswer: captchaCode,
+        captchaSession,
+        autoOcrEnabled: false,
+        forceCaptcha: true,
+      },
+    });
+    const message = result.status === "imported" ? "Xique schedule imported" : "Captcha required";
+    res.success(result, message);
   })
 );
 

@@ -432,6 +432,72 @@ function buildTodayViewFromSchedule(schedule = {}) {
   };
 }
 
+function parseBooleanParam(value) {
+  if (value === undefined || value === null || value === "") return undefined;
+  const normalized = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "y", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "n", "off"].includes(normalized)) return false;
+  return undefined;
+}
+
+function normalizeTodoTemplateItem(row = {}) {
+  const priority =
+    row.priority === null || row.priority === undefined || row.priority === ""
+      ? null
+      : Number.isFinite(Number(row.priority))
+        ? Number(row.priority)
+        : null;
+  return {
+    priority,
+    todo: String(row.id || ""),
+    done: Boolean(row.done),
+    content: String(row.content || ""),
+    createdAt: String(row.createdAt || ""),
+    updatedAt: String(row.updatedAt || ""),
+  };
+}
+
+function buildTodoTemplateDataset(db, { deviceId, doneFilter, limit } = {}) {
+  const normalizedDeviceId = String(deviceId || "").trim();
+  const allRows = Array.isArray(db?.todos)
+    ? db.todos.filter((item) => String(item?.deviceId || "") === normalizedDeviceId)
+    : [];
+
+  let rows = [...allRows];
+  if (typeof doneFilter === "boolean") {
+    rows = rows.filter((item) => Boolean(item?.done) === doneFilter);
+  }
+
+  rows.sort((a, b) => {
+    const pa = a?.priority === null || a?.priority === undefined || a?.priority === "" ? -Infinity : Number(a.priority);
+    const pb = b?.priority === null || b?.priority === undefined || b?.priority === "" ? -Infinity : Number(b.priority);
+    if (pa !== pb) return pb - pa;
+    const aTime = String(a?.updatedAt || a?.createdAt || "");
+    const bTime = String(b?.updatedAt || b?.createdAt || "");
+    return bTime.localeCompare(aTime);
+  });
+
+  const safeLimitRaw = Number(limit || 0);
+  if (Number.isFinite(safeLimitRaw) && safeLimitRaw > 0) {
+    rows = rows.slice(0, Math.min(500, Math.floor(safeLimitRaw)));
+  }
+
+  const todos = rows.map((item) => normalizeTodoTemplateItem(item));
+  const openCount = allRows.filter((item) => !Boolean(item?.done)).length;
+  const doneCount = allRows.length - openCount;
+
+  return {
+    schema: "todo_template_v1",
+    deviceId: normalizedDeviceId,
+    total: allRows.length,
+    openCount,
+    doneCount,
+    filteredCount: todos.length,
+    todos,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
 function buildVarMap(device, tpl, inputParams, vars) {
   const map = {};
   Object.keys(inputParams || {}).forEach((key) => {
@@ -812,6 +878,72 @@ router.post(
     }
 
     try {
+      if (slug === "todo") {
+        const doneFilter = parseBooleanParam(baseParams.done);
+        const todoDataset = buildTodoTemplateDataset(db, {
+          deviceId,
+          doneFilter,
+          limit: baseParams.limit,
+        });
+
+        const formatted = {
+          status: "ok",
+          schema: todoDataset.schema,
+          deviceId,
+          total: Number(todoDataset.total || 0),
+          openCount: Number(todoDataset.openCount || 0),
+          doneCount: Number(todoDataset.doneCount || 0),
+          filteredCount: Number(todoDataset.filteredCount || 0),
+          todos: Array.isArray(todoDataset.todos) ? todoDataset.todos : [],
+          generatedAt: String(todoDataset.generatedAt || new Date().toISOString()),
+        };
+        const advancedResult = {
+          output: formatted,
+          vars: {},
+          steps: [
+            {
+              name: "todo_collect",
+              status: 200,
+              output: formatted,
+              raw: todoDataset,
+            },
+          ],
+        };
+        const latencyMs = Date.now() - start;
+        await logApi({
+          callerRole: req.auth.role,
+          callerId: req.auth.userId || req.auth.deviceId || "",
+          deviceId,
+          templateSlug: slug,
+          success: true,
+          statusCode: 200,
+          latencyMs,
+        });
+
+        const cacheEntry = buildThirdCacheEntry(tpl, advancedResult);
+        await updateDB((draft) => {
+          draft.devices = Array.isArray(draft.devices) ? draft.devices : [];
+          const target = draft.devices.find((item) => String(item.id || "") === String(deviceId || ""));
+          if (!target) return;
+          target.thirdApiCache =
+            target.thirdApiCache && typeof target.thirdApiCache === "object" && !Array.isArray(target.thirdApiCache)
+              ? target.thirdApiCache
+              : {};
+          target.thirdApiCache[slug] = cacheEntry;
+          target.updatedAt = new Date().toISOString();
+        });
+
+        return res.success(
+          {
+            template: { slug: tpl.slug, name: tpl.name },
+            deviceId,
+            formatted,
+            raw: advancedResult,
+          },
+          "调用成功"
+        );
+      }
+
       if (slug === "xique_schedule") {
         await saveXiqueSyncConfig({
           auth: req.auth,

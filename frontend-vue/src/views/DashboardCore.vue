@@ -25,14 +25,22 @@
 
       <div v-if="!auth.token" class="login-wrap">
         <el-form :model="loginForm" label-width="90px" @submit.prevent>
-          <el-form-item label="用户名"><el-input v-model="loginForm.username" /></el-form-item>
-          <el-form-item label="密码"><el-input v-model="loginForm.password" show-password /></el-form-item>
+          <el-form-item label="用户名"><el-input v-model="loginForm.username" autocomplete="username" /></el-form-item>
+          <el-form-item label="密码"><el-input v-model="loginForm.password" show-password autocomplete="current-password" /></el-form-item>
           <el-button type="primary" :loading="loginLoading" @click="doLogin">登录</el-button>
         </el-form>
       </div>
 
       <el-container v-else class="workbench-shell">
-        <el-drawer v-model="mobileNavOpen" class="mobile-nav-drawer" direction="ltr" :show-close="true" :with-header="false" size="82%">
+        <el-drawer
+          v-model="mobileNavOpen"
+          class="mobile-nav-drawer"
+          direction="ltr"
+          :show-close="true"
+          :with-header="false"
+          append-to-body
+          size="86%"
+        >
           <div class="drawer-shell">
             <div class="drawer-title">
               <strong>功能菜单</strong>
@@ -875,15 +883,17 @@
                   <div class="row-between">
                     <strong>渲染预览</strong>
                     <el-radio-group v-model="homepagePreviewMode" size="small">
-                      <el-radio-button label="edit">编辑预览</el-radio-button>
-                      <el-radio-button label="delivery">下发预览</el-radio-button>
+                      <el-radio-button value="edit">编辑预览</el-radio-button>
+                      <el-radio-button value="delivery">下发预览</el-radio-button>
                     </el-radio-group>
                   </div>
                 </template>
                 <div v-if="homepagePreviewMode === 'edit'" class="image-preview-shell">
                   <div class="image-preview-stage" :style="homepagePreviewStageStyle">
                     <img v-if="homepageEditPreviewUrl" :src="homepageEditPreviewUrl" class="homepage-preview-img" alt="homepage edit preview" />
-                    <div v-else class="image-preview-empty">{{ homepageEditPreviewLoading ? "编辑预览渲染中..." : "编辑模板后自动生成预览" }}</div>
+                    <div v-else class="image-preview-empty">
+                      {{ homepageEditPreviewLoading ? "编辑预览渲染中..." : (homepageEditPreviewError || "编辑模板后自动生成预览") }}
+                    </div>
                     <div v-if="showHomepageTimeOverlayPreview" class="time-overlay-preview" :style="homepageTimeOverlayPreviewStyle">
                       <SegmentTimePreview
                         :width="homepageTimeOverlayBox.width"
@@ -962,9 +972,93 @@
                   </el-form-item>
                 </el-form>
                 <div class="row-actions">
-                  <el-button type="primary" @click="saveHomepageConfig">保存配置</el-button>
+                  <el-button type="primary" :loading="homepageConfigSaving" @click="saveHomepageConfig">保存配置</el-button>
                   <el-button @click="renderHomepage">仅渲染</el-button>
-                  <el-button type="success" @click="pushHomepage">渲染并推送</el-button>
+                  <el-button type="success" :loading="homepagePushLoading" @click="pushHomepage">渲染并推送</el-button>
+                </div>
+                <el-divider />
+                <el-form label-width="118px" size="small">
+                  <el-form-item label="自动渲染下发">
+                    <el-switch v-model="homepageConfigModel.auto_render_push.enabled" />
+                  </el-form-item>
+                  <el-form-item label="固定时刻" v-if="homepageConfigModel.auto_render_push.enabled">
+                    <div style="display:grid;gap:6px;width:100%">
+                      <el-select
+                        v-model="homepageConfigModel.auto_render_push.fixed_times"
+                        multiple
+                        filterable
+                        allow-create
+                        default-first-option
+                        clearable
+                        :reserve-keyword="false"
+                        style="width:100%"
+                        placeholder="例如 07:30、12:00、18:30"
+                      >
+                        <el-option v-for="item in homepageAutoFixedTimeOptions" :key="item" :label="item" :value="item" />
+                      </el-select>
+                      <span style="font-size:12px;color:#64748b">支持多个时间点触发，格式为 HH:mm。</span>
+                    </div>
+                  </el-form-item>
+                  <el-form-item label="区间循环触发" v-if="homepageConfigModel.auto_render_push.enabled">
+                    <el-switch v-model="homepageConfigModel.auto_render_push.interval_enabled" />
+                  </el-form-item>
+                  <el-form-item
+                    label="区间开始/结束"
+                    v-if="homepageConfigModel.auto_render_push.enabled && homepageConfigModel.auto_render_push.interval_enabled"
+                  >
+                    <div class="row-actions">
+                      <el-time-picker
+                        v-model="homepageConfigModel.auto_render_push.window_start_time"
+                        value-format="HH:mm"
+                        format="HH:mm"
+                        :clearable="false"
+                        placeholder="07:30"
+                      />
+                      <el-time-picker
+                        v-model="homepageConfigModel.auto_render_push.window_end_time"
+                        value-format="HH:mm"
+                        format="HH:mm"
+                        :clearable="false"
+                        placeholder="23:59"
+                      />
+                    </div>
+                  </el-form-item>
+                  <el-form-item
+                    label="循环间隔"
+                    v-if="homepageConfigModel.auto_render_push.enabled && homepageConfigModel.auto_render_push.interval_enabled"
+                  >
+                    <el-select v-model="homepageConfigModel.auto_render_push.interval_minutes" style="width:180px">
+                      <el-option label="10 分钟" :value="10" />
+                      <el-option label="30 分钟" :value="30" />
+                      <el-option label="1 小时" :value="60" />
+                      <el-option label="2 小时" :value="120" />
+                      <el-option label="6 小时" :value="360" />
+                    </el-select>
+                  </el-form-item>
+                  <el-form-item label="自动任务状态">
+                    <div style="display:grid;gap:6px;font-size:12px;color:#475569">
+                      <div>状态：{{ homepageConfigModel.auto_render_push.enabled ? "已开启" : "已关闭" }}</div>
+                      <div>固定时刻：{{ (homepageConfigModel.auto_render_push.fixed_times || []).length ? (homepageConfigModel.auto_render_push.fixed_times || []).join(" / ") : "-" }}</div>
+                      <div>
+                        区间循环：
+                        {{
+                          homepageConfigModel.auto_render_push.interval_enabled
+                            ? `${homepageConfigModel.auto_render_push.window_start_time || "07:30"} ~ ${homepageConfigModel.auto_render_push.window_end_time || "23:59"}，每 ${Number(homepageConfigModel.auto_render_push.interval_minutes || 60)} 分钟`
+                            : "关闭"
+                        }}
+                      </div>
+                      <div>下次执行时间：{{ formatDateTimeText(homepageConfigModel.auto_render_push.next_run_at) }}</div>
+                      <div>上次执行时间：{{ formatDateTimeText(homepageConfigModel.auto_render_push.last_run_at) }}</div>
+                      <div>
+                        上次执行结果：
+                        <el-tag size="small" :type="homepageAutoLastResultTagType">{{ homepageAutoLastResultText }}</el-tag>
+                      </div>
+                      <div>失败原因：{{ homepageConfigModel.auto_render_push.last_error || "-" }}</div>
+                    </div>
+                  </el-form-item>
+                </el-form>
+                <div class="row-actions">
+                  <el-button :loading="homepageAutoRunLoading" @click="runHomepageAutoRenderNow">立即执行一次自动任务</el-button>
                 </div>
               </el-card>
 
@@ -1114,7 +1208,7 @@
       @insert="insertHomepageTemplateVariable"
     />
 
-    <el-dialog v-model="previewDialogOpen" title="桌牌等比例预览" width="80%">
+    <el-dialog v-model="previewDialogOpen" title="桌牌等比例预览" width="80%" append-to-body>
       <div class="dialog-preview-wrap">
         <div class="nameplate-stage dialog" :style="stageDialogStyle">
           <div class="preview-name" :style="nameDialogStyle">{{ singleForm.name || '张三' }}</div>
@@ -1123,7 +1217,7 @@
       </div>
     </el-dialog>
 
-    <el-dialog v-model="batchDialogOpen" title="批量桌牌下发（表格）" width="88%">
+    <el-dialog v-model="batchDialogOpen" title="批量桌牌下发（表格）" width="88%" append-to-body>
       <div class="row-actions" style="margin-bottom:8px">
         <el-select v-model="batchPlanId" clearable filterable placeholder="选择历史方案" style="width: 300px" @change="loadBatchPlanToRows">
           <el-option v-for="plan in batchPlans" :key="plan.id" :label="plan.planName" :value="plan.id" />
@@ -1200,7 +1294,7 @@
       </el-table>
     </el-dialog>
 
-    <el-dialog v-model="clusterEditDialogOpen" :title="clusterForm.name ? `编辑设备池：${clusterForm.name}` : '编辑设备池'" width="92%">
+    <el-dialog v-model="clusterEditDialogOpen" :title="clusterForm.name ? `编辑设备池：${clusterForm.name}` : '编辑设备池'" width="92%" append-to-body>
       <div class="cluster-edit-shell">
         <el-card class="cluster-edit-meta" shadow="never">
           <template #header>设备池修改</template>
@@ -1236,7 +1330,7 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="dispatchPickerDialogOpen" :title="`选择目标设备（${dispatchTargetKeyLabel}）`" width="92%">
+    <el-dialog v-model="dispatchPickerDialogOpen" :title="`选择目标设备（${dispatchTargetKeyLabel}）`" width="92%" append-to-body>
       <device-lasso-picker
         ref="dispatchPickerRef"
         :devices="deviceStore.devices"
@@ -1255,7 +1349,7 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="imagePreviewDialogOpen" title="投屏预览（设备分辨率）" width="86%">
+    <el-dialog v-model="imagePreviewDialogOpen" title="投屏预览（设备分辨率）" width="86%" append-to-body>
       <div class="image-preview-shell">
         <div class="image-preview-stage" :style="imagePreviewStageStyle">
           <img v-if="imagePreviewUrl" :src="imagePreviewUrl" class="image-preview-img" alt="preview" />
@@ -1307,7 +1401,7 @@ const dispatchPickerSelection = ref<string[]>([]);
 const dispatchFilteredIds = ref<string[]>([]);
 const dispatchTargetKey = ref<"todo" | "schedule" | "templates" | "tf" | "remote" | "homepage">("remote");
 
-const loginForm = reactive({ username: props.role === "admin" ? "admin" : "demo", password: props.role === "admin" ? "admin123" : "user123" });
+const loginForm = reactive({ username: auth.lastUsername || auth.username || "", password: "" });
 const loginLoading = ref(false);
 const windowWidth = ref(typeof window !== "undefined" ? window.innerWidth : 1440);
 const handleResize = () => {
@@ -1590,6 +1684,21 @@ const homepageInsertVarLoading = ref(false);
 const homepageTemplateHtmlInputRef = ref<any>(null);
 const homepageConfigModel = reactive<any>({
   template: { template_id: "tpl_home_default" },
+  auto_render_push: {
+    enabled: false,
+    interval_enabled: true,
+    window_start_time: "07:30",
+    window_end_time: "23:59",
+    fixed_times: [] as string[],
+    // legacy aliases
+    daily_start_time: "07:30",
+    interval_minutes: 60,
+    next_run_at: "",
+    last_run_at: "",
+    last_result: "idle",
+    last_error: "",
+    last_reason: "",
+  },
   time_overlay: {
     enabled: true,
     x: 1820,
@@ -1607,10 +1716,16 @@ const homepageClusterIds = ref<string[]>([]);
 const homepagePreviewUrl = ref("");
 const homepageEditPreviewUrl = ref("");
 const homepageEditPreviewLoading = ref(false);
+const homepageEditPreviewError = ref("");
 const homepageRenderMeta = reactive<Record<string, any>>({});
 const homepagePreviewMode = ref<"edit" | "delivery">("edit");
+const homepageConfigSaving = ref(false);
+const homepagePushLoading = ref(false);
+const homepageAutoRunLoading = ref(false);
 let homepageEditPreviewTimer: ReturnType<typeof setTimeout> | null = null;
 let homepageEditPreviewRevision = 0;
+let homepageEditPreviewInFlight = false;
+let homepageEditPreviewQueuedRevision: number | null = null;
 
 function toPreviewNum(value: unknown, fallback: number) {
   const num = Number(value);
@@ -1678,6 +1793,58 @@ const homepageTimeOverlayPreviewStyle = computed(() => {
     height: `${Math.round(box.height * box.scale)}px`,
   };
 });
+
+const homepageAutoRenderPushModel = computed(() => homepageConfigModel?.auto_render_push || {});
+const homepageAutoFixedTimeOptions = computed(() => {
+  const base = ["07:30", "08:00", "09:00", "12:00", "14:00", "18:00", "20:00", "22:00"];
+  const dynamic = Array.isArray(homepageAutoRenderPushModel.value?.fixed_times)
+    ? homepageAutoRenderPushModel.value.fixed_times.map((item: unknown) => String(item || "").trim()).filter(Boolean)
+    : [];
+  return [...new Set([...base, ...dynamic])].sort();
+});
+const homepageAutoLastResultText = computed(() => {
+  const raw = String(homepageAutoRenderPushModel.value?.last_result || "idle");
+  if (raw === "success") return "成功";
+  if (raw === "failed") return "失败";
+  if (raw === "running") return "执行中";
+  if (raw === "skipped") return "已跳过";
+  return "未执行";
+});
+const homepageAutoLastResultTagType = computed(() => {
+  const raw = String(homepageAutoRenderPushModel.value?.last_result || "idle");
+  if (raw === "success") return "success";
+  if (raw === "failed") return "danger";
+  if (raw === "running") return "warning";
+  return "info";
+});
+
+function ensureHomepageAutoRenderPushShape(target: any) {
+  const safe = target && typeof target === "object" ? target : {};
+  const fixedTimesRaw = Array.isArray(safe.fixed_times)
+    ? safe.fixed_times
+    : typeof safe.fixed_times === "string"
+      ? safe.fixed_times.split(/[,\n;\s]+/g)
+      : [];
+  const fixedTimes = [...new Set(fixedTimesRaw.map((item: unknown) => String(item || "").trim()).filter(Boolean))].sort();
+  const intervalEnabled = safe.interval_enabled === undefined ? true : Boolean(safe.interval_enabled);
+  const windowStart = String(safe.window_start_time || safe.daily_start_time || "07:30");
+  const windowEnd = String(safe.window_end_time || "23:59");
+  const intervalMinutes = Number(safe.interval_minutes || 60);
+
+  safe.interval_enabled = intervalEnabled;
+  safe.window_start_time = windowStart;
+  safe.window_end_time = windowEnd;
+  safe.fixed_times = fixedTimes;
+  // legacy aliases kept in model for compatibility
+  safe.daily_start_time = windowStart;
+  safe.interval_minutes = Number.isFinite(intervalMinutes) ? intervalMinutes : 60;
+  safe.next_run_at = String(safe.next_run_at || "");
+  safe.last_run_at = String(safe.last_run_at || "");
+  safe.last_result = String(safe.last_result || "idle");
+  safe.last_error = String(safe.last_error || "");
+  safe.last_reason = String(safe.last_reason || "");
+  return safe;
+}
 const batchTargetDeviceIds = reactive<Record<"todo" | "schedule" | "templates" | "tf" | "remote" | "homepage", string[]>>({
   todo: [],
   schedule: [],
@@ -1961,6 +2128,8 @@ async function doLogin() {
   loginLoading.value = true;
   try {
     await auth.login(props.role, loginForm.username, loginForm.password);
+    loginForm.username = auth.lastUsername || auth.username || loginForm.username;
+    loginForm.password = "";
     await refreshDevices();
     await refreshOverview();
     await loadClusters();
@@ -1983,7 +2152,12 @@ async function doLogin() {
   }
 }
 
-function logout() { auth.logout(); deviceStore.clearSelection(); }
+function logout() {
+  auth.logout();
+  deviceStore.clearSelection();
+  loginForm.username = auth.lastUsername || loginForm.username;
+  loginForm.password = "";
+}
 
 async function refreshDevices() {
   if (!auth.token) return;
@@ -2287,7 +2461,16 @@ function resolveBatchTargetDevices(key: "todo" | "schedule" | "templates" | "tf"
   return [...deviceStore.selectedIds];
 }
 
+function formatDateTimeText(value: unknown) {
+  const raw = String(value || "").trim();
+  if (!raw) return "-";
+  const dt = new Date(raw);
+  if (!Number.isFinite(dt.getTime())) return raw;
+  return dt.toLocaleString("zh-CN", { hour12: false });
+}
+
 function syncHomepageConfigJsonFromModel() {
+  ensureHomepageAutoRenderPushShape(homepageConfigModel?.auto_render_push || {});
   homepageConfigJson.value = JSON.stringify(homepageConfigModel, null, 2);
 }
 
@@ -2295,6 +2478,24 @@ function applyHomepageConfigModel(data: Record<string, any>) {
   Object.keys(homepageConfigModel).forEach((k) => delete homepageConfigModel[k]);
   Object.assign(homepageConfigModel, data || {});
   if (!homepageConfigModel.template) homepageConfigModel.template = { template_id: "tpl_home_default" };
+  if (!homepageConfigModel.auto_render_push) {
+    homepageConfigModel.auto_render_push = {
+      enabled: false,
+      interval_enabled: true,
+      window_start_time: "07:30",
+      window_end_time: "23:59",
+      fixed_times: [],
+      // legacy aliases
+      daily_start_time: "07:30",
+      interval_minutes: 60,
+      next_run_at: "",
+      last_run_at: "",
+      last_result: "idle",
+      last_error: "",
+      last_reason: "",
+    };
+  }
+  ensureHomepageAutoRenderPushShape(homepageConfigModel.auto_render_push);
   if (!homepageConfigModel.time_overlay) {
     homepageConfigModel.time_overlay = {
       enabled: true,
@@ -2330,6 +2531,13 @@ function buildHomepageConfigPatch() {
   const srcOverlay = homepageConfigModel?.time_overlay || {};
   Object.keys(srcOverlay).forEach((k) => {
     patch.time_overlay[k] = srcOverlay[k];
+  });
+
+  patch.auto_render_push = patch.auto_render_push || {};
+  const srcAuto = homepageConfigModel?.auto_render_push || {};
+  ensureHomepageAutoRenderPushShape(srcAuto);
+  Object.keys(srcAuto).forEach((k) => {
+    patch.auto_render_push[k] = srcAuto[k];
   });
   return patch;
 }
@@ -2624,7 +2832,15 @@ async function applyHomepagePreviewImage(image: Record<string, any>, target: typ
 
 async function renderHomepageEditPreview(revision = homepageEditPreviewRevision) {
   if (!auth.token || !homepageDeviceId.value || homepagePreviewMode.value !== "edit") return;
+  if (homepageEditPreviewInFlight) {
+    homepageEditPreviewQueuedRevision = Math.max(homepageEditPreviewQueuedRevision || 0, revision);
+    return;
+  }
+  homepageEditPreviewInFlight = true;
   homepageEditPreviewLoading.value = true;
+  if (revision === homepageEditPreviewRevision) {
+    homepageEditPreviewError.value = "";
+  }
   try {
     const patch = buildHomepageConfigPatch();
     const data = await apiRequest<any>("/api/homepages/render", {
@@ -2644,10 +2860,17 @@ async function renderHomepageEditPreview(revision = homepageEditPreviewRevision)
   } catch (_) {
     if (revision === homepageEditPreviewRevision) {
       clearPreviewRef(homepageEditPreviewUrl);
+      homepageEditPreviewError.value = "渲染失败：浏览器渲染不可用，已回退（请检查后端日志）";
     }
   } finally {
     if (revision === homepageEditPreviewRevision) {
       homepageEditPreviewLoading.value = false;
+    }
+    homepageEditPreviewInFlight = false;
+    const queued = homepageEditPreviewQueuedRevision;
+    homepageEditPreviewQueuedRevision = null;
+    if (queued && queued > revision && homepagePreviewMode.value === "edit") {
+      void renderHomepageEditPreview(queued);
     }
   }
 }
@@ -2659,10 +2882,14 @@ function scheduleHomepageEditPreview() {
     clearTimeout(homepageEditPreviewTimer);
     homepageEditPreviewTimer = null;
   }
-  if (homepagePreviewMode.value !== "edit") return;
+  if (homepagePreviewMode.value !== "edit") {
+    homepageEditPreviewQueuedRevision = null;
+    homepageEditPreviewLoading.value = false;
+    return;
+  }
   homepageEditPreviewTimer = setTimeout(() => {
     void renderHomepageEditPreview(revision);
-  }, 450);
+  }, 260);
 }
 
 async function loadHomepageTemplates() {
@@ -2710,6 +2937,7 @@ async function loadHomepageConfig() {
   if (!auth.token || !homepageDeviceId.value) return;
   const data = await apiRequest<any>(`/api/homepages/config?deviceId=${encodeURIComponent(homepageDeviceId.value)}`, { token: auth.token });
   applyHomepageConfigModel(data);
+  await refreshHomepageAutoRenderStatusOnly();
   syncHomepageTemplateDraftFromConfig();
   Object.keys(homepageRenderMeta).forEach((k) => delete homepageRenderMeta[k]);
   Object.assign(homepageRenderMeta, data.image || {});
@@ -2717,12 +2945,47 @@ async function loadHomepageConfig() {
   scheduleHomepageEditPreview();
 }
 
+async function refreshHomepageAutoRenderStatusOnly() {
+  if (!auth.token || !homepageDeviceId.value) return;
+  try {
+    const status = await apiRequest<any>(
+      `/api/homepages/auto-render/status?deviceId=${encodeURIComponent(homepageDeviceId.value)}`,
+      { token: auth.token }
+    );
+    const picked = {
+      enabled: status?.enabled,
+      interval_enabled: status?.interval_enabled,
+      window_start_time: status?.window_start_time,
+      window_end_time: status?.window_end_time,
+      fixed_times: status?.fixed_times,
+      // legacy fields
+      daily_start_time: status?.daily_start_time,
+      interval_minutes: status?.interval_minutes,
+      next_run_at: status?.next_run_at,
+      last_run_at: status?.last_run_at,
+      last_result: status?.last_result,
+      last_error: status?.last_error,
+      last_reason: status?.last_reason,
+    };
+    homepageConfigModel.auto_render_push = {
+      ...(homepageConfigModel.auto_render_push || {}),
+      ...picked,
+    };
+    ensureHomepageAutoRenderPushShape(homepageConfigModel.auto_render_push);
+    syncHomepageConfigJsonFromModel();
+  } catch (_) {
+    // ignore status fetch error
+  }
+}
+
 async function loadHomepageAll() {
-  await Promise.all([loadHomepageTemplates(), loadHomepageConfig()]);
+  await loadHomepageTemplates();
+  await loadHomepageConfig();
 }
 
 async function saveHomepageConfig() {
   if (!homepageDeviceId.value) return ElMessage.error("请先选择设备");
+  homepageConfigSaving.value = true;
   try {
     const patch = buildHomepageConfigPatch();
     await apiRequest("/api/homepages/config", {
@@ -2737,6 +3000,8 @@ async function saveHomepageConfig() {
     await loadHomepageConfig();
   } catch (error) {
     ElMessage.error((error as Error).message || "保存主页配置失败");
+  } finally {
+    homepageConfigSaving.value = false;
   }
 }
 
@@ -2764,6 +3029,7 @@ async function renderHomepage() {
 }
 
 async function pushHomepage() {
+  homepagePushLoading.value = true;
   try {
     const patch = buildHomepageConfigPatch();
     const deviceIds = resolveBatchTargetDevices("homepage");
@@ -2782,9 +3048,46 @@ async function pushHomepage() {
       body: JSON.stringify(body),
     });
     ElMessage.success(`主页推送：成功 ${result.successCount || 0}，失败 ${result.failedCount || 0}`);
-    await loadHomepageConfig();
+    // Keep current in-editor template selection after push.
+    // Push is render+dispatch and should not force template selector rollback.
+    syncHomepageConfigJsonFromModel();
+    scheduleHomepageEditPreview();
   } catch (error) {
     ElMessage.error((error as Error).message || "主页推送失败");
+  } finally {
+    homepagePushLoading.value = false;
+  }
+}
+
+async function runHomepageAutoRenderNow() {
+  if (!homepageDeviceId.value) return ElMessage.error("请先选择设备");
+  homepageAutoRunLoading.value = true;
+  try {
+    const patch = buildHomepageConfigPatch();
+    const result = await apiRequest<any>("/api/homepages/auto-render/run", {
+      method: "POST",
+      token: auth.token,
+      body: JSON.stringify({
+        deviceId: homepageDeviceId.value,
+        config: patch,
+        template: buildHomepageTemplatePatchForRender(),
+      }),
+    });
+    const status = String(result?.status || "");
+    if (status === "running") {
+      ElMessage.warning("任务已在执行中，请稍后查看结果");
+    } else if (status === "success") {
+      ElMessage.success("自动渲染并下发执行成功");
+    } else {
+      ElMessage.success("自动任务已触发");
+    }
+    await refreshHomepageAutoRenderStatusOnly();
+    syncHomepageConfigJsonFromModel();
+    scheduleHomepageEditPreview();
+  } catch (error) {
+    ElMessage.error((error as Error).message || "自动任务执行失败");
+  } finally {
+    homepageAutoRunLoading.value = false;
   }
 }
 
@@ -4162,11 +4465,11 @@ watch(
 .sidebar-rail-button { width:100%; height:100%; border:none; border-radius:0; font-size:20px; font-weight:700; color:#334155; background:transparent; }
 .sidebar-rail-button:hover { background:rgba(59,130,246,0.08); color:#2563eb; }
 .content-main { display:grid; gap:12px; padding:12px; flex:1; min-width:0; overflow:auto; }
-.mobile-nav-drawer :deep(.el-drawer__body) { padding:0; }
-.drawer-shell { display:flex; flex-direction:column; gap:12px; height:100%; padding:16px; box-sizing:border-box; }
+.mobile-nav-drawer :deep(.el-drawer__body) { padding:0; height:100%; overflow:hidden; }
+.drawer-shell { display:flex; flex-direction:column; gap:12px; height:100%; min-height:0; overflow:hidden; padding:16px; box-sizing:border-box; }
 .drawer-title { display:flex; flex-direction:column; gap:4px; }
 .drawer-hint { font-size:12px; color:#64748b; }
-.drawer-menu { flex:1; min-height:0; overflow-y:auto; border-right:none; }
+.drawer-menu { flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:touch; border-right:none; }
 .section-wrap { display:grid; gap:10px; }
 .stack-vertical { display:grid; gap:12px; }
 .row-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
@@ -4220,10 +4523,39 @@ watch(
 @media (max-width: 900px) {
   .header-row { align-items:flex-start; }
   .header-user { width:100%; flex-wrap:wrap; justify-content:flex-start; }
-  .workbench-shell { max-height:none; min-height:unset; flex-direction:column; }
-  .content-main { overflow:visible; padding:10px; }
+  .workbench-shell {
+    max-height:none;
+    min-height:unset;
+    flex-direction:column;
+    overflow-x:auto;
+    overflow-y:visible;
+    -webkit-overflow-scrolling: touch;
+  }
+  .content-main {
+    overflow-x:auto;
+    overflow-y:visible;
+    -webkit-overflow-scrolling: touch;
+    padding:10px;
+  }
   .aside-nav { display:none; }
   .sidebar-rail { display:none; }
   .overview-hero { flex-direction:column; align-items:flex-start; }
+  .mobile-nav-drawer :deep(.el-drawer) {
+    max-width: calc(100vw - 10px);
+  }
+  .mobile-nav-drawer :deep(.el-drawer__body) {
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  :deep(.el-dialog) {
+    width: calc(100vw - 14px) !important;
+    max-width: calc(100vw - 14px) !important;
+    margin: 7px auto !important;
+  }
+  :deep(.el-dialog__body) {
+    overflow-x: auto;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
 }
 </style>

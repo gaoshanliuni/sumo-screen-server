@@ -26,8 +26,8 @@
               <el-option label="管理员" value="admin" />
             </el-select>
           </el-form-item>
-          <el-form-item label="用户名"><el-input v-model="loginForm.username" /></el-form-item>
-          <el-form-item label="密码"><el-input v-model="loginForm.password" show-password /></el-form-item>
+          <el-form-item label="用户名"><el-input v-model="loginForm.username" autocomplete="username" /></el-form-item>
+          <el-form-item label="密码"><el-input v-model="loginForm.password" show-password autocomplete="current-password" /></el-form-item>
           <el-button type="primary" :loading="loginLoading" @click="doLogin">登录并进入模拟</el-button>
         </el-form>
       </div>
@@ -164,8 +164,8 @@ const starting = ref(false);
 
 const loginForm = reactive<{ role: AppRole; username: string; password: string }>({
   role: auth.role || "user",
-  username: auth.username || "demo",
-  password: "user123",
+  username: auth.lastUsername || auth.username || "",
+  password: "",
 });
 
 const startForm = reactive({

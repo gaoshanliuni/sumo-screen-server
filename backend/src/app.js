@@ -22,8 +22,36 @@ const nameplateRoutes = require("./routes/nameplate.routes");
 const homepageRoutes = require("./routes/homepage.routes");
 const badgepageRoutes = require("./routes/badgepage.routes");
 const weatherpageRoutes = require("./routes/weatherpage.routes");
+const config = require("./config");
 
 const app = express();
+
+if (config.trustProxy) {
+  app.set("trust proxy", 1);
+}
+
+app.use((req, res, next) => {
+  const forwardedProtoRaw = req.headers["x-forwarded-proto"];
+  const forwardedProto = Array.isArray(forwardedProtoRaw)
+    ? String(forwardedProtoRaw[0] || "").split(",")[0].trim()
+    : String(forwardedProtoRaw || "").split(",")[0].trim();
+  const secure = req.secure || forwardedProto === "https";
+
+  if (config.forceHttps && !secure) {
+    const host = String(req.headers["x-forwarded-host"] || req.headers.host || "");
+    if (host) {
+      return res.redirect(308, `https://${host}${req.originalUrl || req.url || "/"}`);
+    }
+  }
+
+  if (secure && Number(config.hstsMaxAgeSec || 0) > 0) {
+    res.setHeader(
+      "Strict-Transport-Security",
+      `max-age=${Number(config.hstsMaxAgeSec)}; includeSubDomains`
+    );
+  }
+  return next();
+});
 
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
@@ -40,6 +68,7 @@ app.use("/api/clusters", authRequired, clusterRoutes);
 app.use("/api/firmware", authRequired, firmwareRoutes);
 app.use("/api/todos", authRequired, todoRoutes);
 app.use("/api/schedules", authRequired, scheduleRoutes);
+app.use("/api/schedule", authRequired, scheduleRoutes);
 app.use("/api/templates", authRequired, templateRoutes);
 app.use("/api/third", authRequired, thirdRoutes);
 app.use("/api/logs", authRequired, logRoutes);
@@ -54,8 +83,28 @@ app.use("/api", (req, res) => {
   return res.fail("接口不存在", 404);
 });
 
-const frontendDir = path.join(__dirname, "../../frontend");
-app.use(express.static(frontendDir));
+const frontendCandidates = [
+  String(process.env.FRONTEND_DIR || "").trim(),
+  path.join(__dirname, "../../frontend"),
+  path.join(process.cwd(), "frontend"),
+  path.join(process.cwd(), "../frontend"),
+].filter(Boolean);
+
+const frontendDir =
+  frontendCandidates.find((dir) => fs.existsSync(path.join(dir, "index.html"))) || "";
+
+if (frontendDir) {
+  app.use(express.static(frontendDir));
+  const vueAppDir = path.join(frontendDir, "vue-app");
+  if (fs.existsSync(path.join(vueAppDir, "index.html"))) {
+    app.use("/vue-app", express.static(vueAppDir));
+  }
+} else {
+  console.warn(
+    `[app] frontend directory not found. checked: ${frontendCandidates.join(" | ")}`
+  );
+}
+
 app.get("/openapi.yaml", (req, res) => {
   const filePath = path.join(__dirname, "../openapi/openapi.yaml");
   if (!fs.existsSync(filePath)) {
@@ -66,7 +115,14 @@ app.get("/openapi.yaml", (req, res) => {
 
 app.get("*", (req, res, next) => {
   if (req.path.startsWith("/api")) return next();
-  return res.sendFile(path.join(frontendDir, "index.html"));
+  if (!frontendDir) {
+    return res.status(404).send("Frontend assets not found");
+  }
+  const indexPath = path.join(frontendDir, "index.html");
+  if (!fs.existsSync(indexPath)) {
+    return res.status(404).send("Frontend index not found");
+  }
+  return res.sendFile(indexPath);
 });
 
 app.use(errorMiddleware);

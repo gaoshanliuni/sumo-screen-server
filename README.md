@@ -1,282 +1,193 @@
-﻿# 智能墨水屏平台（Node.js 全栈）
+# 智能墨水屏平台（Node.js + Vue）
 
 ## 项目简介
-面向智能墨水屏的全生命周期管理平台，支持用户端与管理端权限隔离、设备注册鉴权、固件升级、TODO/课程表、第三方 API 模板、TF 卡文件管理、设备模拟与实时通道（SSE/WS）。
+本仓库是智能墨水屏平台的后端与 Web 端工程，包含：
+- `backend`：Node.js/Express API、设备实时通道、页面渲染、课程表同步（喜鹊）等服务。
+- `frontend-vue`：Vue3 + Element Plus 源码。
+- `frontend`：后端直接托管的静态入口与已构建 Vue 产物（`/vue-app`）。
 
-## 功能概览
-- 用户端：PIN 绑定设备、TODO/课程表表格化管理、固件升级、第三方 API 测试、TF 卡管理、投屏与远程控制。
-- 管理端：账号与设备全量管理、模板与批量 Key 下发、固件上传与批量升级、日志查询。
-- 模拟端：自动注册 + PIN 绑定、SSE/WS 实时事件、模拟 TF 本地文件上报、投屏预览。
+## 当前进度（按代码现状）
 
-## 启动
+### 已实现
+- 用户/管理端/设备模拟/API 文档统一为 Vue 入口（`/vue-app/#/...`）。
+- 设备主链路：`auto-register -> bind/status -> hardware/login -> SSE/WS`。
+- 页面图片化：`homepage / badgepage / weatherpage` 三套配置、模板、渲染、推送。
+- 模板渲染支持变量插值、内联脚本、`legacy/web/hybrid` 渲染模式兼容。
+- 远程控制：切页、图片刷新、请求屏幕状态、投屏、ACK 上报。
+- 喜鹊课程表：
+  - 手动导入；
+  - 自动更新（10/30/60 分钟）；
+  - 执行窗口 `06:00-24:00`，`00:00-06:00` 暂停；
+  - OCR 自动识别验证码（失败回退手动验证码）。
+- 第三方 API 模板含 `xique_schedule`，返回标准化课程表结构与今日视图文本。
+- `backend/start.sh` 已支持 Linux/容器首次自举（Python venv + OCR 依赖 + Playwright Chromium + 缺失系统库）。
+
+### 待完善 / 注意事项
+- OpenAPI 已覆盖大部分接口，但个别新增细分路径（如部分喜鹊流程扩展字段）可能存在同步滞后，请以 `backend/src/routes` 为最终准。
+- 历史 `*.legacy.html` 仅保留兼容，不再作为主维护入口。
+
+## 目录结构
+```text
+.
+├─ backend/               # 后端服务
+│  ├─ openapi/            # OpenAPI 文档
+│  ├─ src/
+│  │  ├─ routes/          # 路由层
+│  │  ├─ services/        # 业务服务（渲染、喜鹊同步、OCR、页面配置）
+│  │  └─ db/              # MySQL 状态读写
+│  ├─ tools/ocr/          # ddddocr 脚本与依赖清单
+│  └─ start.sh            # 生产启动脚本（自举安装）
+├─ frontend-vue/          # Vue 源码（Vite）
+├─ frontend/              # 后端托管静态目录（含 /vue-app 构建产物）
+├─ ico/QWeather-Icons-1.8.0/
+└─ README.md
+```
+
+## 启动与部署
+
+### 本地开发
+1. 后端
 ```bash
 cd backend
 npm install
 npm run start
 ```
 
-如果看到 `MONGO_URI 未配置`，说明未加载 MongoDB 连接串。项目已使用 `dotenv`，默认读取 `backend/.env`。
-
-## 环境变量
-- `PORT`：服务端口（默认 8890）
-- `MONGO_URI`：MongoDB 连接串（必填，用于 GridFS 存储文件）
-- `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` / `DB_STATE_TABLE`：MySQL 连接参数
-
-当前默认 MongoDB：
+2. 前端源码调试
+```bash
+cd frontend-vue
+npm install
+npm run dev
 ```
-MONGO_URI=mongodb://mongo_tkKafE:mongo_5tNAQx@gaoshanliuni.top:27017/smp?authSource=admin
+
+3. 构建前端到后端托管目录
+```bash
+cd frontend-vue
+npm run build
 ```
+说明：Vite `outDir` 已配置为 `../frontend/vue-app`。
+
+### Linux / 1Panel（Node 应用模式）
+```bash
+bash /app/backend/start.sh
+```
+`backend/start.sh` 行为：
+- 首次启动安装系统依赖（含 Chromium 运行库与中文字体）；
+- 自动创建 `.venv` 并安装 `tools/ocr/requirements.txt`；
+- 自动下载 Chromium 到 `/app/backend/.local-browser`；
+- 导出 OCR 与浏览器渲染环境变量后启动 `npm run start`；
+- 后续启动复用本地缓存，不重复全量下载。
+
+根目录 `start.sh` 会自动转发到 `backend/start.sh`。
+
+## 环境变量（核心）
+
+### 基础
+- `PORT`：后端端口（默认 `8890`）
+- `PUBLIC_ORIGIN`：对外域名（例如 `https://example.com`）
+- `TRUST_PROXY`：是否信任反代头（默认 `1`）
+- `FORCE_HTTPS`：是否强制 HTTP->HTTPS（默认 `0`）
+- `HSTS_MAX_AGE_SEC`：HSTS 秒数（默认 `31536000`）
+- `JWT_SECRET`：JWT 密钥
+
+### 数据库与存储
+- `MONGO_URI`：MongoDB（GridFS 文件存储）
+- `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` / `DB_STATE_TABLE`：MySQL 配置
+
+### 喜鹊同步 / OCR
+- `XIQUE_OCR_ENABLED`（默认 `1`）
+- `XIQUE_OCR_PYTHON_BIN`
+- `XIQUE_OCR_AUTO_SETUP`
+- `XIQUE_OCR_TIMEOUT_MS`
+- `XIQUE_OCR_MAX_FAILURES_BEFORE_MANUAL`（默认 `2`）
+- `XIQUE_SCHEDULER_INTERVAL_MS`
+- `XIQUE_SESSION_TTL_MS`
+- `XIQUE_CAPTCHA_TTL_MS`
+
+### 页面渲染
+- `PLAYWRIGHT_CHROMIUM_PATH` / `CHROME_PATH` / `CHROME_BIN`
+- `PAGE_RENDER_BROWSER_STRICT`
+- `PAGE_RENDER_BROWSER_LAUNCH_TIMEOUT_MS`
+- `PAGE_RENDER_BROWSER_TOTAL_TIMEOUT_MS`
 
 ## 访问入口
-- 首页：`http://localhost:8890/`
-- 用户端：`http://localhost:8890/user.html`
-- 管理端：`http://localhost:8890/admin.html`
-- 设备模拟：`http://localhost:8890/simulator.html`
-- 接口文档页：`http://localhost:8890/docs.html`
-- OpenAPI 文件：`http://localhost:8890/openapi.yaml`
-- 健康检查：`http://localhost:8890/api/health`
+- 平台首页：`/`
+- 用户端：`/user.html`（跳转 `/vue-app/#/user`）
+- 管理端：`/admin.html`（跳转 `/vue-app/#/admin`）
+- 设备模拟：`/simulator.html`（跳转 `/vue-app/#/simulator`）
+- API 文档：`/docs.html`（跳转 `/vue-app/#/docs`）
+- OpenAPI：`/openapi.yaml`
 
-## PIN 绑定流程
-1. 设备自动注册：`POST /api/hardware/auto-register`，返回 PIN 与 `bootstrapToken`。
-2. 用户/管理员输入 PIN 绑定：`POST /api/devices/bind-pin`。
-3. 设备轮询绑定状态：`GET /api/hardware/bind/status?bootstrapToken=...`，绑定后获取设备 token。
+## 默认账号（仅开发）
+- 管理员：`admin / admin@0607`
+- 用户：`demo / uesr@123`
 
-## 实时通道
-- SSE：`/api/hardware/stream/sse?deviceId=...&token=...`
-- WS：`/ws/hardware?deviceId=...&token=...`
+上线前请立即修改默认口令。
 
-## 默认账号
-- 管理员：`admin / admin123`
-- 普通用户：`demo / user123`
+## 主要接口分组（当前版本）
 
-## 数据库与存储
-- MySQL：业务数据持久化，默认连接配置见 `backend/src/config.js`。
-- MongoDB GridFS：TF 卡文件、固件文件、远程控制文件均存储在 GridFS 中。
+### 认证与设备
+- `/api/auth/*`
+- `/api/devices/*`
+- `/api/hardware/*`
+- `/ws/hardware`
 
-## 鉴权说明
-除 `auto-register / bind/status / hardware/login` 外，其余接口均需 `Authorization: Bearer <JWT>`。
-
-## API 目录（GET/POST）
-### 认证
-- `POST /api/auth/user/login`
-- `POST /api/auth/admin/login`
-- `GET /api/auth/me`
-- `POST /api/auth/logout`
-- `POST /api/auth/change-password`
-
-### 管理端
-- `GET /api/admin/dashboard`
-- `GET /api/admin/users`
-- `POST /api/admin/users`
-- `POST /api/admin/users/{userId}`
-- `POST /api/admin/users/{userId}/resources`
-- `POST /api/admin/users/{userId}/delete`
-
-### 设备
-- `GET /api/devices`（支持 `status/mac/ownerId/simulated/bound`）
-- `POST /api/devices/register`
-- `POST /api/devices/bind-pin`
-- `GET /api/devices/{deviceId}`
-- `POST /api/devices/{deviceId}`
-- `POST /api/devices/{deviceId}/delete`
-- `GET /api/devices/{deviceId}/keys`
-- `POST /api/devices/{deviceId}/keys`
-- `POST /api/devices/batch/config`
-
-### 硬件
-- `POST /api/hardware/auto-register`
-- `GET /api/hardware/bind/status`
-- `POST /api/hardware/login`
-- `GET /api/hardware/config`
-- `GET /api/hardware/stream/sse`
-- `POST /api/hardware/simulate/register`
-- `POST /api/hardware/tf/report`
-
-### 集群
-- `GET /api/clusters`
-- `POST /api/clusters`
-- `POST /api/clusters/{clusterId}`
-- `POST /api/clusters/{clusterId}/devices`
-- `POST /api/clusters/{clusterId}/delete`
-
-### 模板
-- `GET /api/templates`
-- `POST /api/templates`
-- `POST /api/templates/{templateId}`
-- `POST /api/templates/{templateId}/delete`
-- `GET /api/templates/device/{deviceId}/keys`
-- `POST /api/templates/device/{deviceId}/keys`
-
-### 第三方 API
-- `POST /api/third/{slug}`
-
-### TODO
-- `GET /api/todos`
-- `POST /api/todos`
-- `POST /api/todos/{todoId}`
-- `POST /api/todos/{todoId}/delete`
-- `POST /api/todos/batch-upsert`
-- `POST /api/todos/batch-delete`
-
-### 课程表
-- `GET /api/schedules`
-- `POST /api/schedules`
-- `POST /api/schedules/{scheduleId}`
-- `POST /api/schedules/{scheduleId}/delete`
-- `POST /api/schedules/batch-upsert`
-- `POST /api/schedules/batch-delete`
-
-### 固件
-- `GET /api/firmware`
-- `POST /api/firmware`
-- `POST /api/firmware/upload`
-- `GET /api/firmware/{firmwareId}/download`
-- `POST /api/firmware/upgrade`
-- `GET /api/firmware/upgrades`
-- `POST /api/firmware/batch-upgrade`
-- `POST /api/firmware/upgrades/{jobId}/run`
-- `POST /api/firmware/{firmwareId}/delete`
-
-### TF 卡
-- `GET /api/tf`
-- `GET /api/tf/device/{deviceId}`
-- `GET /api/tf/device?deviceId=...`（兼容）
-- `POST /api/tf/upload`
-- `GET /api/tf/{fileId}/download`
-- `POST /api/tf/{fileId}/delete`
-- `GET /api/tf/device/{deviceId}/download`
-- `POST /api/tf/device/{deviceId}/delete`
-
-### 远程控制
-- `POST /api/remote/switch-view`
-- `POST /api/remote/show-text`
-- `POST /api/remote/show-image`
-- `POST /api/remote/cast-frame`
-
-### 日志
-- `GET /api/logs/operations`
-- `GET /api/logs/apis`
-
-## 用户手册
-### 用户端（/user.html）
-1. 登录：输入账号密码后进入功能区，左侧导航切换模块。
-2. 绑定设备：在“设备绑定”输入设备 PIN 码并绑定，成功后“当前设备”会显示设备信息。
-3. 选择设备：点击侧栏“选择设备”弹窗切换当前设备。
-4. TODO/课程表：进入模块后点击“加载数据”，表格内编辑后点击“批量保存”。
-5. 固件升级：选择固件版本，可选定时升级时间，点击“触发升级”。
-6. 第三方 API：选择模板、填写参数 JSON，点击“调用 API”查看返回。
-7. TF 卡：上传文件、刷新云端/本地文件，支持下载与删除。
-8. 投屏与远程控制：上传图片投屏、屏幕投射、切换设备界面、临时文字显示。
-
-### 管理端（/admin.html）
-1. 登录后进入“主页概览”查看设备、账号、固件、API 统计。
-2. 账号管理：创建/更新/封禁/删除账号，支持资源处理（解绑/迁移/清理）。
-3. 设备与 PIN：选择设备后可更新设备字段、删除设备、管理员 PIN 绑定。
-4. 模板管理：新增/编辑/删除模板；单设备 Key 编辑与批量下发。
-5. 固件管理：上传固件文件，创建版本；批量升级支持定时。
-6. TODO/课程表：管理员可按设备查看与批量保存。
-7. TF 卡：查看云端与设备本地文件，支持下载与删除。
-8. 投屏与远程控制：同用户端，支持管理员控制任意设备。
-
-### 设备模拟（/simulator.html）
-1. 登录后点击“启动模拟设备”自动注册并获取 PIN。
-2. 在用户端或管理端输入 PIN 绑定设备。
-3. 模拟端轮询成功后会自动建立 WS/SSE 连接并显示实时事件。
-4. “模拟内存卡”可添加本地文件并上报清单，用于对比“待下发/已下发”。
-5. “当前设备快照”展示设备信息、密钥、TODO、课程、升级任务与硬件配置。
-
-### 文档页（/docs.html）
-1. 选择角色，输入账号密码后点击“登录并授权”。
-2. Swagger UI 中可直接调试已授权接口。
-
-### 操作输出面板
-1. 所有界面右下角“操作输出”为浮窗，可拖动、可收起、可调整大小。
-2. 每个操作会同时在输出面板与右上角提示框显示结果。
-
-### 常见问题
-1. `MONGO_URI 未配置`：检查 `backend/.env` 是否存在并包含正确的连接串。
-2. `401` 或 `403`：确认已登录并携带 `Authorization: Bearer <JWT>`。
-3. 设备不可见：用户端只能看到自己绑定的设备，管理员可看到全量设备。
-
-## 新主页机制（后端生成图片 + 设备端时间局刷）
-
-### 架构变更
-- 旧机制：设备端本地排版主页（文字+布局）。
-- 新机制：后端按配置和 HTML 模板渲染主页图片，设备端只显示底图并局部覆盖时间。
-- 兼容策略：旧本地 HOME 页面保留为 fallback，当主页图片拉取失败时自动降级。
-
-### 新增后端接口
-- `GET /api/homepages/default`：读取统一默认主页配置。
-- `GET /api/homepages/config?deviceId=...`：读取设备主页配置（管理侧）。
-- `POST /api/homepages/config`：更新主页配置（全局/按设备）。
-- `GET /api/homepages/templates`：模板列表。
-- `POST /api/homepages/templates`：新建/更新 HTML 模板。
-- `POST /api/homepages/templates/{templateId}/delete`：删除模板。
-- `POST /api/homepages/render`：按设备渲染主页图片（不推送）。
-- `POST /api/homepages/push`：渲染并推送主页更新事件。
-- `GET /api/hardware/homepage`：设备端拉取主页配置与图片元信息。
-
-### 统一默认配置文件
-- 路径：`backend/config/default_homepage.json`
-- 作用：前端编辑基线、后端渲染基线、设备端解析基线统一来源。
-
-### 设备更新事件
-- `homepage.config.updated`
-- `homepage.image.updated`
-- `homepage.updated`
-
-### 前端入口
-- `http://localhost:8890/homepage.html`
-- 跳转到 Vue 页面：`/vue-app/#/homepage`
-
-### 当前图片格式策略
-- 预览图：PNG（管理端/前端查看）。
-- 设备图：`epd4`（4-bit packed grayscale，自定义设备友好格式）。
-- 说明：设备端优先走 `epd4` 直显，避免在 ESP32 上做高成本 PNG 解码。
-- TODO：如需完全通用化，可新增 BMP/PNG 设备端解码适配层。
-
-## 图片化页面扩展（Home + Badge + Weather）
-
-本轮已扩展为三类图片页面：
-- `homepage`
-- `badgepage`
-- `weatherpage`
-
-统一后端接口族：
+### 页面图片化（主页/桌牌/天气）
 - `/api/homepages/*`
 - `/api/badgepages/*`
 - `/api/weatherpages/*`
+- 模板变量辅助：`/api/{page}/template-variables`
 
-统一设备配置接口：
-- `GET /api/hardware/homepage`
-- `GET /api/hardware/badgepage`
-- `GET /api/hardware/weatherpage`
+### 课程表（含喜鹊）
+- 常规课表：`/api/schedules/*`
+- 喜鹊状态与配置：`/api/schedules/xique/status`、`/api/schedules/xique/config`
+- 喜鹊登录与导入：
+  - `/api/schedules/xique/init-login`
+  - `/api/schedules/xique/import`
+  - `/api/schedules/xique/import/start`
+  - `/api/schedules/xique/import/verify-captcha`
+  - `/api/schedules/xique/reverify`
 
-## QWeather 图标资源接入
+### 远程控制
+- `/api/remote/switch-view`
+- `/api/remote/refresh-page-image`
+- `/api/remote/request-screen-state`
+- `/api/remote/show-text`
+- `/api/remote/show-image`
+- `/api/remote/cast-frame`
+- `/api/remote/cast-stop`
 
-天气图标渲染由后端完成，资源根目录固定为：
-- `D:\dachicunhouduan\ico\QWeather-Icons-1.8.0`
+### 其它
+- `/api/todos/*`
+- `/api/templates/*`
+- `/api/third/{slug}`
+- `/api/tf/*`
+- `/api/firmware/*`
+- `/api/logs/*`
 
-后端渲染链路会扫描并接入：
-- `font/demo.html`
-- `font/qweather-icons.css`
-- `font/qweather-icons.json`
-- `font/fonts/qweather-icons.ttf`
-- `icons/*.svg`
+## 课程表（喜鹊）当前行为
+- 导入与自动更新共用同一套后端流程；
+- 自动更新按设备独立配置频率（10/30/60）；
+- 调度仅在 `06:00-24:00` 执行；
+- 验证码优先 OCR，连续失败后回退手动输入；
+- 导入策略为“当前 term 的 `source=xique` 记录覆盖更新，保留手工课程”；
+- `xique_schedule` 模板返回：
+  - `formatted.schedule.byDay[].courses[]`
+  - `formatted.view.todayCourseText` 等可直接渲染字段。
 
-设备端只消费后端生成的天气图片与元信息，不承担天气图标排版渲染压力。
+## 页面渲染机制（当前）
+- 优先浏览器渲染（Playwright Chromium）；
+- 浏览器不可用时回退 legacy 渲染路径；
+- `template.render_mode` 支持 `legacy/web/hybrid`；
+- 支持旧模板 `data-x/data-y/data-size/...` 与标准 HTML/CSS 混用。
 
-## Remote Screen Control Extensions
+## QWeather 资源
+- 资源目录：`ico/QWeather-Icons-1.8.0`
+- 天气页面渲染会读取字体/CSS/SVG 映射；
+- 设备端只消费后端生成图片，不做天气图标排版。
 
-新增远程控制动作：
-- `remote.switch_view`
-- `remote.refresh_page_image`
-- `remote.request_screen_state`
-
-对应管理接口：
-- `POST /api/remote/switch-view`
-- `POST /api/remote/refresh-page-image`
-- `POST /api/remote/request-screen-state`
-
-并保持 ACK 闭环：
-- `POST /api/hardware/remote/ack`
+## 常见问题
+- `MONGO_URI 未配置`：文件上传与 GridFS 相关功能不可用。
+- `browser render failed`：优先检查 `backend/start.sh` 是否执行、容器是否有 Chromium 运行库。
+- `xique-ocr ready=false`：检查 Python venv、`tools/ocr/requirements.txt` 安装状态。
+- `401/403`：确认 Token 与角色权限。

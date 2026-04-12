@@ -2117,6 +2117,35 @@ paths:
         '200':
           description: ok
 
+  /api/homepages/auto-render/status:
+    get:
+      summary: 获取主页自动渲染下发状态
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: query
+          name: deviceId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/homepages/auto-render/run:
+    post:
+      summary: 立即执行一次主页自动渲染并下发
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+      responses:
+        '200':
+          description: ok
+
   /api/badgepages/default:
     get:
       summary: 获取默认桌牌页配置基线
@@ -2353,4 +2382,4 @@ paths:
 
 x-ws:
   description: WebSocket 通道
-  endpoint: ws://{host}/ws/hardware?token=JWT&deviceId=dev_xxx
+  endpoint: wss://{host}/ws/hardware?token=JWT&deviceId=dev_xxx

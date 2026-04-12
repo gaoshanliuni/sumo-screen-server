@@ -12,7 +12,8 @@
     "template_id": "tpl_weatherpage_default",
     "template_name": "Default Weather HTML",
     "template_path": "builtin://weatherpage/default",
-    "render_engine": "auto"
+    "render_engine": "auto",
+    "render_mode": "hybrid"
   },
   "image": {
     "format": "epd4",
@@ -70,3 +71,4 @@
     "mode": "local_text_weather"
   }
 }
+

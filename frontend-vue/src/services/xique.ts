@@ -68,8 +68,15 @@ export type XiqueInitLoginResponse = {
 
 export type XiqueImportResponse = {
   status: string;
+  loginStatus?: string;
   deviceId: string;
   configId: string;
+  taskId?: string;
+  needManualCaptcha?: boolean;
+  reason?: string;
+  ocrFailCount?: number;
+  ocrAttempts?: number;
+  ocrFailures?: number;
   termKey?: string;
   result?: Record<string, any>;
   nextRunAt?: string;
@@ -110,7 +117,10 @@ export function normalizeXiqueConfig(input?: Partial<XiqueScheduleConfig> | null
 }
 
 export async function fetchXiqueStatus(token: string, deviceId: string) {
-  return apiRequest<XiqueStatusResponse>(`/api/schedules/xique/status?deviceId=${encodeURIComponent(cleanString(deviceId))}`, { token });
+  return apiRequest<XiqueStatusResponse>(`/api/schedules/xique/status?deviceId=${encodeURIComponent(cleanString(deviceId))}`, {
+    token,
+    timeoutMs: 30000,
+  });
 }
 
 export async function saveXiqueConfig(token: string, payload: XiqueConfigPayload) {
@@ -118,17 +128,26 @@ export async function saveXiqueConfig(token: string, payload: XiqueConfigPayload
     method: "POST",
     token,
     body: JSON.stringify(payload),
+    timeoutMs: 45000,
   });
 }
 
 export async function initXiqueLogin(
   token: string,
-  payload: Partial<XiqueConfigPayload> & { deviceId: string; requireCaptcha?: boolean; captchaSession?: string; captchaAnswer?: string }
+  payload: Partial<XiqueConfigPayload> & {
+    deviceId: string;
+    requireCaptcha?: boolean;
+    forceCaptcha?: boolean;
+    captchaSession?: string;
+    captchaAnswer?: string;
+    captchaCode?: string;
+  }
 ) {
   return apiRequest<XiqueInitLoginResponse>(`/api/schedules/xique/init-login`, {
     method: "POST",
     token,
     body: JSON.stringify(payload),
+    timeoutMs: 90000,
   });
 }
 
@@ -145,6 +164,47 @@ export async function importXiqueSchedule(
     method: "POST",
     token,
     body: JSON.stringify(payload),
+    timeoutMs: 180000,
+  });
+}
+
+export async function startXiqueImport(
+  token: string,
+  payload: Partial<XiqueConfigPayload> & {
+    deviceId: string;
+    forceCaptcha?: boolean;
+    autoOcrEnabled?: boolean;
+  }
+) {
+  return apiRequest<XiqueImportResponse>(`/api/schedules/xique/import/start`, {
+    method: "POST",
+    token,
+    body: JSON.stringify(payload),
+    timeoutMs: 180000,
+  });
+}
+
+export async function verifyXiqueCaptcha(
+  token: string,
+  payload: {
+    deviceId: string;
+    taskId?: string;
+    configId?: string;
+    sessionId?: string;
+    captchaSession?: string;
+    captchaCode: string;
+    loginUsername?: string;
+    password?: string;
+    currentTermKey?: string;
+    enabled?: boolean;
+    intervalMinutes?: XiqueSyncInterval;
+  }
+) {
+  return apiRequest<XiqueImportResponse>(`/api/schedules/xique/import/verify-captcha`, {
+    method: "POST",
+    token,
+    body: JSON.stringify(payload),
+    timeoutMs: 180000,
   });
 }
 
@@ -161,5 +221,6 @@ export async function reverifyXiqueLogin(
     method: "POST",
     token,
     body: JSON.stringify(payload),
+    timeoutMs: 90000,
   });
 }

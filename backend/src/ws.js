@@ -3,6 +3,7 @@ const { verifyToken } = require("./utils/jwt");
 const { readDB } = require("./db/store");
 const { ensureDeviceAccess } = require("./utils/access");
 const { subscribeDevice, getDeviceHistory, markDeviceOnline, markDeviceOffline } = require("./utils/realtime.hub");
+const { resolveRequestOrigin } = require("./utils/origin");
 
 const REMOTE_REPLAY_MAX_AGE_MS = 45000;
 
@@ -37,8 +38,10 @@ function setupWebSocketServer(httpServer) {
   const wss = new WebSocketServer({ noServer: true });
 
   httpServer.on("upgrade", (req, socket, head) => {
-    const url = new URL(req.url, `http://${req.headers.host}`);
+    const baseOrigin = resolveRequestOrigin(req);
+    const url = new URL(req.url, baseOrigin);
     if (url.pathname !== "/ws/hardware") {
+      socket.destroy();
       return;
     }
     wss.handleUpgrade(req, socket, head, (ws) => {

@@ -1,7 +1,6 @@
 const fs = require("fs");
 const path = require("path");
 
-const HttpError = require("../utils/httpError");
 const {
   deepMerge,
   normalizePageConfig,
@@ -32,9 +31,68 @@ const DEFAULT_TEMPLATE_HTML = `
 <div data-x="120" data-y="1450" data-size="30" data-align="left">Updated: {{weather.updated_at}}</div>
 `;
 
+function buildBuiltinWeatherConfig() {
+  return {
+    id: "weatherpage_default",
+    name: "Default Weather Page",
+    enabled: true,
+    version: 1,
+    screen: { width: 2560, height: 1600 },
+    template: {
+      type: "default_html",
+      template_id: DEFAULT_TEMPLATE_ID,
+      template_name: DEFAULT_TEMPLATE_NAME,
+      template_path: "builtin://weatherpage/default",
+      render_engine: "auto",
+      render_mode: "hybrid",
+    },
+    image: {
+      format: "epd4",
+      preview_format: "png",
+      render_source: "server",
+      refresh_policy: "event-or-poll",
+      cache_ttl_sec: 1800,
+    },
+    time_overlay: {
+      enabled: true,
+      x: 1880,
+      y: 90,
+      width: 620,
+      height: 160,
+      format: "HH:mm",
+      font_size: 78,
+      align: "right",
+      refresh_interval_sec: 60,
+      background_clear_mode: "fill-white",
+      invert: false,
+    },
+    fallback: {
+      enabled: true,
+      mode: "local_text_weather",
+    },
+  };
+}
+
 function loadDefaultWeatherConfig() {
-  if (!fs.existsSync(DEFAULT_CONFIG_PATH)) throw new HttpError(500, "default weather config missing");
-  const parsed = JSON.parse(fs.readFileSync(DEFAULT_CONFIG_PATH, "utf8"));
+  let parsed = null;
+  if (fs.existsSync(DEFAULT_CONFIG_PATH)) {
+    try {
+      parsed = JSON.parse(fs.readFileSync(DEFAULT_CONFIG_PATH, "utf8"));
+    } catch (error) {
+      console.warn(
+        `[weatherpage] failed to parse default config at ${DEFAULT_CONFIG_PATH}, fallback to builtin. err=${
+          error && error.message ? error.message : String(error)
+        }`
+      );
+    }
+  } else {
+    console.warn(
+      `[weatherpage] default config not found at ${DEFAULT_CONFIG_PATH}, fallback to builtin.`
+    );
+  }
+  if (!parsed || typeof parsed !== "object") {
+    parsed = buildBuiltinWeatherConfig();
+  }
   parsed.template = parsed.template || {};
   if (!parsed.template.template_id) parsed.template.template_id = DEFAULT_TEMPLATE_ID;
   parsed.qweather_assets = getQWeatherAssetsInfo();

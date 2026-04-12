@@ -6,7 +6,6 @@ const BUILTIN_LEGACY_SECRETS = [
   "ink-screen-super-secret",
   "ink_screen_secret",
   "shuimoping-secret",
-  "admin123",
 ];
 
 function signToken(payload, expiresIn = config.jwtExpiresIn) {

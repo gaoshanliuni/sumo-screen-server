@@ -1,5 +1,9 @@
 module.exports = {
   port: Number(process.env.PORT || 8890),
+  trustProxy: String(process.env.TRUST_PROXY || "1") !== "0",
+  forceHttps: String(process.env.FORCE_HTTPS || "0") === "1",
+  hstsMaxAgeSec: Number(process.env.HSTS_MAX_AGE_SEC || 31536000),
+  publicOrigin: String(process.env.PUBLIC_ORIGIN || "").trim(),
   timezone: process.env.APP_TIMEZONE || "Asia/Shanghai",
   jwtSecret: process.env.JWT_SECRET || "ink-screen-super-secret-change-me",
   jwtLegacySecrets: String(process.env.JWT_LEGACY_SECRETS || "")
@@ -9,7 +13,7 @@ module.exports = {
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || "7d",
   jwtLegacyExpiryGraceSec: Number(process.env.JWT_LEGACY_EXPIRY_GRACE_SEC || 30 * 24 * 60 * 60),
   requestTimeoutMs: Number(process.env.REQUEST_TIMEOUT_MS || 8000),
-  dbRetryCooldownMs: Number(process.env.DB_RETRY_COOLDOWN_MS || 30000),
+  dbRetryCooldownMs: Number(process.env.DB_RETRY_COOLDOWN_MS || 120000),
   mongoUri: process.env.MONGO_URI || "",
   xiqueVaultSecret: process.env.XIQUE_VAULT_SECRET || process.env.JWT_SECRET || "ink-screen-xique-vault-secret",
   xiqueSchedulerIntervalMs: Number(process.env.XIQUE_SCHEDULER_INTERVAL_MS || 60000),
@@ -18,6 +22,14 @@ module.exports = {
   xiqueFailureBackoffThreshold: Number(process.env.XIQUE_FAILURE_BACKOFF_THRESHOLD || 3),
   xiqueFailurePauseThreshold: Number(process.env.XIQUE_FAILURE_PAUSE_THRESHOLD || 5),
   xiqueMaxBackoffMinutes: Number(process.env.XIQUE_MAX_BACKOFF_MINUTES || 120),
+  xiqueOcrEnabled: String(process.env.XIQUE_OCR_ENABLED || "1") !== "0",
+  xiqueOcrPythonBin: process.env.XIQUE_OCR_PYTHON_BIN || process.env.PYTHON_BIN || "python",
+  xiqueOcrScriptPath: process.env.XIQUE_OCR_SCRIPT_PATH || "",
+  xiqueOcrRequirementsPath: process.env.XIQUE_OCR_REQUIREMENTS_PATH || "",
+  xiqueOcrTimeoutMs: Number(process.env.XIQUE_OCR_TIMEOUT_MS || 6000),
+  xiqueOcrAutoSetup: String(process.env.XIQUE_OCR_AUTO_SETUP || "1") !== "0",
+  xiqueOcrMaxFailuresBeforeManual: Number(process.env.XIQUE_OCR_MAX_FAILURES_BEFORE_MANUAL || 2),
+  xiqueCaptchaExpectedLength: Number(process.env.XIQUE_CAPTCHA_EXPECTED_LENGTH || 4),
   mysql: {
     host: process.env.DB_HOST || "gaoshanliuni.top",
     port: Number(process.env.DB_PORT || 3306),
@@ -26,7 +38,8 @@ module.exports = {
     database: process.env.DB_NAME || "shuimoping",
     charset: process.env.DB_CHARSET || "utf8mb4",
     connectionLimit: Number(process.env.DB_POOL_SIZE || 10),
-    connectTimeoutMs: Number(process.env.DB_CONNECT_TIMEOUT_MS || 2000),
+    connectTimeoutMs: Number(process.env.DB_CONNECT_TIMEOUT_MS || 12000),
+    opTimeoutMs: Number(process.env.DB_OP_TIMEOUT_MS || 120000),
     stateTable: process.env.DB_STATE_TABLE || "app_state",
   },
 };

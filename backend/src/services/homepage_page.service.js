@@ -34,9 +34,82 @@ const DEFAULT_TEMPLATE_HTML = `
 <div data-x="120" data-y="1415" data-size="30" data-align="left">Updated: {{meta.rendered_at}}</div>
 `;
 
+function buildBuiltinHomepageConfig() {
+  return {
+    id: "homepage_default",
+    name: "Default Homepage",
+    enabled: true,
+    version: 1,
+    screen: { width: 2560, height: 1600 },
+    template: {
+      type: "default_html",
+      template_id: DEFAULT_TEMPLATE_ID,
+      template_name: DEFAULT_TEMPLATE_NAME,
+      template_path: "builtin://homepage/default",
+      render_engine: "auto",
+      render_mode: "hybrid",
+    },
+    image: {
+      format: "epd4",
+      preview_format: "png",
+      render_source: "server",
+      refresh_policy: "on-demand",
+      cache_ttl_sec: 3600,
+    },
+    auto_render_push: {
+      enabled: false,
+      interval_enabled: true,
+      window_start_time: "07:30",
+      window_end_time: "23:59",
+      fixed_times: [],
+      // legacy aliases
+      daily_start_time: "07:30",
+      interval_minutes: 60,
+      next_run_at: "",
+      last_run_at: "",
+      last_result: "idle",
+      last_error: "",
+      last_reason: "",
+    },
+    time_overlay: {
+      enabled: true,
+      x: 1820,
+      y: 80,
+      width: 680,
+      height: 180,
+      format: "HH:mm",
+      font_size: 88,
+      align: "right",
+      refresh_interval_sec: 60,
+      color: "black",
+    },
+    fallback: {
+      enabled: true,
+      mode: "local_text_home",
+    },
+  };
+}
+
 function loadDefaultHomepageConfig() {
-  if (!fs.existsSync(DEFAULT_CONFIG_PATH)) throw new HttpError(500, "default homepage config missing");
-  const parsed = JSON.parse(fs.readFileSync(DEFAULT_CONFIG_PATH, "utf8"));
+  let parsed = null;
+  if (fs.existsSync(DEFAULT_CONFIG_PATH)) {
+    try {
+      parsed = JSON.parse(fs.readFileSync(DEFAULT_CONFIG_PATH, "utf8"));
+    } catch (error) {
+      console.warn(
+        `[homepage] failed to parse default config at ${DEFAULT_CONFIG_PATH}, fallback to builtin. err=${
+          error && error.message ? error.message : String(error)
+        }`
+      );
+    }
+  } else {
+    console.warn(
+      `[homepage] default config not found at ${DEFAULT_CONFIG_PATH}, fallback to builtin.`
+    );
+  }
+  if (!parsed || typeof parsed !== "object") {
+    parsed = buildBuiltinHomepageConfig();
+  }
   parsed.template = parsed.template || {};
   if (!parsed.template.template_id) parsed.template.template_id = DEFAULT_TEMPLATE_ID;
   return normalizePageConfig(parsed, parsed, PAGE_TYPE);

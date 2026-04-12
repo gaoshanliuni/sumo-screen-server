@@ -12,7 +12,8 @@
     "template_id": "tpl_badge_default",
     "template_name": "Default Badge HTML",
     "template_path": "builtin://badgepage/default",
-    "render_engine": "auto"
+    "render_engine": "auto",
+    "render_mode": "hybrid"
   },
   "image": {
     "format": "epd4",
@@ -62,3 +63,4 @@
     "mode": "local_text_badge"
   }
 }
+

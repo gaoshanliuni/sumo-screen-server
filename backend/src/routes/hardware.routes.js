@@ -13,6 +13,7 @@ const {
   publishDeviceEvent,
   markDeviceOnline,
   markDeviceOffline,
+  touchDevicePresence,
 } = require("../utils/realtime.hub");
 const { getGridBucket, ObjectId } = require("../utils/mongo");
 const { markRemoteAck, normalizeAckStatus } = require("../utils/remoteAck");
@@ -484,6 +485,7 @@ router.post(
       deviceId: device.id,
       mac: device.mac,
     });
+    touchDevicePresence(device.id);
     loginTrace("issue_token");
 
     res.success(

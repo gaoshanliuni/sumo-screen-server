@@ -4,13 +4,31 @@ const config = require("../config");
 const createId = require("../utils/id");
 
 let cache = null;
-let pool = null;
 let initialized = false;
 let writeQueue = Promise.resolve();
 let warnedReadFallback = false;
 let warnedWriteFallback = false;
 let forceCacheReads = false;
 let dbRetryAfterTs = 0;
+let initializedFromDB = false;
+const dbOpTimeoutMs = Math.max(1000, Number(config.mysql.opTimeoutMs || config.mysql.connectTimeoutMs || 6000));
+
+function withTimeout(promise, timeoutMs, label) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${label} timeout`));
+    }, Math.max(100, Number(timeoutMs || dbOpTimeoutMs)));
+    Promise.resolve(promise)
+      .then((value) => {
+        clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+  });
+}
 
 function clone(data) {
   return JSON.parse(JSON.stringify(data));
@@ -171,8 +189,19 @@ function tableName() {
 
 function warnFallback(kind, error) {
   const msg = error && error.message ? error.message : String(error || "unknown error");
+  const extra = Array.isArray(error?.errors)
+    ? ` | causes=${error.errors
+        .map((item) => {
+          const code = item?.code ? String(item.code) : "";
+          const address = item?.address ? String(item.address) : "";
+          const port = Number(item?.port || 0) > 0 ? String(item.port) : "";
+          return [code, address, port].filter(Boolean).join("@");
+        })
+        .filter(Boolean)
+        .join(",")}`
+    : "";
   // eslint-disable-next-line no-console
-  console.warn(`[store] ${kind} fallback to in-memory cache: ${msg}`);
+  console.warn(`[store] ${kind} fallback to in-memory cache: ${msg}${extra}`);
 }
 
 function enableCacheReadMode() {
@@ -199,12 +228,13 @@ async function ensureMemoryStore() {
   cache = await getDefaultData();
   normalizeStoreShape(cache);
   initialized = true;
+  initializedFromDB = false;
 }
 
 async function getDefaultData() {
   const now = new Date().toISOString();
-  const adminPasswordHash = await bcrypt.hash("admin123", 10);
-  const demoPasswordHash = await bcrypt.hash("user123", 10);
+  const adminPasswordHash = await bcrypt.hash("admin@0607", 10);
+  const demoPasswordHash = await bcrypt.hash("uesr@123", 10);
 
   return {
     meta: {
@@ -339,7 +369,26 @@ async function getDefaultData() {
         createdAt: now,
         updatedAt: now,
       },
-            {
+      {
+        id: "tpl_todo",
+        name: "TODO列表",
+        slug: "todo",
+        method: "GET",
+        url: "/api/todos",
+        keyField: "",
+        keyIn: ["query"],
+        deviceKeyRequired: false,
+        defaultParams: {},
+        userInputFields: [
+          { name: "done", placeholder: "可选：true/false，按完成状态过滤" },
+          { name: "limit", placeholder: "可选：限制返回条数（最大500）" },
+        ],
+        enabled: true,
+        builtin: true,
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
         id: "tpl_xique_schedule",
         name: "喜鹊课程表",
         slug: "xique_schedule",
@@ -374,6 +423,46 @@ async function getDefaultData() {
     xiqueSessionVault: [],
     syncLogs: [],
   };
+}
+
+async function migrateDefaultCredentialIfNeeded(state) {
+  if (!state || !Array.isArray(state.users) || !state.users.length) {
+    return false;
+  }
+  const rules = [
+    { username: "admin", oldPassword: "admin123", nextPassword: "admin@0607" },
+    { username: "demo", oldPassword: "user123", nextPassword: "uesr@123" },
+  ];
+  let changed = false;
+  const now = new Date().toISOString();
+  for (const rule of rules) {
+    const user = state.users.find((item) => String(item?.username || "") === rule.username);
+    if (!user || !user.passwordHash) {
+      continue;
+    }
+    let alreadyNew = false;
+    try {
+      alreadyNew = await bcrypt.compare(rule.nextPassword, String(user.passwordHash));
+    } catch (_) {
+      alreadyNew = false;
+    }
+    if (alreadyNew) {
+      continue;
+    }
+    let stillOld = false;
+    try {
+      stillOld = await bcrypt.compare(rule.oldPassword, String(user.passwordHash));
+    } catch (_) {
+      stillOld = false;
+    }
+    if (!stillOld) {
+      continue;
+    }
+    user.passwordHash = await bcrypt.hash(rule.nextPassword, 10);
+    user.updatedAt = now;
+    changed = true;
+  }
+  return changed;
 }
 
 function normalizeStoreShape(state) {
@@ -548,6 +637,29 @@ function normalizeStoreShape(state) {
       keyIn: ["query"],
       deviceKeyRequired: false,
       defaultParams: {},
+      enabled: true,
+      builtin: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  if (!state.apiTemplates.some((tpl) => tpl.slug === "todo")) {
+    const now = new Date().toISOString();
+    state.apiTemplates.push({
+      id: createId("tpl"),
+      name: "TODO列表",
+      slug: "todo",
+      method: "GET",
+      url: "/api/todos",
+      keyField: "",
+      keyIn: ["query"],
+      deviceKeyRequired: false,
+      defaultParams: {},
+      userInputFields: [
+        { name: "done", placeholder: "可选：true/false，按完成状态过滤" },
+        { name: "limit", placeholder: "可选：限制返回条数（最大500）" },
+      ],
       enabled: true,
       builtin: true,
       createdAt: now,
@@ -755,8 +867,7 @@ function normalizeStoreShape(state) {
 }
 
 async function getPool() {
-  if (pool) return pool;
-  pool = mysql.createPool({
+  return mysql.createConnection({
     host: config.mysql.host,
     port: config.mysql.port,
     user: config.mysql.user,
@@ -765,12 +876,29 @@ async function getPool() {
     charset: config.mysql.charset,
     connectionLimit: config.mysql.connectionLimit,
     connectTimeout: config.mysql.connectTimeoutMs,
-    waitForConnections: true,
-    queueLimit: 0,
     enableKeepAlive: true,
     keepAliveInitialDelay: 10000,
   });
-  return pool;
+}
+
+async function resetPool() {
+  // no-op for single connection mode
+}
+
+async function closeConn(conn) {
+  if (!conn) return;
+  try {
+    if (typeof conn.release === "function") {
+      conn.release();
+      return;
+    }
+    if (typeof conn.end === "function") {
+      await conn.end();
+      return;
+    }
+  } catch (_) {
+    // ignore
+  }
 }
 
 async function ensureSchema(conn) {
@@ -797,25 +925,52 @@ async function loadStateFromDB(conn) {
   return parsed;
 }
 
+async function loadStoreFromDBWithRetry() {
+  const maxAttempts = Math.max(1, Number(process.env.DB_INIT_RETRY_MAX || 3));
+  let lastError = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    let conn = null;
+    try {
+      conn = await withTimeout(getPool(), dbOpTimeoutMs, "db connect(init)");
+      await withTimeout(ensureSchema(conn), dbOpTimeoutMs * 2, "db ensureSchema");
+      const loaded = await withTimeout(loadStateFromDB(conn), dbOpTimeoutMs * 2, "db loadState");
+      if (await migrateDefaultCredentialIfNeeded(loaded)) {
+        await withTimeout(
+          conn.query(`UPDATE ${tableName()} SET payload = ? WHERE id = 1`, [JSON.stringify(loaded)]),
+          dbOpTimeoutMs,
+          "db migrate default credential"
+        );
+      }
+      return loaded;
+    } catch (error) {
+      lastError = error;
+      await resetPool();
+      if (attempt < maxAttempts) {
+        const backoffMs = Math.min(2000, attempt * 400);
+        await new Promise((resolve) => setTimeout(resolve, backoffMs));
+      }
+    } finally {
+      await closeConn(conn);
+    }
+  }
+  throw lastError || new Error("db init failed");
+}
+
 async function initStore() {
-  if (initialized && cache) return clone(cache);
+  if (initialized && cache && initializedFromDB) return clone(cache);
+  if (initialized && cache && !initializedFromDB && shouldBypassDB()) return clone(cache);
 
   try {
-    const currentPool = await getPool();
-    const conn = await currentPool.getConnection();
-    try {
-      await ensureSchema(conn);
-      cache = await loadStateFromDB(conn);
-      initialized = true;
-      warnedReadFallback = false;
-      warnedWriteFallback = false;
-      disableCacheReadMode();
-      return clone(cache);
-    } finally {
-      conn.release();
-    }
+    cache = await loadStoreFromDBWithRetry();
+    initialized = true;
+    initializedFromDB = true;
+    warnedReadFallback = false;
+    warnedWriteFallback = false;
+    disableCacheReadMode();
+    return clone(cache);
   } catch (error) {
     await ensureMemoryStore();
+    initializedFromDB = false;
     if (!warnedReadFallback) {
       warnFallback("initStore", error);
       warnedReadFallback = true;
@@ -882,16 +1037,23 @@ async function updateDB(mutator) {
         if (shouldBypassDB()) {
           return updateMemoryOnly(mutator);
         }
-        const currentPool = await getPool();
-        const conn = await currentPool.getConnection();
+        const conn = await withTimeout(getPool(), dbOpTimeoutMs, "db connect(update)");
         try {
-          await conn.beginTransaction();
-          const [rows] = await conn.query(`SELECT payload FROM ${tableName()} WHERE id = 1 FOR UPDATE`);
+          await withTimeout(conn.beginTransaction(), dbOpTimeoutMs, "db beginTransaction");
+          const [rows] = await withTimeout(
+            conn.query(`SELECT payload FROM ${tableName()} WHERE id = 1 FOR UPDATE`),
+            dbOpTimeoutMs,
+            "db select for update"
+          );
           let draft;
           if (!rows.length) {
             draft = await getDefaultData();
             normalizeStoreShape(draft);
-            await conn.query(`INSERT INTO ${tableName()} (id, payload) VALUES (1, ?)`, [JSON.stringify(draft)]);
+            await withTimeout(
+              conn.query(`INSERT INTO ${tableName()} (id, payload) VALUES (1, ?)`, [JSON.stringify(draft)]),
+              dbOpTimeoutMs,
+              "db insert initial payload"
+            );
           } else {
             draft = JSON.parse(rows[0].payload);
             normalizeStoreShape(draft);
@@ -901,27 +1063,33 @@ async function updateDB(mutator) {
           normalizeStoreShape(draft);
           draft.meta = draft.meta || {};
           draft.meta.updatedAt = new Date().toISOString();
-          await conn.query(`UPDATE ${tableName()} SET payload = ? WHERE id = 1`, [JSON.stringify(draft)]);
-          await conn.commit();
+          await withTimeout(
+            conn.query(`UPDATE ${tableName()} SET payload = ? WHERE id = 1`, [JSON.stringify(draft)]),
+            dbOpTimeoutMs,
+            "db update payload"
+          );
+          await withTimeout(conn.commit(), dbOpTimeoutMs, "db commit");
           cache = draft;
+          initializedFromDB = true;
           warnedWriteFallback = false;
           disableCacheReadMode();
           return result;
         } catch (error) {
           try {
-            await conn.rollback();
+            await withTimeout(conn.rollback(), dbOpTimeoutMs, "db rollback");
           } catch (_) {
             // ignore rollback errors
           }
           throw error;
         } finally {
-          conn.release();
+          await closeConn(conn);
         }
       } catch (error) {
         if (!warnedWriteFallback) {
           warnFallback("updateDB", error);
           warnedWriteFallback = true;
         }
+        initializedFromDB = false;
         enableCacheReadMode();
         return updateMemoryOnly(mutator);
       }

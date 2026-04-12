@@ -1,11 +1,14 @@
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
-const { createCanvas, registerFont, loadImage } = require("@napi-rs/canvas");
+const canvasModule = require("@napi-rs/canvas");
+const { createCanvas, loadImage } = canvasModule;
 
+const config = require("../config");
 const createId = require("../utils/id");
 const HttpError = require("../utils/httpError");
 const { getGridBucket } = require("../utils/mongo");
+const { normalizeAutoRenderPushConfig } = require("./homepage_auto_push_time.service");
 
 const ROOT_DIR = path.join(__dirname, "../../..");
 const QWEATHER_DIR = path.join(ROOT_DIR, "ico/QWeather-Icons-1.8.0");
@@ -17,9 +20,12 @@ const QWEATHER_CSS_FILE = path.join(QWEATHER_FONT_DIR, "qweather-icons.css");
 
 let qweatherFontRegistered = false;
 let qweatherIconMap = null;
+let qweatherFontDataUrl = "";
 let playwrightModule = null;
 let browserLaunchPromise = null;
 let browserCleanupHooked = false;
+let qweatherFontWarned = false;
+let systemFontsLoaded = false;
 
 function parsePositiveInt(value, fallback) {
   const num = Number(value);
@@ -27,6 +33,71 @@ function parsePositiveInt(value, fallback) {
     return Math.floor(num);
   }
   return Math.floor(Number(fallback) > 0 ? Number(fallback) : 0);
+}
+
+function registerCanvasFontCompat(fontPath, family) {
+  if (!fontPath || !family) return false;
+  try {
+    if (typeof canvasModule.registerFont === "function") {
+      canvasModule.registerFont(fontPath, { family });
+      return true;
+    }
+    const gf = canvasModule.GlobalFonts;
+    if (gf && typeof gf.registerFromPath === "function") {
+      return Boolean(gf.registerFromPath(fontPath, family));
+    }
+    if (gf && typeof gf.register === "function") {
+      const buf = fs.readFileSync(fontPath);
+      return Boolean(gf.register(buf, family));
+    }
+  } catch (_) {
+    return false;
+  }
+  return false;
+}
+
+function ensureSystemFontsLoaded() {
+  if (systemFontsLoaded) return;
+  try {
+    const gf = canvasModule.GlobalFonts;
+    if (gf && typeof gf.loadSystemFonts === "function") {
+      gf.loadSystemFonts();
+    }
+    const cjkCandidates = [
+      "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+      "/usr/share/fonts/opentype/noto/NotoSansCJKSC-Regular.otf",
+      "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+      "C:/Windows/Fonts/msyh.ttc",
+      "C:/Windows/Fonts/msyh.ttf",
+    ];
+    for (const fontPath of cjkCandidates) {
+      if (fs.existsSync(fontPath)) {
+        registerCanvasFontCompat(fontPath, "PageRenderCJK");
+        break;
+      }
+    }
+    const customCjkFont = String(process.env.PAGE_RENDER_CJK_FONT_PATH || "").trim();
+    if (customCjkFont && fs.existsSync(customCjkFont)) {
+      registerCanvasFontCompat(customCjkFont, "PageRenderCJK");
+    }
+  } catch (_) {
+    // ignore
+  } finally {
+    systemFontsLoaded = true;
+  }
+}
+
+function withPromiseTimeout(taskPromise, timeoutMs, timeoutMessage) {
+  const safeTimeoutMs = Math.max(1000, parsePositiveInt(timeoutMs, 12000));
+  let timer = null;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(timeoutMessage || `timeout after ${safeTimeoutMs}ms`));
+    }, safeTimeoutMs);
+  });
+  return Promise.race([taskPromise, timeoutPromise]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
 }
 
 function getBrowserRenderWaitConfig(config) {
@@ -111,6 +182,18 @@ function normalizeAlign(input, fallback = "left") {
   return ["left", "center", "right"].includes(v) ? v : fallback;
 }
 
+function normalizeRenderMode(modeInput, engineInput) {
+  const mode = String(modeInput || "").trim().toLowerCase();
+  if (["legacy", "web", "hybrid"].includes(mode)) return mode;
+  if (mode === "browser") return "web";
+  if (mode === "auto") return "hybrid";
+
+  const engine = String(engineInput || "").trim().toLowerCase();
+  if (engine === "legacy") return "legacy";
+  if (engine === "browser") return "web";
+  return "hybrid";
+}
+
 function normalizePageConfig(input, fallback, pageType) {
   const page = normalizePageType(pageType);
   const merged = deepMerge(fallback || {}, input || {});
@@ -130,6 +213,8 @@ function normalizePageConfig(input, fallback, pageType) {
   merged.template.template_id = String(merged.template.template_id || `tpl_${page}_default`);
   merged.template.template_name = String(merged.template.template_name || `${page} template`);
   merged.template.render_engine = String(merged.template.render_engine || "auto").toLowerCase();
+  merged.template.render_mode = normalizeRenderMode(merged.template.render_mode, merged.template.render_engine);
+  merged.template.debug = Boolean(merged.template.debug);
 
   merged.image = merged.image || {};
   merged.image.format = String(merged.image.format || "epd4").toLowerCase();
@@ -137,6 +222,14 @@ function normalizePageConfig(input, fallback, pageType) {
   merged.image.render_source = String(merged.image.render_source || "server");
   merged.image.cache_ttl_sec = clamp(merged.image.cache_ttl_sec, 30, 86400, 3600);
   merged.image.refresh_policy = String(merged.image.refresh_policy || "on-demand");
+
+  if (page === "homepage") {
+    merged.auto_render_push = normalizeAutoRenderPushConfig(merged.auto_render_push || {}, {
+      now: new Date(),
+      timeZone: config.timezone || "Asia/Shanghai",
+      recomputeNext: false,
+    });
+  }
 
   merged.time_overlay = merged.time_overlay || {};
   merged.time_overlay.enabled = Boolean(merged.time_overlay.enabled);
@@ -284,9 +377,27 @@ function parseTemplateBlocks(templateHtml, dataModel, width, height) {
 }
 
 function getBrowserExecutableCandidates() {
+  const resolveExecutableFromPath = (names) => {
+    const pathEntries = String(process.env.PATH || "")
+      .split(path.delimiter)
+      .map((item) => String(item || "").trim())
+      .filter(Boolean);
+    if (!pathEntries.length) return [];
+
+    const out = [];
+    pathEntries.forEach((entry) => {
+      names.forEach((name) => {
+        const full = path.join(entry, name);
+        if (fs.existsSync(full)) out.push(full);
+      });
+    });
+    return out;
+  };
+
   const envPaths = [
     process.env.PLAYWRIGHT_CHROMIUM_PATH,
     process.env.CHROME_PATH,
+    process.env.CHROME_BIN,
     process.env.EDGE_PATH,
   ]
     .map((item) => String(item || "").trim())
@@ -297,31 +408,81 @@ function getBrowserExecutableCandidates() {
     "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
     "C:/Program Files/Google/Chrome/Application/chrome.exe",
     "C:/Program Files (x86)/Google/Chrome/Application/chrome.exe",
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/snap/bin/chromium",
+    "/opt/google/chrome/chrome",
+    "/usr/lib/chromium/chromium",
   ];
 
-  return [...new Set([...envPaths, ...defaults])].filter((item) => fs.existsSync(item));
+  const fromPath = resolveExecutableFromPath([
+    "google-chrome",
+    "google-chrome-stable",
+    "chromium",
+    "chromium-browser",
+    "chrome",
+    "msedge",
+    "microsoft-edge",
+  ]);
+
+  return [...new Set([...envPaths, ...defaults, ...fromPath])].filter((item) => fs.existsSync(item));
 }
 
 function shouldUseBrowserRender(templateHtml, config) {
-  const engine = String(config?.template?.render_engine || "auto").toLowerCase();
   const html = String(templateHtml || "");
-  const hasScript = /<script[\s>]/i.test(html) || /\bon[a-z]+\s*=/i.test(html);
-  // JS/事件语法必须走浏览器渲染，避免 legacy 模式导致脚本失效与布局退化。
-  if (hasScript) return true;
-
-  if (engine === "legacy") return false;
-  if (engine === "browser") return true;
-
   if (!html.trim()) return false;
-
-  if (/<html[\s>]|<head[\s>]|<style[\s>]|<section[\s>]|<article[\s>]|<table[\s>]|<header[\s>]|<footer[\s>]|<main[\s>]/i.test(html)) {
-    return true;
-  }
-
-  const hasLegacyDataLayout = /data-x\s*=|data-y\s*=|data-size\s*=/i.test(html);
-  if (hasLegacyDataLayout) return false;
-
+  const renderMode = normalizeRenderMode(config?.template?.render_mode, config?.template?.render_engine);
+  if (renderMode === "legacy") return false;
   return true;
+}
+
+function collectPlaceholderDebug(templateHtml, dataModel) {
+  const all = [];
+  const missing = [];
+  const seenAll = new Set();
+  const seenMissing = new Set();
+  String(templateHtml || "").replace(/\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g, (_m, keyRaw) => {
+    const key = String(keyRaw || "").trim();
+    if (!key) return "";
+    if (!seenAll.has(key)) {
+      seenAll.add(key);
+      all.push(key);
+    }
+    const value = getPathValue(dataModel || {}, key);
+    if ((value === "" || value === null || value === undefined) && !seenMissing.has(key)) {
+      seenMissing.add(key);
+      missing.push(key);
+    }
+    return "";
+  });
+  return {
+    placeholders: all,
+    missing,
+    placeholderCount: all.length,
+    missingCount: missing.length,
+  };
+}
+
+function extractInlineScripts(rawHtml) {
+  const scripts = [];
+  const htmlWithoutScripts = String(rawHtml || "").replace(
+    /<script\b([^>]*)>([\s\S]*?)<\/script>/gi,
+    (_whole, attrsRaw, bodyRaw) => {
+      const attrs = parseAttributes(attrsRaw || "");
+      scripts.push({
+        src: String(attrs.src || "").trim(),
+        type: String(attrs.type || "").trim(),
+        content: String(bodyRaw || ""),
+      });
+      return "";
+    }
+  );
+  return {
+    htmlWithoutScripts,
+    scripts,
+  };
 }
 
 function safeJsonForInlineScript(value) {
@@ -333,12 +494,19 @@ function safeJsonForInlineScript(value) {
     .replace(/\u2029/g, "\\u2029");
 }
 
-function buildRuntimeModelScript(dataModel, width, height, waitConfig) {
+function buildRuntimeModelScript(dataModel, width, height, waitConfig, runtimeOptions = {}) {
   const modelJson = safeJsonForInlineScript(dataModel || {});
   const canvasWidth = Number(width) > 0 ? Number(width) : 2560;
   const canvasHeight = Number(height) > 0 ? Number(height) : 1600;
   const readyTimeoutMs = parsePositiveInt(waitConfig?.readyTimeoutMs, 8000);
   const idleSettleMs = parsePositiveInt(waitConfig?.idleSettleMs, 450);
+  const renderMode = normalizeRenderMode(runtimeOptions.renderMode, runtimeOptions.renderEngine);
+  const deferredScriptsJson = safeJsonForInlineScript(
+    Array.isArray(runtimeOptions.deferredScripts) ? runtimeOptions.deferredScripts : []
+  );
+  const qweatherIconMapJson = safeJsonForInlineScript(
+    isObject(runtimeOptions.qweatherIconMap) ? runtimeOptions.qweatherIconMap : {}
+  );
   return `<script>
 (() => {
   const model = ${modelJson};
@@ -346,6 +514,9 @@ function buildRuntimeModelScript(dataModel, width, height, waitConfig) {
   const pageHeight = ${canvasHeight};
   const readyTimeoutMs = ${readyTimeoutMs};
   const idleSettleMs = ${idleSettleMs};
+  const renderMode = ${JSON.stringify(renderMode)};
+  const deferredScripts = ${deferredScriptsJson};
+  const qweatherIconMap = ${qweatherIconMapJson};
   window.__PAGE_MODEL__ = model;
   const renderState = {
     pending: 0,
@@ -359,6 +530,19 @@ function buildRuntimeModelScript(dataModel, width, height, waitConfig) {
   window.__PAGE_RENDER_STATE__ = renderState;
   window.__PAGE_RENDER_READY__ = false;
   window.__PAGE_RENDER_READY_REASON__ = "loading";
+  const debugState = {
+    renderMode,
+    replacedTextNodes: 0,
+    replacedAttributes: 0,
+    mappedLegacyCount: 0,
+    deferredScriptCount: deferredScripts.length,
+    deferredScriptErrors: [],
+    missingVariables: [],
+    missingCount: 0,
+    readyReason: "loading",
+  };
+  window.__PAGE_RUNTIME_DEBUG__ = debugState;
+  const missingSet = new Set();
 
   const clearTimer = (name) => {
     if (renderState[name]) {
@@ -373,6 +557,9 @@ function buildRuntimeModelScript(dataModel, width, height, waitConfig) {
     renderState.reason = reason || "settled";
     window.__PAGE_RENDER_READY_REASON__ = renderState.reason;
     window.__PAGE_RENDER_READY__ = true;
+    debugState.readyReason = window.__PAGE_RENDER_READY_REASON__;
+    debugState.missingVariables = Array.from(missingSet).sort();
+    debugState.missingCount = debugState.missingVariables.length;
     clearTimer("settleTimer");
     clearTimer("hardTimer");
     if (renderState.observer) {
@@ -459,10 +646,16 @@ function buildRuntimeModelScript(dataModel, width, height, waitConfig) {
     const parts = path.split(".").filter(Boolean);
     let cur = obj;
     for (const part of parts) {
-      if (cur === null || cur === undefined) return "";
+      if (cur === null || cur === undefined) {
+        if (!missingSet.has(path)) missingSet.add(path);
+        return "";
+      }
       cur = cur[part];
     }
-    if (cur === null || cur === undefined) return "";
+    if (cur === null || cur === undefined) {
+      if (!missingSet.has(path)) missingSet.add(path);
+      return "";
+    }
     if (typeof cur === "object") {
       try { return JSON.stringify(cur); } catch (_) { return ""; }
     }
@@ -485,15 +678,22 @@ function buildRuntimeModelScript(dataModel, width, height, waitConfig) {
     while (walker.nextNode()) textNodes.push(walker.currentNode);
     textNodes.forEach((node) => {
       if (!node || !node.nodeValue || node.nodeValue.indexOf("{{") < 0) return;
-      node.nodeValue = interpolate(node.nodeValue);
+      const replaced = interpolate(node.nodeValue);
+      if (replaced !== node.nodeValue) {
+        debugState.replacedTextNodes += 1;
+      }
+      node.nodeValue = replaced;
     });
 
-    const attrs = ["title", "alt", "placeholder", "src", "href", "data-src", "data-text", "data-value"];
     document.querySelectorAll("*").forEach((el) => {
+      const attrs = Array.from(el.attributes || []);
       attrs.forEach((attr) => {
-        const raw = el.getAttribute(attr);
+        if (!attr || !attr.name) return;
+        const raw = String(attr.value || "");
         if (raw && raw.indexOf("{{") >= 0) {
-          el.setAttribute(attr, interpolate(raw));
+          const replaced = interpolate(raw);
+          if (replaced !== raw) debugState.replacedAttributes += 1;
+          el.setAttribute(attr.name, replaced);
         }
       });
       const bind = el.getAttribute("data-bind");
@@ -507,7 +707,53 @@ function buildRuntimeModelScript(dataModel, width, height, waitConfig) {
     });
   };
 
+  const resolveIconCodePoint = (iconCode, iconName) => {
+    const iconCodeRaw = String(iconCode || "").trim();
+    const iconNameRaw = String(iconName || "").trim();
+    let codePoint = NaN;
+
+    if (iconCodeRaw) {
+      if (/^0x[0-9a-f]+$/i.test(iconCodeRaw)) {
+        codePoint = parseInt(iconCodeRaw, 16);
+      } else if (/^[0-9]+$/.test(iconCodeRaw)) {
+        if (Object.prototype.hasOwnProperty.call(qweatherIconMap, iconCodeRaw)) {
+          codePoint = Number(qweatherIconMap[iconCodeRaw]);
+        } else {
+          codePoint = Number(iconCodeRaw);
+        }
+      } else if (Object.prototype.hasOwnProperty.call(qweatherIconMap, iconCodeRaw)) {
+        codePoint = Number(qweatherIconMap[iconCodeRaw]);
+      }
+    }
+
+    if (!Number.isFinite(codePoint) && iconNameRaw && Object.prototype.hasOwnProperty.call(qweatherIconMap, iconNameRaw)) {
+      codePoint = Number(qweatherIconMap[iconNameRaw]);
+    }
+
+    return Number.isFinite(codePoint) ? codePoint : NaN;
+  };
+
+  const applyWeatherIconBindings = () => {
+    if (!qweatherIconMap || typeof qweatherIconMap !== "object") return;
+    const icons = document.querySelectorAll("[data-icon], [data-icon-name]");
+    icons.forEach((el) => {
+      const cp = resolveIconCodePoint(el.getAttribute("data-icon"), el.getAttribute("data-icon-name"));
+      if (!Number.isFinite(cp)) return;
+      const glyph = String.fromCodePoint(cp);
+      if (el.textContent !== glyph) {
+        el.textContent = glyph;
+      }
+      if (!String(el.style.fontFamily || "").trim()) {
+        el.style.fontFamily = '"QWeather Icons", "Noto Sans SC", "Microsoft YaHei", Arial, sans-serif';
+      }
+      if (!String(el.style.fontWeight || "").trim()) {
+        el.style.fontWeight = "400";
+      }
+    });
+  };
+
   const applyDataLayout = () => {
+    if (renderMode === "web") return;
     const targets = document.querySelectorAll("[data-x], [data-y], [data-size], [data-width], [data-align], [data-weight], [data-color]");
     targets.forEach((el) => {
       const x = toNum(el.getAttribute("data-x"));
@@ -520,6 +766,9 @@ function buildRuntimeModelScript(dataModel, width, height, waitConfig) {
 
       if (x !== null || y !== null) {
         el.style.position = "absolute";
+      }
+      if (!String(el.style.boxSizing || "").trim()) {
+        el.style.boxSizing = "border-box";
       }
       if (x !== null) {
         el.style.left = String(x) + "px";
@@ -558,7 +807,52 @@ function buildRuntimeModelScript(dataModel, width, height, waitConfig) {
       if (!String(el.style.lineHeight || "").trim()) {
         el.style.lineHeight = "1.2";
       }
+      debugState.mappedLegacyCount += 1;
     });
+  };
+
+  const executeDeferredScripts = async () => {
+    if (!Array.isArray(deferredScripts) || !deferredScripts.length) return;
+    const parent = document.body || document.documentElement;
+    if (!parent) return;
+    for (const item of deferredScripts) {
+      const src = String(item && item.src ? item.src : "").trim();
+      const contentRaw = String(item && item.content ? item.content : "");
+      const type = String(item && item.type ? item.type : "").trim();
+      if (src) {
+        await new Promise((resolvePromise) => {
+          try {
+            const node = document.createElement("script");
+            if (type) node.type = type;
+            node.src = src;
+            node.async = false;
+            node.onload = () => resolvePromise();
+            node.onerror = () => {
+              debugState.deferredScriptErrors.push("load_failed:" + src);
+              resolvePromise();
+            };
+            parent.appendChild(node);
+          } catch (error) {
+            debugState.deferredScriptErrors.push(String(error && error.message ? error.message : error));
+            resolvePromise();
+          }
+        });
+        continue;
+      }
+      if (!contentRaw.trim()) continue;
+      try {
+        const node = document.createElement("script");
+        if (type) node.type = type;
+        const resolvedContent = interpolate(contentRaw);
+        node.text =
+          "(function(){try{\\n" +
+          resolvedContent +
+          "\\n}catch(error){console.error('[page-render] inline script error', error);}})();";
+        parent.appendChild(node);
+      } catch (error) {
+        debugState.deferredScriptErrors.push(String(error && error.message ? error.message : error));
+      }
+    }
   };
 
   const observeMutations = () => {
@@ -581,28 +875,67 @@ function buildRuntimeModelScript(dataModel, width, height, waitConfig) {
     }
   };
 
-  const run = () => {
+  const run = async () => {
     applyBindings();
     applyDataLayout();
+    applyWeatherIconBindings();
+    await executeDeferredScripts();
+    applyBindings();
+    applyDataLayout();
+    applyWeatherIconBindings();
     observeMutations();
     noteActivity();
     startHardTimeout();
   };
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", run, { once: true });
+    document.addEventListener("DOMContentLoaded", () => {
+      run().catch((error) => {
+        console.error("[page-render] runtime run failed", error);
+        finishReady("runtime-error");
+      });
+    }, { once: true });
   } else {
-    run();
+    run().catch((error) => {
+      console.error("[page-render] runtime run failed", error);
+      finishReady("runtime-error");
+    });
   }
 })();
 </script>`;
 }
 
-function buildBrowserPreviewDocument(rawHtml, dataModel, width, height, waitConfig) {
-  const html = String(rawHtml || "");
-  const runtimeScript = buildRuntimeModelScript(dataModel, width, height, waitConfig);
+function getQWeatherFontDataUrl() {
+  if (qweatherFontDataUrl) return qweatherFontDataUrl;
+  if (!fs.existsSync(QWEATHER_FONT_FILE)) return "";
+  try {
+    const file = fs.readFileSync(QWEATHER_FONT_FILE);
+    qweatherFontDataUrl = `data:font/ttf;base64,${file.toString("base64")}`;
+    return qweatherFontDataUrl;
+  } catch (_) {
+    return "";
+  }
+}
+
+function buildBrowserPreviewDocument(rawHtml, dataModel, width, height, waitConfig, config) {
+  const extracted = extractInlineScripts(rawHtml);
+  const html = String(extracted.htmlWithoutScripts || "");
+  const renderMode = normalizeRenderMode(config?.template?.render_mode, config?.template?.render_engine);
+  const qweather = ensureQWeatherAssets();
+  const runtimeScript = buildRuntimeModelScript(dataModel, width, height, waitConfig, {
+    renderMode,
+    renderEngine: config?.template?.render_engine,
+    deferredScripts: extracted.scripts,
+    qweatherIconMap: qweather?.map || {},
+  });
+  const qweatherFontUrl = getQWeatherFontDataUrl();
+  const fontFaceStyle = qweatherFontUrl
+    ? `@font-face{font-family:"QWeather Icons";src:url("${qweatherFontUrl}") format("truetype");font-display:swap;}`
+    : "";
   const baseStyle = `
+    ${fontFaceStyle}
     html,body{margin:0;padding:0;width:${width}px;height:${height}px;overflow:hidden;background:#fff;color:#000;}
-    body{font-family:"Noto Sans SC","Microsoft YaHei",Arial,sans-serif;position:relative;-webkit-font-smoothing:none;text-rendering:optimizeSpeed;}
+    body{font-family:"PageRenderCJK","Noto Sans CJK SC","Noto Sans SC","WenQuanYi Zen Hei","PingFang SC","Hiragino Sans GB","Microsoft YaHei",Arial,sans-serif;position:relative;}
+    *,*::before,*::after{box-sizing:border-box;}
     #page-root{position:relative;width:${width}px;height:${height}px;overflow:hidden;}
     img{max-width:100%;height:auto;}
   `;
@@ -649,6 +982,18 @@ async function getPlaywrightModule() {
 
 async function getBrowserInstance() {
   if (browserLaunchPromise) return browserLaunchPromise;
+  const launchTimeoutMs = Math.max(
+    2500,
+    parsePositiveInt(process.env.PAGE_RENDER_BROWSER_LAUNCH_TIMEOUT_MS, 7000)
+  );
+  const maxCandidateAttempts = Math.max(
+    1,
+    parsePositiveInt(process.env.PAGE_RENDER_BROWSER_MAX_CANDIDATES, 3)
+  );
+  const isFatalLinkerError = (error) =>
+    /error while loading shared libraries|Failed to launch browser process|lib[a-z0-9_.-]+\.so/i.test(
+      String(error?.message || error || "")
+    );
 
   browserLaunchPromise = (async () => {
     const playwright = await getPlaywrightModule();
@@ -656,25 +1001,73 @@ async function getBrowserInstance() {
       throw new Error("playwright-core not installed");
     }
 
-    const executables = getBrowserExecutableCandidates();
-    if (!executables.length) {
-      throw new Error("no chromium browser executable found");
-    }
+    const launchArgs = ["--no-sandbox", "--disable-setuid-sandbox", "--disable-gpu", "--disable-dev-shm-usage"];
+    const launchWithTimeout = async (options, label) => {
+      let timer = null;
+      let timedOut = false;
+      const launchPromise = playwright.chromium.launch(options);
+      const hardTimeoutPromise = new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          timedOut = true;
+          reject(new Error(`browser launch hard-timeout after ${launchTimeoutMs}ms: ${label}`));
+        }, launchTimeoutMs + 1200);
+      });
+      try {
+        const instance = await Promise.race([launchPromise, hardTimeoutPromise]);
+        if (timer) clearTimeout(timer);
+        return instance;
+      } catch (error) {
+        if (timer) clearTimeout(timer);
+        if (timedOut) {
+          launchPromise
+            .then((instance) => instance && instance.close && instance.close().catch(() => {}))
+            .catch(() => {});
+        }
+        throw error;
+      }
+    };
 
     let lastError = null;
+
+    // 1) Prefer Playwright-managed browser path (PLAYWRIGHT_BROWSERS_PATH + playwright install).
+    try {
+      return await launchWithTimeout(
+        {
+          headless: true,
+          timeout: launchTimeoutMs,
+          args: launchArgs,
+        },
+        "playwright-managed"
+      );
+    } catch (error) {
+      lastError = error;
+    }
+
+    // 2) Fallback to explicit executable candidates from env/system paths.
+    const executables = getBrowserExecutableCandidates().slice(0, maxCandidateAttempts);
     for (const executablePath of executables) {
       try {
-        return await playwright.chromium.launch({
-          headless: true,
-          executablePath,
-          args: ["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"],
-        });
+        return await launchWithTimeout(
+          {
+            headless: true,
+            executablePath,
+            timeout: launchTimeoutMs,
+            args: launchArgs,
+          },
+          executablePath
+        );
       } catch (error) {
         lastError = error;
+        if (isFatalLinkerError(error)) break;
       }
     }
 
-    throw lastError || new Error("failed to launch browser renderer");
+    throw (
+      lastError ||
+      new Error(
+        "no chromium browser executable found; install via `npx playwright-core install chromium` or set CHROME_PATH/CHROME_BIN"
+      )
+    );
   })();
 
   try {
@@ -721,7 +1114,7 @@ async function renderWithBrowserEngine({ templateHtml, dataModel, width, height,
 
   try {
     const page = await context.newPage();
-    const doc = buildBrowserPreviewDocument(templateHtml, dataModel, width, height, waitConfig);
+    const doc = buildBrowserPreviewDocument(templateHtml, dataModel, width, height, waitConfig, config);
     await page.setContent(doc, { waitUntil: "domcontentloaded" });
     let readyWaitError = null;
     await page
@@ -764,7 +1157,31 @@ async function renderWithBrowserEngine({ templateHtml, dataModel, width, height,
         timeoutMs: waitForReadyTimeoutMs,
       });
     }
-    return await page.screenshot({ type: "png", clip: { x: 0, y: 0, width, height } });
+    const runtimeDebug = await page
+      .evaluate(() => window.__PAGE_RUNTIME_DEBUG__ || {})
+      .catch(() => ({}));
+    const debugEnabled = Boolean(config?.template?.debug);
+    const missingCount = Number(runtimeDebug?.missingCount || 0);
+    const scriptErrorCount = Array.isArray(runtimeDebug?.deferredScriptErrors)
+      ? runtimeDebug.deferredScriptErrors.length
+      : 0;
+    if (debugEnabled || missingCount > 0 || scriptErrorCount > 0) {
+      // eslint-disable-next-line no-console
+      console.info("[page-render] runtime debug", {
+        renderMode: runtimeDebug?.renderMode || "hybrid",
+        missingCount,
+        mappedLegacyCount: Number(runtimeDebug?.mappedLegacyCount || 0),
+        replacedTextNodes: Number(runtimeDebug?.replacedTextNodes || 0),
+        replacedAttributes: Number(runtimeDebug?.replacedAttributes || 0),
+        deferredScriptCount: Number(runtimeDebug?.deferredScriptCount || 0),
+        deferredScriptErrors: runtimeDebug?.deferredScriptErrors || [],
+      });
+    }
+    return {
+      pngBuffer: await page.screenshot({ type: "png", clip: { x: 0, y: 0, width, height } }),
+      runtimeDebug,
+      readyMeta,
+    };
   } finally {
     await context.close();
   }
@@ -772,14 +1189,26 @@ async function renderWithBrowserEngine({ templateHtml, dataModel, width, height,
 
 function ensureQWeatherAssets() {
   if (!qweatherIconMap && fs.existsSync(QWEATHER_ICON_MAP_FILE)) {
-    qweatherIconMap = JSON.parse(fs.readFileSync(QWEATHER_ICON_MAP_FILE, "utf8"));
+    try {
+      qweatherIconMap = JSON.parse(fs.readFileSync(QWEATHER_ICON_MAP_FILE, "utf8"));
+    } catch (error) {
+      qweatherIconMap = {};
+      // eslint-disable-next-line no-console
+      console.warn("[page-render] qweather icon map parse failed", {
+        reason: error?.message || String(error),
+      });
+    }
   }
   if (!qweatherFontRegistered && fs.existsSync(QWEATHER_FONT_FILE)) {
-    registerFont(QWEATHER_FONT_FILE, { family: "QWeather Icons" });
-    qweatherFontRegistered = true;
+    qweatherFontRegistered = registerCanvasFontCompat(QWEATHER_FONT_FILE, "QWeather Icons");
+    if (!qweatherFontRegistered && !qweatherFontWarned) {
+      qweatherFontWarned = true;
+      // eslint-disable-next-line no-console
+      console.warn("[page-render] qweather font registration skipped (canvas runtime does not expose registerFont)");
+    }
   }
   return {
-    available: qweatherFontRegistered && isObject(qweatherIconMap),
+    available: isObject(qweatherIconMap),
     map: qweatherIconMap || {},
   };
 }
@@ -851,7 +1280,7 @@ function drawTextBlock(ctx, block) {
   ctx.textAlign = block.align;
   ctx.textBaseline = "top";
   ctx.fillStyle = block.color;
-  ctx.font = `${block.weight} ${block.fontSize}px "Noto Sans SC", "Microsoft YaHei", sans-serif`;
+  ctx.font = `${block.weight} ${block.fontSize}px "PageRenderCJK", "Noto Sans CJK SC", "Noto Sans SC", "WenQuanYi Zen Hei", "Microsoft YaHei", sans-serif`;
   ctx.fillText(block.text, anchorX, block.y, block.maxWidth);
 }
 
@@ -908,6 +1337,7 @@ async function loadTemplateImage(src) {
 
 async function drawTemplateImages(ctx, templateHtml, dataModel, width, height) {
   const images = parseTemplateImages(templateHtml, dataModel, width, height);
+  let drawnCount = 0;
   for (const item of images) {
     try {
       const image = await loadTemplateImage(item.src);
@@ -916,6 +1346,7 @@ async function drawTemplateImages(ctx, templateHtml, dataModel, width, height) {
       ctx.globalAlpha = item.opacity;
       ctx.drawImage(image, item.x, item.y, item.width, item.height);
       ctx.restore();
+      drawnCount += 1;
     } catch (error) {
       // eslint-disable-next-line no-console
       console.warn("[page-render] draw image failed", {
@@ -924,6 +1355,42 @@ async function drawTemplateImages(ctx, templateHtml, dataModel, width, height) {
       });
     }
   }
+  return drawnCount;
+}
+
+function drawHtmlTextFallback(ctx, templateHtml, dataModel, width, height) {
+  const plain = stripTags(interpolate(String(templateHtml || ""), dataModel || {}));
+  if (!plain) return false;
+
+  const maxCharsPerLine = Math.max(16, Math.floor(width / 26));
+  const lines = [];
+  plain.split(/\n+/).forEach((rawLine) => {
+    const line = String(rawLine || "").trim();
+    if (!line) return;
+    if (line.length <= maxCharsPerLine) {
+      lines.push(line);
+      return;
+    }
+    for (let i = 0; i < line.length; i += maxCharsPerLine) {
+      lines.push(line.slice(i, i + maxCharsPerLine));
+    }
+  });
+
+  if (!lines.length) return false;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  ctx.fillStyle = "#111111";
+  ctx.font = `500 46px "PageRenderCJK", "Noto Sans CJK SC", "Noto Sans SC", "WenQuanYi Zen Hei", "Microsoft YaHei", sans-serif`;
+
+  const startX = 96;
+  let y = 96;
+  const lineHeight = 58;
+  for (const line of lines.slice(0, 80)) {
+    if (y > height - 80) break;
+    ctx.fillText(line, startX, y, width - startX * 2);
+    y += lineHeight;
+  }
+  return true;
 }
 
 function drawWeatherIcons(ctx, templateHtml, dataModel, width, height) {
@@ -1125,6 +1592,7 @@ function resolveTemplateHtml(db, config, auth, options) {
 function buildCommonDataModel(db, device, extraData) {
   const todoRows = (db.todos || []).filter((item) => String(item.deviceId || "") === String(device.id || ""));
   const scheduleRows = (db.schedules || []).filter((item) => String(item.deviceId || "") === String(device.id || ""));
+  const WEEKDAY_LABELS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
   const todoOpen = todoRows.filter((item) => !item.done);
   const todoSummary = todoOpen.length
@@ -1151,6 +1619,185 @@ function buildCommonDataModel(db, device, extraData) {
   const third = {};
   const thirdFormatted = {};
   const thirdRaw = {};
+
+  const normalizeWeekday = (value, slotKey = "") => {
+    const num = Number(value);
+    if (Number.isFinite(num) && num >= 1 && num <= 7) return Math.floor(num);
+    const match = String(slotKey || "").match(/^([1-7])-/);
+    return match?.[1] ? Number(match[1]) : 1;
+  };
+
+  const normalizePeriod = (value, fallback = 1) => {
+    const num = Number(value);
+    return Number.isFinite(num) && num > 0 ? Math.floor(num) : fallback;
+  };
+
+  const buildDerivedXiqueFromSchedules = (rows) => {
+    if (!Array.isArray(rows) || !rows.length) return null;
+
+    const normalized = rows
+      .map((row) => {
+        const slotKeyRaw = String(row?.position?.slotKey || "");
+        const startPeriod = normalizePeriod(row?.position?.startPeriod, 1);
+        const endPeriod = normalizePeriod(row?.position?.endPeriod, startPeriod);
+        const weekday = normalizeWeekday(row?.weekday, slotKeyRaw || `${startPeriod}-${endPeriod}`);
+        const weekdayLabel = WEEKDAY_LABELS[weekday - 1] || "Monday";
+        return {
+          id: String(row?.id || ""),
+          courseName: String(row?.courseName || row?.title || ""),
+          title: String(row?.title || row?.courseName || row?.content || ""),
+          teacherName: String(row?.teacherName || row?.teacher || ""),
+          location: String(row?.location || ""),
+          weekday,
+          weekdayLabel,
+          position: {
+            startPeriod,
+            endPeriod,
+            slotKey: `${weekday}-${startPeriod}-${endPeriod}`,
+          },
+          timeRange: {
+            startTime: String(row?.timeRange?.startTime || ""),
+            endTime: String(row?.timeRange?.endTime || ""),
+          },
+          termKey: String(row?.termKey || ""),
+        };
+      })
+      .sort((a, b) => {
+        if (a.weekday !== b.weekday) return a.weekday - b.weekday;
+        if (a.position.startPeriod !== b.position.startPeriod) return a.position.startPeriod - b.position.startPeriod;
+        if (a.position.endPeriod !== b.position.endPeriod) return a.position.endPeriod - b.position.endPeriod;
+        return String(a.title || "").localeCompare(String(b.title || ""));
+      });
+
+    const byDayMap = new Map();
+    const bySlotMap = new Map();
+    normalized.forEach((course) => {
+      const day = byDayMap.get(course.weekday) || {
+        weekday: course.weekday,
+        weekdayLabel: course.weekdayLabel,
+        count: 0,
+        courses: [],
+      };
+      day.courses.push({
+        id: course.id,
+        courseName: course.courseName,
+        title: course.title,
+        teacherName: course.teacherName,
+        location: course.location,
+        weekday: course.weekday,
+        weekdayLabel: course.weekdayLabel,
+        position: { ...course.position },
+        timeRange: { ...course.timeRange },
+      });
+      day.count = day.courses.length;
+      byDayMap.set(course.weekday, day);
+
+      const slot = bySlotMap.get(course.position.slotKey) || {
+        slotKey: course.position.slotKey,
+        weekday: course.weekday,
+        weekdayLabel: course.weekdayLabel,
+        startPeriod: course.position.startPeriod,
+        endPeriod: course.position.endPeriod,
+        courses: [],
+      };
+      slot.courses.push({
+        id: course.id,
+        title: course.title,
+        teacherName: course.teacherName,
+        location: course.location,
+        timeRange: { ...course.timeRange },
+      });
+      bySlotMap.set(course.position.slotKey, slot);
+    });
+
+    const termKey = normalized.map((item) => String(item.termKey || "").trim()).find(Boolean) || "";
+    const byDay = [...byDayMap.values()].sort((a, b) => a.weekday - b.weekday);
+    const bySlot = [...bySlotMap.values()].sort((a, b) => {
+      if (a.weekday !== b.weekday) return a.weekday - b.weekday;
+      if (a.startPeriod !== b.startPeriod) return a.startPeriod - b.startPeriod;
+      return a.endPeriod - b.endPeriod;
+    });
+
+    const todayWeekday = ((new Date().getDay() + 6) % 7) + 1;
+    const todayWeekdayLabel = WEEKDAY_LABELS[todayWeekday - 1] || "Monday";
+    const todayDay = byDay.find((item) => Number(item.weekday || 0) === todayWeekday);
+    const todayCourses = (todayDay?.courses || []).map((item) => {
+      const startTime = String(item?.timeRange?.startTime || "");
+      const endTime = String(item?.timeRange?.endTime || "");
+      return {
+        title: String(item?.title || item?.courseName || ""),
+        teacherName: String(item?.teacherName || ""),
+        location: String(item?.location || ""),
+        startTime,
+        endTime,
+        timeText: `${startTime || "-"}-${endTime || "-"}`,
+      };
+    });
+    const todayCourseText = todayCourses.length
+      ? todayCourses
+          .map(
+            (item, index) =>
+              `${index + 1}. ${item.timeText}\n${item.title || "-"}｜${item.teacherName || "-"}｜${item.location || "-"}`
+          )
+          .join("\n\n")
+      : "今天没有课程";
+
+    return {
+      status: "derived_from_schedule",
+      termKey,
+      imported: normalized.length,
+      added: 0,
+      updated: 0,
+      skipped: 0,
+      overwritten: 0,
+      needCaptchaReverify: false,
+      needManualCaptcha: false,
+      taskId: "",
+      captchaSession: "",
+      captchaImage: "",
+      captchaExpiresAt: "",
+      loginUsername: "",
+      schedule: {
+        schema: "xique_schedule_v1",
+        deviceId: String(device.id || ""),
+        termKey,
+        totalCourses: normalized.length,
+        byDay,
+        bySlot,
+        courses: normalized.map((item) => ({
+          id: item.id,
+          courseName: item.courseName,
+          title: item.title,
+          teacherName: item.teacherName,
+          location: item.location,
+          weekday: item.weekday,
+          weekdayLabel: item.weekdayLabel,
+          position: { ...item.position },
+          timeRange: { ...item.timeRange },
+        })),
+        generatedAt: new Date().toISOString(),
+      },
+      view: {
+        todayWeekday,
+        todayWeekdayLabel,
+        todayCourseCount: todayCourses.length,
+        todayCourses,
+        todayCourseText,
+        hasCourseToday: todayCourses.length > 0,
+      },
+    };
+  };
+
+  const derivedXiqueFormatted = buildDerivedXiqueFromSchedules(scheduleRows);
+  const apiTemplateCatalog = Array.isArray(db?.apiTemplates)
+    ? db.apiTemplates
+        .filter((row) => row && typeof row === "object" && !Array.isArray(row) && String(row.slug || "").trim())
+        .map((row) => ({
+          slug: String(row.slug || "").trim(),
+          name: String(row.name || row.slug || "").trim(),
+          enabled: row.enabled !== false,
+        }))
+    : [];
   Object.keys(thirdCacheRaw).forEach((slug) => {
     const row = thirdCacheRaw[slug];
     if (!row || typeof row !== "object" || Array.isArray(row)) return;
@@ -1181,6 +1828,117 @@ function buildCommonDataModel(db, device, extraData) {
     thirdRaw[slug] = raw;
   });
 
+  // Keep Weather API variables visible in template-variable panel even before
+  // a device has an explicit thirdApiCache.weather entry.
+  if (!third.weather) {
+    const weatherFormatted = {
+      temperature: "",
+      humidity: "",
+      weather: "",
+      windDir: "",
+      windScale: "",
+      observeTime: "",
+      location: "",
+      hourly: [],
+      daily: [],
+    };
+    third.weather = {
+      template: { slug: "weather", name: "和风天气" },
+      formatted: weatherFormatted,
+      raw: { output: weatherFormatted },
+      updated_at: new Date().toISOString(),
+    };
+    thirdFormatted.weather = weatherFormatted;
+    thirdRaw.weather = { output: weatherFormatted };
+  }
+
+  const xiqueFormattedSkeleton = {
+    status: "",
+    termKey: "",
+    imported: 0,
+    added: 0,
+    updated: 0,
+    skipped: 0,
+    overwritten: 0,
+    needCaptchaReverify: false,
+    needManualCaptcha: false,
+    taskId: "",
+    captchaSession: "",
+    captchaImage: "",
+    captchaExpiresAt: "",
+    loginUsername: "",
+    schedule: {
+      schema: "xique_schedule_v1",
+      deviceId: String(device.id || ""),
+      termKey: "",
+      totalCourses: 0,
+      byDay: [],
+      bySlot: [],
+      courses: [],
+      generatedAt: new Date().toISOString(),
+    },
+    view: {
+      todayWeekday: ((new Date().getDay() + 6) % 7) + 1,
+      todayWeekdayLabel: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][
+        ((new Date().getDay() + 6) % 7)
+      ],
+      todayCourseCount: 0,
+      todayCourses: [],
+      todayCourseText: "xique schedule not imported",
+      hasCourseToday: false,
+    },
+  };
+
+  apiTemplateCatalog
+    .filter((tpl) => tpl.enabled)
+    .forEach((tpl) => {
+      const slug = String(tpl.slug || "").trim();
+      if (!slug) return;
+      if (!third[slug]) {
+        const fallbackFormatted = slug === "xique_schedule" ? (derivedXiqueFormatted || xiqueFormattedSkeleton) : {};
+        third[slug] = {
+          template: { slug, name: String(tpl.name || slug) },
+          formatted: fallbackFormatted,
+          raw: { output: fallbackFormatted },
+          updated_at: "",
+        };
+        thirdFormatted[slug] = fallbackFormatted;
+        thirdRaw[slug] = { output: fallbackFormatted };
+        return;
+      }
+
+      if (!third[slug].template || typeof third[slug].template !== "object") {
+        third[slug].template = { slug, name: String(tpl.name || slug) };
+      } else {
+        if (!String(third[slug].template.slug || "").trim()) third[slug].template.slug = slug;
+      if (!String(third[slug].template.name || "").trim()) third[slug].template.name = String(tpl.name || slug);
+      }
+    });
+
+  // Compatibility layer:
+  // - current path: api.formatted_by_slug.<slug>.<field>
+  // - legacy path:  api.formatted_by_slug.<slug>.formatted.<field>
+  const apiFormattedBySlug = {};
+  Object.keys(thirdFormatted).forEach((slug) => {
+    const formattedValue = thirdFormatted[slug];
+    if (isObject(formattedValue)) {
+      apiFormattedBySlug[slug] = {
+        ...formattedValue,
+        formatted: formattedValue,
+        raw: thirdRaw[slug],
+        template: third?.[slug]?.template || { slug, name: slug },
+      };
+      return;
+    }
+
+    apiFormattedBySlug[slug] = {
+      value: formattedValue,
+      formatted: formattedValue,
+      raw: thirdRaw[slug],
+      template: third?.[slug]?.template || { slug, name: slug },
+    };
+  });
+
   const model = {
     profile,
     todo_summary: {
@@ -1203,9 +1961,10 @@ function buildCommonDataModel(db, device, extraData) {
     third,
     third_formatted: thirdFormatted,
     third_raw: thirdRaw,
+    formatted_by_slug: apiFormattedBySlug,
     api: {
       third,
-      formatted_by_slug: thirdFormatted,
+      formatted_by_slug: apiFormattedBySlug,
       raw_by_slug: thirdRaw,
     },
     custom_fields: isObject(extraData?.custom_fields) ? extraData.custom_fields : {},
@@ -1240,8 +1999,12 @@ function buildCommonDataModel(db, device, extraData) {
 }
 
 async function renderPageBuffers({ config, templateHtml, dataModel, pageType }) {
+  ensureSystemFontsLoaded();
+
   const width = Number(config.screen?.width || 2560);
   const height = Number(config.screen?.height || 1600);
+  const renderMode = normalizeRenderMode(config?.template?.render_mode, config?.template?.render_engine);
+  const placeholderDebug = collectPlaceholderDebug(templateHtml, dataModel);
 
   const canvas = createCanvas(width, height);
   const ctx = canvas.getContext("2d");
@@ -1249,31 +2012,49 @@ async function renderPageBuffers({ config, templateHtml, dataModel, pageType }) 
   ctx.fillRect(0, 0, width, height);
 
   let browserRendered = false;
+  let browserDebug = null;
   const useBrowser = shouldUseBrowserRender(templateHtml, config);
+  const browserStrict =
+    String(config?.template?.browser_strict ?? process.env.PAGE_RENDER_BROWSER_STRICT ?? "0").trim().toLowerCase() === "1" ||
+    String(config?.template?.browser_strict ?? process.env.PAGE_RENDER_BROWSER_STRICT ?? "0").trim().toLowerCase() === "true";
   const forceBrowser =
-    String(config?.template?.render_engine || "auto").toLowerCase() === "browser" ||
-    /<script[\s>]/i.test(String(templateHtml || ""));
+    renderMode === "web" ||
+    (renderMode !== "legacy" && /<script[\s>]/i.test(String(templateHtml || "")));
+  const browserTotalTimeoutMs = Math.max(
+    4000,
+    parsePositiveInt(
+      config?.template?.browser_total_timeout_ms ?? process.env.PAGE_RENDER_BROWSER_TOTAL_TIMEOUT_MS,
+      12000
+    )
+  );
 
   if (useBrowser) {
     try {
-      const browserPng = await renderWithBrowserEngine({ templateHtml, dataModel, width, height, config });
-      const browserImage = await loadImage(browserPng);
+      const browserResult = await withPromiseTimeout(
+        renderWithBrowserEngine({ templateHtml, dataModel, width, height, config }),
+        browserTotalTimeoutMs,
+        `browser render timeout after ${browserTotalTimeoutMs}ms`
+      );
+      const browserImage = await loadImage(browserResult.pngBuffer);
       ctx.drawImage(browserImage, 0, 0, width, height);
       browserRendered = true;
+      browserDebug = browserResult.runtimeDebug || null;
     } catch (error) {
-      if (forceBrowser) {
+      if (forceBrowser && browserStrict) {
         throw new HttpError(500, `browser render failed: ${error?.message || String(error)}`);
       }
       // eslint-disable-next-line no-console
       console.warn("[page-render] browser engine fallback to legacy", {
         pageType: normalizePageType(pageType),
+        forceBrowser,
+        browserStrict,
         reason: error?.message || String(error),
       });
     }
   }
 
   if (!browserRendered) {
-    await drawTemplateImages(ctx, templateHtml, dataModel, width, height);
+    const imageCount = await drawTemplateImages(ctx, templateHtml, dataModel, width, height);
 
     const blocks = parseTemplateBlocks(templateHtml, dataModel, width, height);
     if (blocks.length) {
@@ -1282,6 +2063,13 @@ async function renderPageBuffers({ config, templateHtml, dataModel, pageType }) 
 
     if (normalizePageType(pageType) === "weatherpage") {
       drawWeatherIcons(ctx, templateHtml, dataModel, width, height);
+    }
+
+    // If browser render is unavailable and template is pure standard HTML
+    // (without legacy data-* blocks), avoid blank white preview by drawing
+    // a readable text fallback.
+    if (!blocks.length && imageCount === 0) {
+      drawHtmlTextFallback(ctx, templateHtml, dataModel, width, height);
     }
   }
 
@@ -1301,6 +2089,14 @@ async function renderPageBuffers({ config, templateHtml, dataModel, pageType }) 
     pngBuffer,
     epd4Buffer,
     etag,
+    debug: {
+      pageType: normalizePageType(pageType),
+      render_engine: String(config?.template?.render_engine || "auto"),
+      render_mode: renderMode,
+      browserRendered,
+      placeholder: placeholderDebug,
+      browser: browserDebug || {},
+    },
   };
 }
 
@@ -1357,6 +2153,7 @@ function buildDevicePagePayload({ deviceId, config, imageRow, options }) {
       template_id: String(config.template?.template_id || options.defaultTemplateId),
       template_name: String(config.template?.template_name || options.defaultTemplateName),
       render_engine: String(config.template?.render_engine || "auto"),
+      render_mode: normalizeRenderMode(config.template?.render_mode, config.template?.render_engine),
     },
     image: {
       format: String(config.image?.format || "epd4"),
@@ -1376,6 +2173,7 @@ function buildDevicePagePayload({ deviceId, config, imageRow, options }) {
       updated_at: imageRow ? String(imageRow.updatedAt || "") : "",
       image_key: imageRow ? String(imageRow.imageFileId || "") : "",
     },
+    auto_render_push: deepClone(config.auto_render_push || {}),
     time_overlay: deepClone(config.time_overlay || {}),
     refresh_control: deepClone(config.refresh_control || {}),
     data_sources: deepClone(config.data_sources || {}),
@@ -1412,6 +2210,7 @@ module.exports = {
   deepClone,
   deepMerge,
   normalizePageType,
+  normalizeRenderMode,
   normalizePageConfig,
   uploadTfBlob,
   ensureDefaultTemplate,

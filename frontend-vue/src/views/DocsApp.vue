@@ -54,8 +54,8 @@
           <el-option label="用户" value="user" />
           <el-option label="管理员" value="admin" />
         </el-select>
-        <el-input v-model="loginForm.username" placeholder="用户名" style="width: 220px" />
-        <el-input v-model="loginForm.password" placeholder="密码" show-password style="width: 220px" />
+        <el-input v-model="loginForm.username" placeholder="用户名" autocomplete="username" style="width: 220px" />
+        <el-input v-model="loginForm.password" placeholder="密码" show-password autocomplete="current-password" style="width: 220px" />
         <el-button type="primary" :loading="loginLoading" @click="loginAndAuthorize">登录并授权</el-button>
         <el-button @click="clearAuth">退出授权</el-button>
       </div>
@@ -78,8 +78,8 @@ const loginLoading = ref(false);
 const authMsg = ref("");
 const loginForm = reactive<{ role: AppRole; username: string; password: string }>({
   role: "user",
-  username: "demo",
-  password: "user123",
+  username: String(localStorage.getItem("vue_last_username") || localStorage.getItem("vue_username") || ""),
+  password: "",
 });
 
 let swaggerUi: any = null;

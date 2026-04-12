@@ -1,5 +1,6 @@
 const HttpError = require("../utils/httpError");
 const { verifyToken } = require("../utils/jwt");
+const { touchDevicePresence } = require("../utils/realtime.hub");
 
 function normalizeToken(raw) {
   const text = String(raw || "").trim().replace(/^"(.*)"$/, "$1");
@@ -38,6 +39,9 @@ function authRequired(req, res, next) {
 
   try {
     req.auth = verifyToken(token);
+    if (req.auth?.role === "device" && req.auth?.deviceId) {
+      touchDevicePresence(req.auth.deviceId);
+    }
     return next();
   } catch (_) {
     return next(new HttpError(401, "令牌无效或已过期"));
@@ -60,4 +64,3 @@ module.exports = {
   authRequired,
   allowRoles,
 };
-

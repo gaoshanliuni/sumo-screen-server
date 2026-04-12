@@ -1,3 +1,13 @@
+## 本仓库集成说明（智能墨水屏平台）
+
+该目录在本项目中的用途是“天气图标静态资源库”，由后端天气页渲染链路直接读取，不作为二次开发仓库。
+
+- 资源读取目录：`ico/QWeather-Icons-1.8.0`
+- 关键文件：`font/qweather-icons.css`、`font/qweather-icons.json`、`font/fonts/qweather-icons.ttf`、`icons/*.svg`
+- 后端接口可检查接入状态：`GET /api/weatherpages/qweather-assets`
+- 如需升级图标版本，请在升级后回归验证天气页渲染与字体加载
+
+---
 # 和风天气图标 QWeather Icons
 
 [English](#qweather-icons)
@@ -157,3 +167,4 @@ Copyright [QWeather](https://www.qweather.com/en/)
 Code for [MIT](https://github.com/qwd/Icons/blob/main/LICENSE)
 
 Icon for [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
+

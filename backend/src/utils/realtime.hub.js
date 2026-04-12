@@ -5,6 +5,7 @@ const emitter = new EventEmitter();
 const historyByDevice = new Map();
 const presenceByDevice = new Map();
 const HISTORY_LIMIT = 200;
+const TOUCH_TTL_MS = Math.max(30 * 1000, Number(process.env.DEVICE_PRESENCE_TOUCH_TTL_MS || 20 * 60 * 1000));
 
 function createEvent({ type, deviceId, payload = {} }) {
   return {
@@ -41,6 +42,7 @@ function ensurePresence(deviceId) {
       sse: 0,
       ws: 0,
       lastSeenAt: "",
+      touchUntil: 0,
     });
   }
   return presenceByDevice.get(id);
@@ -62,13 +64,22 @@ function markDeviceOffline(deviceId, channel = "sse") {
   row.lastSeenAt = new Date().toISOString();
 }
 
+function touchDevicePresence(deviceId, ttlMs = TOUCH_TTL_MS) {
+  const row = ensurePresence(deviceId);
+  if (!row) return;
+  const ttl = Math.max(10 * 1000, Number(ttlMs || TOUCH_TTL_MS));
+  row.touchUntil = Date.now() + ttl;
+  row.lastSeenAt = new Date().toISOString();
+}
+
 function getDevicePresence(deviceId) {
   const row = ensurePresence(deviceId) || { sse: 0, ws: 0, lastSeenAt: "" };
   const sse = Number(row.sse || 0);
   const ws = Number(row.ws || 0);
+  const touchActive = Number(row.touchUntil || 0) > Date.now();
   return {
-    online: sse > 0 || ws > 0,
-    channels: { sse, ws },
+    online: sse > 0 || ws > 0 || touchActive,
+    channels: { sse, ws, touch: touchActive ? 1 : 0 },
     lastSeenAt: row.lastSeenAt || "",
   };
 }
@@ -103,5 +114,6 @@ module.exports = {
   getDeviceHistory,
   markDeviceOnline,
   markDeviceOffline,
+  touchDevicePresence,
   getDevicePresence,
 };
