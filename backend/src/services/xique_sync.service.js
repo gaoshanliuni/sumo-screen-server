@@ -43,6 +43,26 @@ const XIQUE_LOGIN_STATUS = Object.freeze({
   LOGIN_FAILED: "LOGIN_FAILED",
   SCHEDULE_FETCH_FAILED: "SCHEDULE_FETCH_FAILED",
 });
+const XIQUE_DEFAULT_TERM_WEEKS = Math.max(12, Number(config.xiqueDefaultTermWeeks || 30));
+const WEEKDAY_MAP = Object.freeze({
+  "\u4e00": 1,
+  "\u4e8c": 2,
+  "\u4e09": 3,
+  "\u56db": 4,
+  "\u4e94": 5,
+  "\u516d": 6,
+  "\u65e5": 7,
+  "\u5929": 7,
+});
+const WEEKDAY_LABEL_MAP = Object.freeze({
+  1: "Monday",
+  2: "Tuesday",
+  3: "Wednesday",
+  4: "Thursday",
+  5: "Friday",
+  6: "Saturday",
+  7: "Sunday",
+});
 
 const AUTH_ERROR_CODES = new Set([
   XIQUE_ERROR.LOGIN_FAILED,
@@ -177,9 +197,29 @@ async function loadSamplePayload(cfg = {}) {
   const fallbackTermKey = trimString(cfg.currentTermKey || cfg.termKey || getCurrentSemesterKey());
   const json = parseJsonLike(cfg.sampleJson);
   if (json) {
-    if (Array.isArray(json)) return { termKey: fallbackTermKey, courses: json };
-    if (Array.isArray(json.courses)) return { termKey: trimString(json.termKey || fallbackTermKey), courses: json.courses };
-    if (Array.isArray(json.data)) return { termKey: trimString(json.termKey || fallbackTermKey), courses: json.data };
+    const weekContext = resolveTeachingWeekContext({
+      currentWeekCandidates: [json.currentWeek, json.weekIndex, json.teachingWeek, json.academicWeek, json.schoolWeek],
+      termStartDateCandidates: [json.termStartDate, json.semesterStart, json.startDate, cfg.termStartDate],
+      fallbackTermStartDate: normalizeTermStartDate(config.xiqueDefaultTermStartDate || ""),
+    });
+    if (Array.isArray(json)) return {
+      termKey: fallbackTermKey,
+      courses: json,
+      currentWeek: weekContext.currentWeek,
+      termStartDate: weekContext.termStartDate,
+    };
+    if (Array.isArray(json.courses)) return {
+      termKey: trimString(json.termKey || fallbackTermKey),
+      courses: json.courses,
+      currentWeek: weekContext.currentWeek,
+      termStartDate: weekContext.termStartDate,
+    };
+    if (Array.isArray(json.data)) return {
+      termKey: trimString(json.termKey || fallbackTermKey),
+      courses: json.data,
+      currentWeek: weekContext.currentWeek,
+      termStartDate: weekContext.termStartDate,
+    };
   }
   if (cfg.sampleHtml) {
     const match = String(cfg.sampleHtml).match(/<script[^>]*id=["']xique-data["'][^>]*>([\s\S]*?)<\/script>/i);
@@ -196,6 +236,8 @@ async function loadSamplePayload(cfg = {}) {
   const weekday = Math.max(1, Math.min(7, new Date().getDay() || 7));
   return {
     termKey: fallbackTermKey,
+    currentWeek: null,
+    termStartDate: normalizeTermStartDate(cfg.termStartDate || config.xiqueDefaultTermStartDate || ""),
     courses: [
       { courseId: "sample-1", courseName: "数学", teacherName: "示例老师", location: "A101", weekday, startPeriod: 1, endPeriod: 2, weeks: [1, 2, 3, 4, 5] },
       { courseId: "sample-2", courseName: "英语", teacherName: "示例老师", location: "B201", weekday: weekday === 7 ? 1 : weekday + 1, startPeriod: 3, endPeriod: 4, weeks: [1, 2, 3, 4, 5] },
@@ -308,52 +350,376 @@ function parseRemoteLoginContext(html = "") {
   };
 }
 
-function parseScheduleSlots(text = "") {
-  const dayMap = {
-    "\u4e00": 1,
-    "\u4e8c": 2,
-    "\u4e09": 3,
-    "\u56db": 4,
-    "\u4e94": 5,
-    "\u516d": 6,
-    "\u65e5": 7,
-    "\u5929": 7,
+function normalizeWeeksArray(input, maxWeek = XIQUE_DEFAULT_TERM_WEEKS) {
+  if (!Array.isArray(input)) return [];
+  const safeMax = Math.max(4, Number(maxWeek || XIQUE_DEFAULT_TERM_WEEKS));
+  const set = new Set();
+  input.forEach((item) => {
+    const week = Math.floor(Number(item || 0));
+    if (Number.isFinite(week) && week >= 1 && week <= safeMax) {
+      set.add(week);
+    }
+  });
+  return Array.from(set.values()).sort((a, b) => a - b);
+}
+
+function expandWeekRange(startRaw, endRaw, maxWeek = XIQUE_DEFAULT_TERM_WEEKS) {
+  const safeMax = Math.max(4, Number(maxWeek || XIQUE_DEFAULT_TERM_WEEKS));
+  const start = Math.max(1, Math.floor(Number(startRaw || 0)));
+  const end = Math.max(start, Math.floor(Number(endRaw || start)));
+  const out = [];
+  for (let week = start; week <= Math.min(end, safeMax); week += 1) {
+    out.push(week);
+  }
+  return out;
+}
+
+function parseWeeksExpression(rawExpr = "", maxWeek = XIQUE_DEFAULT_TERM_WEEKS) {
+  const safeMax = Math.max(4, Number(maxWeek || XIQUE_DEFAULT_TERM_WEEKS));
+  const expr = trimString(rawExpr)
+    .replace(/\s+/g, "")
+    .replace(/[（]/g, "(")
+    .replace(/[）]/g, ")");
+  if (!expr) return { weeks: [], weekRule: "all", weekExpr: "" };
+
+  if (expr.includes("单周")) {
+    const weeks = [];
+    for (let week = 1; week <= safeMax; week += 1) {
+      if (week % 2 === 1) weeks.push(week);
+    }
+    return { weeks, weekRule: "odd", weekExpr: expr };
+  }
+  if (expr.includes("双周")) {
+    const weeks = [];
+    for (let week = 1; week <= safeMax; week += 1) {
+      if (week % 2 === 0) weeks.push(week);
+    }
+    return { weeks, weekRule: "even", weekExpr: expr };
+  }
+
+  const normalizedExpr = expr.replace(/周/g, "");
+  const segments = normalizedExpr.split(/[,\uFF0C\u3001]/).map((item) => trimString(item)).filter(Boolean);
+  const weeks = [];
+  segments.forEach((segment) => {
+    const rangeMatch = segment.match(/^(\d{1,2})\s*[-~～至]\s*(\d{1,2})$/);
+    if (rangeMatch) {
+      weeks.push(...expandWeekRange(rangeMatch[1], rangeMatch[2], safeMax));
+      return;
+    }
+    const single = Math.floor(Number(segment || 0));
+    if (Number.isFinite(single) && single >= 1 && single <= safeMax) {
+      weeks.push(single);
+    }
+  });
+  return {
+    weeks: normalizeWeeksArray(weeks, safeMax),
+    weekRule: weeks.length ? "custom" : "all",
+    weekExpr: expr,
   };
+}
+
+function normalizeTermStartDate(raw = "") {
+  const value = trimString(raw);
+  const dateOnly = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (dateOnly) return `${dateOnly[1]}-${dateOnly[2]}-${dateOnly[3]}`;
+  const slashDate = value.match(/^(\d{4})\/(\d{2})\/(\d{2})$/);
+  if (slashDate) return `${slashDate[1]}-${slashDate[2]}-${slashDate[3]}`;
+  const full = value.match(/^(\d{4})-(\d{2})-(\d{2})[T\s].*$/);
+  if (full) return `${full[1]}-${full[2]}-${full[3]}`;
+  const slashFull = value.match(/^(\d{4})\/(\d{2})\/(\d{2})[T\s].*$/);
+  if (slashFull) return `${slashFull[1]}-${slashFull[2]}-${slashFull[3]}`;
+  const compact = value.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (compact) return `${compact[1]}-${compact[2]}-${compact[3]}`;
+  return "";
+}
+
+function normalizeWeekNumber(value) {
+  const num = Math.floor(Number(value || 0));
+  if (!Number.isFinite(num)) return null;
+  if (num < 1 || num > Math.max(30, XIQUE_DEFAULT_TERM_WEEKS + 10)) return null;
+  return num;
+}
+
+function extractCurrentWeekFromText(text = "") {
+  const raw = String(text || "");
+  if (!raw) return null;
+  const patterns = [
+    /(?:currentWeek|weekIndex|teachingWeek|academicWeek|schoolWeek)\s*[:=]\s*["']?(\d{1,2})["']?/i,
+    /(?:当前周|本周|当前教学周|教学周|学周|周次|academicWeek|schoolWeek)\s*[:：=]?\s*第?\s*(\d{1,2})\s*周?/i,
+    /第\s*(\d{1,2})\s*教学周/i,
+    /本周\s*第?\s*(\d{1,2})\s*周?/i,
+  ];
+  for (const pattern of patterns) {
+    const match = raw.match(pattern);
+    if (!match) continue;
+    const normalized = normalizeWeekNumber(match[1]);
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
+function collectCurrentWeekCandidatesFromObject(input, out = [], depth = 0) {
+  if (!input || depth > 5) return out;
+  if (Array.isArray(input)) {
+    input.forEach((item) => collectCurrentWeekCandidatesFromObject(item, out, depth + 1));
+    return out;
+  }
+  if (typeof input !== "object") return out;
+  const directKeys = ["currentWeek", "weekIndex", "teachingWeek", "academicWeek", "schoolWeek"];
+  directKeys.forEach((keyName) => {
+    if (input[keyName] === undefined || input[keyName] === null || input[keyName] === "") return;
+    out.push(input[keyName]);
+  });
+  Object.entries(input).forEach(([keyName, value]) => {
+    if (value === undefined || value === null) return;
+    if (typeof value === "string") {
+      if (/(week|周|teaching|academic|school)/i.test(keyName) || /(?:currentWeek|weekIndex|teachingWeek|academicWeek|schoolWeek)/i.test(value)) {
+        out.push(value);
+      }
+      const fromText = extractCurrentWeekFromText(value);
+      if (fromText) out.push(fromText);
+      return;
+    }
+    if (typeof value === "number") {
+      if (/(week|周|teaching|academic|school)/i.test(keyName)) out.push(value);
+      return;
+    }
+    if (typeof value === "object") {
+      collectCurrentWeekCandidatesFromObject(value, out, depth + 1);
+    }
+  });
+  return out;
+}
+
+function collectTermStartDateCandidatesFromObject(input, out = [], depth = 0) {
+  if (!input || depth > 5) return out;
+  if (Array.isArray(input)) {
+    input.forEach((item) => collectTermStartDateCandidatesFromObject(item, out, depth + 1));
+    return out;
+  }
+  if (typeof input !== "object") return out;
+  const directKeys = [
+    "termStartDate",
+    "semesterStart",
+    "startDate",
+    "term_start_date",
+    "semester_start",
+    "xqkssj",
+    "kssj",
+  ];
+  directKeys.forEach((keyName) => {
+    const value = input[keyName];
+    if (value === undefined || value === null || value === "") return;
+    out.push(value);
+  });
+  Object.entries(input).forEach(([keyName, value]) => {
+    if (value === undefined || value === null) return;
+    if (typeof value === "string") {
+      if (/(start|开始|起始|term|semester|xqkssj|kssj)/i.test(keyName)) {
+        out.push(value);
+      }
+      const fromText = normalizeTermStartDate(value);
+      if (fromText) out.push(fromText);
+      return;
+    }
+    if (typeof value === "object") {
+      collectTermStartDateCandidatesFromObject(value, out, depth + 1);
+    }
+  });
+  return out;
+}
+
+function resolveTeachingWeekContext({
+  now = new Date(),
+  timezone = config.timezone || "Asia/Shanghai",
+  currentWeekCandidates = [],
+  termStartDateCandidates = [],
+  fallbackTermStartDate = "",
+} = {}) {
+  let currentWeek = null;
+  let currentWeekSource = "";
+  const weekCandidates = Array.isArray(currentWeekCandidates) ? currentWeekCandidates : [];
+  for (const candidate of weekCandidates) {
+    const direct = normalizeWeekNumber(candidate);
+    if (direct) {
+      currentWeek = direct;
+      currentWeekSource = "candidate_numeric";
+      break;
+    }
+    const fromText = extractCurrentWeekFromText(candidate);
+    if (fromText) {
+      currentWeek = fromText;
+      currentWeekSource = "candidate_text";
+      break;
+    }
+  }
+
+  let termStartDate = "";
+  let termStartDateSource = "";
+  const termCandidates = [...(Array.isArray(termStartDateCandidates) ? termStartDateCandidates : [])];
+  if (fallbackTermStartDate) termCandidates.push(fallbackTermStartDate);
+  for (const candidate of termCandidates) {
+    const normalized = normalizeTermStartDate(candidate);
+    if (!normalized) continue;
+    termStartDate = normalized;
+    termStartDateSource = String(candidate) === String(fallbackTermStartDate) ? "fallback" : "candidate";
+    break;
+  }
+
+  if (!currentWeek && termStartDate) {
+    const computed = computeCurrentWeek(termStartDate, now, timezone);
+    if (computed && Number.isFinite(Number(computed))) {
+      currentWeek = Math.floor(Number(computed));
+      currentWeekSource = "computed_from_term_start";
+    }
+  }
+
+  const weekFilteringApplied = Boolean(currentWeek && Number.isFinite(Number(currentWeek)) && Number(currentWeek) > 0);
+  return {
+    currentWeek: weekFilteringApplied ? Number(currentWeek) : null,
+    currentWeekSource: weekFilteringApplied ? currentWeekSource || "computed" : "",
+    termStartDate: termStartDate || "",
+    termStartDateSource: termStartDate ? termStartDateSource || "candidate" : "",
+    weekFilteringApplied,
+  };
+}
+
+function detectRemoteTeachingWeekContext({
+  configRow = {},
+  termList = [],
+  wdkbHtml = "",
+  scheduleHtml = "",
+  calendarInfo = {},
+} = {}) {
+  const weekCandidates = [];
+  const termStartDateCandidates = [];
+
+  collectCurrentWeekCandidatesFromObject(termList, weekCandidates);
+  collectTermStartDateCandidatesFromObject(termList, termStartDateCandidates);
+
+  const htmlSources = [String(wdkbHtml || ""), String(scheduleHtml || "")];
+  htmlSources.forEach((html) => {
+    if (!html) return;
+    const fromText = extractCurrentWeekFromText(html);
+    if (fromText) weekCandidates.push(fromText);
+    collectCurrentWeekCandidatesFromObject(parseJsonLike(html) || {}, weekCandidates);
+    const dateRegex = /(\d{4}[/-]\d{2}[/-]\d{2})/g;
+    let dateMatch;
+    while ((dateMatch = dateRegex.exec(html)) !== null) {
+      termStartDateCandidates.push(dateMatch[1]);
+    }
+  });
+
+  weekCandidates.push(
+    configRow.currentWeek,
+    configRow.weekIndex,
+    configRow.teachingWeek,
+    configRow.academicWeek,
+    configRow.schoolWeek
+  );
+  termStartDateCandidates.push(
+    calendarInfo.termStartDate,
+    configRow.termStartDate,
+    configRow.semesterStart,
+    configRow.startDate,
+    configRow.currentTermStartDate
+  );
+  if (calendarInfo.currentWeek !== undefined && calendarInfo.currentWeek !== null && calendarInfo.currentWeek !== "") {
+    weekCandidates.push(calendarInfo.currentWeek);
+  }
+
+  return resolveTeachingWeekContext({
+    currentWeekCandidates: weekCandidates.filter((item) => item !== undefined && item !== null && item !== ""),
+    termStartDateCandidates: termStartDateCandidates.filter((item) => item !== undefined && item !== null && item !== ""),
+    fallbackTermStartDate: "",
+    now: new Date(),
+    timezone: config.timezone || "Asia/Shanghai",
+  });
+}
+
+function computeCurrentWeek(termStartDate = "", now = new Date(), timezone = config.timezone || "Asia/Shanghai") {
+  const normalized = normalizeTermStartDate(termStartDate);
+  if (!normalized) return null;
+  const startBase = timezone === "Asia/Shanghai"
+    ? new Date(`${normalized}T00:00:00+08:00`)
+    : new Date(`${normalized}T00:00:00`);
+  if (Number.isNaN(startBase.getTime())) return null;
+  const diffDays = Math.floor((now.getTime() - startBase.getTime()) / 86400000);
+  return Math.max(1, Math.floor(diffDays / 7) + 1);
+}
+
+function isCourseActiveInWeek(weeks = [], currentWeek = null) {
+  const normalized = normalizeWeeksArray(weeks);
+  if (!normalized.length) return true;
+  if (!Number.isFinite(Number(currentWeek || 0)) || Number(currentWeek || 0) <= 0) return true;
+  return normalized.includes(Math.floor(Number(currentWeek)));
+}
+
+function parseScheduleSlots(text = "") {
   const normalized = String(text || "")
     .replace(/[，、；]/g, ",")
     .replace(/[【]/g, "[")
     .replace(/[】]/g, "]")
     .replace(/[（]/g, "(")
-    .replace(/[）]/g, ")");
+    .replace(/[）]/g, ")")
+    .replace(/\s+/g, " ")
+    .trim();
 
-  const slots = [];
-  const seen = new Set();
+  if (!normalized) return [];
 
-  const pushSlot = (weekdayChar, startRaw, endRaw, locationRaw = "") => {
-    const weekday = dayMap[String(weekdayChar || "")] || 1;
-    const startPeriod = Math.max(1, Number(startRaw || 1));
-    const endPeriod = Math.max(startPeriod, Number(endRaw || startRaw || 1));
-    const location = trimString(locationRaw || "");
-    const key = `${weekday}:${startPeriod}-${endPeriod}:${location}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    slots.push({ weekday, startPeriod, endPeriod, location });
-  };
-
-  // Pattern A: 二[3-4] / 二【3-4】 / 周二[3-4]
-  const bracketRegex = /(?:周)?([\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u65e5\u5929])\s*[\[(]\s*(\d{1,2})\s*(?:[-~～至]\s*(\d{1,2}))?\s*[\])]/g;
+  const slotPattern = /(?:(单周|双周|[\d,\-~～至]+周)\s*)?(?:周)?([一二三四五六日天])\s*(?:\[\s*(\d{1,2})(?:\s*[-~～至]\s*(\d{1,2}))?\s*\]|第?\s*(\d{1,2})(?:\s*[-~～至]\s*(\d{1,2}))?\s*节)/g;
+  const matches = [];
   let match;
-  while ((match = bracketRegex.exec(normalized)) !== null) {
-    const after = normalized.slice(bracketRegex.lastIndex);
-    const location = trimString(after.split(",")[0] || "");
-    pushSlot(match[1], match[2], match[3], location);
+  while ((match = slotPattern.exec(normalized)) !== null) {
+    const startPeriod = Math.max(1, Number(match[3] || match[5] || 1));
+    const endPeriod = Math.max(startPeriod, Number(match[4] || match[6] || startPeriod));
+    const weekday = WEEKDAY_MAP[String(match[2] || "")] || 1;
+    const weekMeta = parseWeeksExpression(match[1] || "", XIQUE_DEFAULT_TERM_WEEKS);
+    matches.push({
+      index: match.index,
+      end: slotPattern.lastIndex,
+      weekday,
+      startPeriod,
+      endPeriod,
+      weekExpr: weekMeta.weekExpr,
+      weekRule: weekMeta.weekRule,
+      weeks: weekMeta.weeks,
+    });
   }
 
-  // Pattern B: 周二第3-4节 / 二第3节
-  const sectionRegex = /(?:周)?([\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u65e5\u5929])\s*(?:第)?\s*(\d{1,2})\s*(?:[-~～至]\s*(\d{1,2}))?\s*节/g;
-  while ((match = sectionRegex.exec(normalized)) !== null) {
-    pushSlot(match[1], match[2], match[3], "");
-  }
+  if (!matches.length) return [];
+
+  slotPattern.lastIndex = 0;
+  const locationFallback = trimString(
+    normalized
+      .replace(slotPattern, " ")
+      .replace(/[,\s;，、；]+/g, " ")
+      .trim()
+  );
+  const slots = [];
+  const dedup = new Set();
+
+  matches.forEach((seg, idx) => {
+    const nextStart = matches[idx + 1] ? matches[idx + 1].index : normalized.length;
+    let localTail = trimString(normalized.slice(seg.end, nextStart).replace(/^[,\s;，、；]+/, ""));
+    if (/^(?:(?:单周|双周|[\d,\-~～至]+周)\s*)?(?:周)?[一二三四五六日天]/.test(localTail)) {
+      localTail = "";
+    }
+    const location = trimString(localTail || locationFallback || "");
+    const weekKey = seg.weeks.length ? seg.weeks.join(".") : seg.weekRule;
+    const dedupKey = `${seg.weekday}:${seg.startPeriod}-${seg.endPeriod}:${weekKey}:${location}`;
+    if (dedup.has(dedupKey)) return;
+    dedup.add(dedupKey);
+    slots.push({
+      weekday: seg.weekday,
+      startPeriod: seg.startPeriod,
+      endPeriod: seg.endPeriod,
+      location,
+      weeks: seg.weeks,
+      weekRule: seg.weekRule,
+      weekExpr: seg.weekExpr,
+    });
+  });
 
   return slots;
 }
@@ -385,6 +751,173 @@ function parsePeriodTimeMapFromSchoolTimetable(html = "") {
     }
   });
   return periodMap;
+}
+
+function normalizeFlexibleDate(value = "") {
+  const raw = trimString(value);
+  if (!raw) return "";
+  const byDash = raw.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
+  if (byDash) {
+    const y = byDash[1];
+    const m = String(Math.max(1, Math.min(12, Number(byDash[2] || 1)))).padStart(2, "0");
+    const d = String(Math.max(1, Math.min(31, Number(byDash[3] || 1)))).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  }
+  const byCn = raw.match(/^(\d{4})年(\d{1,2})月(\d{1,2})日$/);
+  if (byCn) {
+    const y = byCn[1];
+    const m = String(Math.max(1, Math.min(12, Number(byCn[2] || 1)))).padStart(2, "0");
+    const d = String(Math.max(1, Math.min(31, Number(byCn[3] || 1)))).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  }
+  return normalizeTermStartDate(raw);
+}
+
+function schoolTermCodeToKeywords(termCode = "") {
+  const raw = trimString(termCode);
+  const match = raw.match(/^(\d{4})-([01])$/);
+  if (!match) return [raw].filter(Boolean);
+  const baseYear = Number(match[1]);
+  const phase = match[2];
+  const endYear = baseYear + 1;
+  const semesterCn = phase === "0" ? "第一学期" : "第二学期";
+  return [
+    `${baseYear}-${phase}`,
+    `${baseYear}-${endYear}学年${semesterCn}`,
+    `${baseYear}-${endYear} 学年 ${semesterCn}`,
+    `${baseYear}学年${semesterCn}`,
+    `${baseYear}-${endYear}`,
+  ].filter(Boolean);
+}
+
+function parseCalendarTermStartDateFromHtml(html = "", termCode = "") {
+  const raw = String(html || "");
+  if (!raw.trim()) {
+    return { termStartDate: "", currentWeek: null, matchedRow: "", method: "empty_html" };
+  }
+
+  const directDateCandidates = [];
+  const semKeyRegex = /(?:termStartDate|semesterStart|startDate|xqkssj|kssj)\s*[:=]\s*["']?([0-9]{4}[-/.][0-9]{1,2}[-/.][0-9]{1,2})["']?/gi;
+  let semMatch;
+  while ((semMatch = semKeyRegex.exec(raw)) !== null) {
+    directDateCandidates.push(semMatch[1]);
+  }
+
+  const rowCandidates = [];
+  const rows = raw.match(/<tr[\s\S]*?<\/tr>/gi) || [];
+  const termKeywords = schoolTermCodeToKeywords(termCode);
+  rows.forEach((rowHtml) => {
+    const text = decodeHtmlCell(rowHtml).replace(/\s+/g, " ").trim();
+    if (!text) return;
+    const hitKeyword = termKeywords.some((kw) => kw && text.includes(kw));
+    const dateMatches = [
+      ...text.matchAll(/(\d{4}[-/.]\d{1,2}[-/.]\d{1,2})/g),
+      ...text.matchAll(/(\d{4}年\d{1,2}月\d{1,2}日)/g),
+    ].map((m) => normalizeFlexibleDate(m[1]));
+    if (!dateMatches.length) return;
+    rowCandidates.push({
+      text,
+      dateMatches: dateMatches.filter(Boolean),
+      score: hitKeyword ? 10 : 0,
+    });
+  });
+
+  const textBlockCandidates = [];
+  const blocks = raw
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .split(/[\r\n]+/)
+    .map((line) => decodeHtmlCell(line).replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  blocks.forEach((text) => {
+    const hitKeyword = termKeywords.some((kw) => kw && text.includes(kw));
+    const dateMatches = [
+      ...text.matchAll(/(\d{4}[-/.]\d{1,2}[-/.]\d{1,2})/g),
+      ...text.matchAll(/(\d{4}年\d{1,2}月\d{1,2}日)/g),
+    ].map((m) => normalizeFlexibleDate(m[1]));
+    if (!dateMatches.length) return;
+    textBlockCandidates.push({
+      text,
+      dateMatches: dateMatches.filter(Boolean),
+      score: hitKeyword ? 8 : 0,
+      source: "text_block",
+    });
+  });
+
+  const ranked = [...rowCandidates, ...textBlockCandidates]
+    .map((row) => {
+      const lowered = row.text.toLowerCase();
+      let score = row.score;
+      if (/学期开始|开学|开始日期|起始日期|学期起始/.test(row.text)) score += 6;
+      if (/学年学期|第一学期|第二学期|semester|term/.test(lowered)) score += 2;
+      return { ...row, score };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  const top = ranked[0];
+  const topDate = top?.dateMatches?.[0] || "";
+  const fallbackDirect = directDateCandidates.map((d) => normalizeFlexibleDate(d)).filter(Boolean)[0] || "";
+  const termStartDate = normalizeFlexibleDate(topDate || fallbackDirect || "");
+  const currentWeek = extractCurrentWeekFromText(raw);
+  return {
+    termStartDate,
+    currentWeek: Number.isFinite(Number(currentWeek || 0)) ? Math.floor(Number(currentWeek)) : null,
+    matchedRow: top?.text || "",
+    method: topDate ? "calendar_row_match" : fallbackDirect ? "calendar_direct_key" : "not_found",
+  };
+}
+
+async function fetchRemoteCalendarInfo(ctx, termCode = "") {
+  const match = trimString(termCode).match(/^(\d{4})-([01])$/);
+  const xn = match?.[1] || "";
+  const xq = match?.[2] || "";
+  const candidatePaths = [
+    `/public/SchoolCalendar.jsp?random=${Date.now()}`,
+    xn && xq ? `/public/SchoolCalendar.jsp?xn=${encodeURIComponent(xn)}&xq_m=${encodeURIComponent(xq)}&random=${Date.now()}` : "",
+    `/public/SchoolCalendar.show.jsp?random=${Date.now()}`,
+    xn && xq ? `/public/SchoolCalendar.show.jsp?xn=${encodeURIComponent(xn)}&xq_m=${encodeURIComponent(xq)}&random=${Date.now()}` : "",
+  ].filter(Boolean);
+
+  let best = null;
+  for (const path of candidatePaths) {
+    // eslint-disable-next-line no-await-in-loop
+    const resp = await remoteRequest(ctx, "GET", path, {
+      referer: `${ctx.baseUrl}/frame/homes.action`,
+    });
+    if (resp.status !== 200 || !trimString(resp.text)) continue;
+    const parsed = parseCalendarTermStartDateFromHtml(resp.text, termCode);
+    const hasStartDate = Boolean(parsed.termStartDate);
+    const hasWeek = Boolean(parsed.currentWeek);
+    if (hasStartDate || hasWeek) {
+      return {
+        termStartDate: parsed.termStartDate || "",
+        currentWeek: hasWeek ? Number(parsed.currentWeek) : null,
+        sourcePath: path,
+        responseLength: resp.text.length,
+        matchedRow: parsed.matchedRow || "",
+        parseMethod: parsed.method || "calendar",
+      };
+    }
+    if (!best || resp.text.length > best.responseLength) {
+      best = {
+        termStartDate: "",
+        currentWeek: null,
+        sourcePath: path,
+        responseLength: resp.text.length,
+        matchedRow: parsed.matchedRow || "",
+        parseMethod: parsed.method || "calendar_no_hit",
+      };
+    }
+  }
+
+  return best || {
+    termStartDate: "",
+    currentWeek: null,
+    sourcePath: "",
+    responseLength: 0,
+    matchedRow: "",
+    parseMethod: "calendar_unavailable",
+  };
 }
 
 function resolveCourseTimeRange(item = {}, periodMap = {}) {
@@ -426,15 +959,27 @@ function parseCourseRowsFromListHtml(html = "", termCode = "") {
         weekday: 1,
         startPeriod: 1,
         endPeriod: 2,
+        weeks: [],
+        weekRule: "all",
+        weekExpr: "",
         slotFallback: true,
         sourceKey: `${courseId}:${classCode || "default"}:1:1-2`,
         note: trimString([className, note].filter(Boolean).join("; ")),
         termKey: schoolTermToInternal(termCode),
+        sourceMeta: sanitizeDetail({
+          teacherName,
+          location: trimString(scheduleText),
+          rawScheduleText: scheduleText,
+          weekExpr: "",
+          weekRule: "all",
+          weeks: [],
+        }),
       });
       return;
     }
-    slots.forEach((slot, index) => {
-      const sourceKey = `${courseId}:${classCode || "class"}:${slot.weekday}:${slot.startPeriod}-${slot.endPeriod}:${index}`;
+    slots.forEach((slot) => {
+      const weekKey = slot.weeks?.length ? slot.weeks.join(".") : slot.weekRule || "all";
+      const sourceKey = `${courseId}:${classCode || "class"}:${slot.weekday}:${slot.startPeriod}-${slot.endPeriod}:${weekKey}`;
       rows.push({
         courseId,
         courseName,
@@ -443,10 +988,21 @@ function parseCourseRowsFromListHtml(html = "", termCode = "") {
         weekday: slot.weekday,
         startPeriod: slot.startPeriod,
         endPeriod: slot.endPeriod,
+        weeks: normalizeWeeksArray(slot.weeks),
+        weekRule: trimString(slot.weekRule || "all"),
+        weekExpr: trimString(slot.weekExpr || ""),
         slotFallback: false,
         sourceKey,
         note: trimString([className, note].filter(Boolean).join("; ")),
         termKey: schoolTermToInternal(termCode),
+        sourceMeta: sanitizeDetail({
+          teacherName,
+          location: slot.location || scheduleText,
+          rawScheduleText: scheduleText,
+          weekExpr: trimString(slot.weekExpr || ""),
+          weekRule: trimString(slot.weekRule || "all"),
+          weeks: normalizeWeeksArray(slot.weeks),
+        }),
       });
     });
   });
@@ -602,6 +1158,27 @@ async function fetchRemoteCoursesPayload(configRow, session) {
   const termCode = selectRemoteTermCode(configRow, termList);
   if (!termCode || !termCode.includes("-")) throw makeXiqueError(XIQUE_ERROR.PARSE_FAILED, "xique term code unavailable", 502);
   const [xn, xq] = termCode.split("-");
+  let calendarInfo = {
+    termStartDate: "",
+    currentWeek: null,
+    sourcePath: "",
+    responseLength: 0,
+    matchedRow: "",
+    parseMethod: "",
+  };
+  try {
+    calendarInfo = await fetchRemoteCalendarInfo(ctx, termCode);
+  } catch (error) {
+    calendarInfo = {
+      termStartDate: "",
+      currentWeek: null,
+      sourcePath: "",
+      responseLength: 0,
+      matchedRow: "",
+      parseMethod: `calendar_fetch_error:${trimString(error?.message || "unknown")}`,
+    };
+    console.warn(`[xique] calendar parse unavailable term=${termCode} reason=${trimString(error?.message || "unknown")}`);
+  }
   const encodedParams = Buffer.from(`xn=${xn}&xq=${xq}&xh=${studentNo}`, "utf8").toString("base64");
   const encodedQuery = encodeURIComponent(encodedParams);
   const primaryPath = `/wsxk/xkjg.ckdgxsxdkchj_data10319.jsp?params=${encodedQuery}`;
@@ -618,6 +1195,13 @@ async function fetchRemoteCoursesPayload(configRow, session) {
     });
   }
   const parsedCourses = parseCourseRowsFromListHtml(chosen.text, termCode);
+  const teachingWeekContext = detectRemoteTeachingWeekContext({
+    configRow,
+    termList,
+    wdkbHtml: wdkbPage.text,
+    scheduleHtml: chosen.text,
+    calendarInfo,
+  });
   let periodTimeMap = {};
   let periodSourcePath = "";
   let periodResponseLength = 0;
@@ -633,12 +1217,31 @@ async function fetchRemoteCoursesPayload(configRow, session) {
   }
   const courses = parsedCourses.map((course) => {
     const range = resolveCourseTimeRange(course, periodTimeMap);
-    return { ...course, startTime: range.startTime, endTime: range.endTime };
+    const sourceMeta = course.sourceMeta && typeof course.sourceMeta === "object" ? course.sourceMeta : {};
+    return {
+      ...course,
+      startTime: range.startTime,
+      endTime: range.endTime,
+      termStartDate: normalizeTermStartDate(course.termStartDate || teachingWeekContext.termStartDate || ""),
+      sourceMeta: sanitizeDetail({
+        ...sourceMeta,
+        termStartDate: normalizeTermStartDate(sourceMeta.termStartDate || teachingWeekContext.termStartDate || ""),
+        currentWeek: teachingWeekContext.currentWeek || "",
+        currentWeekSource: teachingWeekContext.currentWeekSource || "",
+      }),
+    };
   });
   const mappedCourseCount = courses.filter((item) => trimString(item.startTime || "") && trimString(item.endTime || "")).length;
   const slotFallbackCount = parsedCourses.filter((item) => Boolean(item?.slotFallback)).length;
   return {
     termKey: schoolTermToInternal(termCode),
+    termStartDate: normalizeTermStartDate(teachingWeekContext.termStartDate || configRow.termStartDate || ""),
+    currentWeek: Number.isFinite(Number(teachingWeekContext.currentWeek || 0))
+      ? Math.floor(Number(teachingWeekContext.currentWeek))
+      : null,
+    weekFilteringApplied: Boolean(teachingWeekContext.weekFilteringApplied),
+    currentWeekSource: String(teachingWeekContext.currentWeekSource || ""),
+    termStartDateSource: String(teachingWeekContext.termStartDateSource || ""),
     courses,
     sourceMeta: sanitizeDetail({
       adapterMode: "remote",
@@ -652,6 +1255,21 @@ async function fetchRemoteCoursesPayload(configRow, session) {
       mappedCourseCount,
       slotFallbackCount,
       periodMapError,
+      calendarTermStartDate: normalizeTermStartDate(calendarInfo.termStartDate || ""),
+      calendarCurrentWeek: Number.isFinite(Number(calendarInfo.currentWeek || 0))
+        ? Math.floor(Number(calendarInfo.currentWeek))
+        : null,
+      calendarSourcePath: trimString(calendarInfo.sourcePath || ""),
+      calendarResponseLength: Number(calendarInfo.responseLength || 0),
+      calendarParseMethod: trimString(calendarInfo.parseMethod || ""),
+      calendarMatchedRow: trimString(calendarInfo.matchedRow || ""),
+      currentWeek: Number.isFinite(Number(teachingWeekContext.currentWeek || 0))
+        ? Math.floor(Number(teachingWeekContext.currentWeek))
+        : null,
+      currentWeekSource: String(teachingWeekContext.currentWeekSource || ""),
+      termStartDate: normalizeTermStartDate(teachingWeekContext.termStartDate || ""),
+      termStartDateSource: String(teachingWeekContext.termStartDateSource || ""),
+      weekFilteringApplied: Boolean(teachingWeekContext.weekFilteringApplied),
     }),
     cookieHeader: ctx.cookieHeader,
   };
@@ -662,19 +1280,93 @@ function normalizeIncomingCourse(item = {}, index = 0, termKey = "") {
   const weekday = Math.max(1, Math.min(7, Number(item.weekday || item.day || item.week || item.weekDay || 1)));
   const startPeriod = Math.max(1, Number(item.startPeriod || item.periodStart || item.orderIndex || 1));
   const endPeriod = Math.max(startPeriod, Number(item.endPeriod || item.periodEnd || startPeriod));
+  const incomingMeta = item.sourceMeta && typeof item.sourceMeta === "object" && !Array.isArray(item.sourceMeta) ? item.sourceMeta : {};
+  const weeks = normalizeWeeksArray(
+    Array.isArray(item.weeks) ? item.weeks : (Array.isArray(incomingMeta.weeks) ? incomingMeta.weeks : [])
+  );
+  const weekRule = trimString(item.weekRule || incomingMeta.weekRule || (weeks.length ? "custom" : "all")) || "all";
+  const weekExpr = trimString(item.weekExpr || incomingMeta.weekExpr || "");
   const courseId = trimString(item.courseId || item.id || item.code || `course_${index + 1}`);
-  const sourceKey = trimString(item.sourceKey || `${courseId}:${weekday}:${startPeriod}-${endPeriod}:${trimString(item.location || item.classroom || "")}`);
+  const weekKey = weeks.length ? weeks.join(".") : weekRule;
+  const sourceKey = trimString(
+    item.sourceKey || `${courseId}:${weekday}:${startPeriod}-${endPeriod}:${weekKey}:${trimString(item.location || item.classroom || "")}`
+  );
   const teacherName = trimString(item.teacherName || item.teacher || "");
   const location = trimString(item.location || item.classroom || item.room || "");
   const note = trimString(item.note || item.remark || "");
+  const termStartDate = normalizeTermStartDate(item.termStartDate || incomingMeta.termStartDate || "");
   const content = [teacherName ? `teacher:${teacherName}` : "", location ? `location:${location}` : "", note].filter(Boolean).join("; ");
-  return { courseId, sourceKey, termKey: trimString(termKey || item.termKey || item.semesterKey || getCurrentSemesterKey()), title, content, weekday, startPeriod, endPeriod, teacherName, location, weeks: Array.isArray(item.weeks) ? item.weeks : [], sourceMeta: sanitizeDetail({ teacherName, location }) };
+  const sourceMeta = sanitizeDetail({
+    ...incomingMeta,
+    teacherName,
+    location,
+    weeks,
+    weekRule,
+    weekExpr,
+    termStartDate,
+  });
+  return {
+    courseId,
+    sourceKey,
+    termKey: trimString(termKey || item.termKey || item.semesterKey || getCurrentSemesterKey()),
+    title,
+    content,
+    weekday,
+    startPeriod,
+    endPeriod,
+    teacherName,
+    location,
+    weeks,
+    weekRule,
+    weekExpr,
+    termStartDate,
+    sourceMeta,
+  };
 }
 function normalizeScheduleRowForImport(item, defaults = {}) {
   const row = normalizeIncomingCourse(item, defaults.index || 0, defaults.termKey || "");
   if (!row) return null;
   const now = nowIso();
-  return { id: createId("sch"), deviceId: trimString(defaults.deviceId || ""), mode: "course", weekday: row.weekday, orderIndex: row.startPeriod, title: row.title, content: row.content, startTime: trimString(item.startTime || ""), endTime: trimString(item.endTime || ""), courseName: row.title, note: row.content, source: "xique", sourceKey: row.sourceKey, termKey: row.termKey, xiqueCourseId: row.courseId, xiqueClassKey: row.sourceKey, sourceMeta: row.sourceMeta, createdAt: now, updatedAt: now };
+  const effectiveTermStartDate = normalizeTermStartDate(defaults.termStartDate || row.termStartDate || "");
+  const detectedCurrentWeek = normalizeWeekNumber(
+    item.currentWeek ||
+    row.currentWeek ||
+    row.sourceMeta?.currentWeek ||
+    row.sourceMeta?.weekIndex ||
+    ""
+  );
+  return {
+    id: createId("sch"),
+    deviceId: trimString(defaults.deviceId || ""),
+    mode: "course",
+    weekday: row.weekday,
+    orderIndex: row.startPeriod,
+    title: row.title,
+    content: row.content,
+    startTime: trimString(item.startTime || ""),
+    endTime: trimString(item.endTime || ""),
+    courseName: row.title,
+    note: row.content,
+    source: "xique",
+    sourceKey: row.sourceKey,
+    termKey: row.termKey,
+    xiqueCourseId: row.courseId,
+    xiqueClassKey: row.sourceKey,
+    weeks: row.weeks,
+    weekRule: row.weekRule,
+    termStartDate: effectiveTermStartDate,
+    sourceMeta: sanitizeDetail({
+      ...(row.sourceMeta || {}),
+      weeks: row.weeks,
+      weekRule: row.weekRule,
+      weekExpr: row.weekExpr,
+      termStartDate: effectiveTermStartDate,
+      currentWeek: detectedCurrentWeek || "",
+      currentWeekDetectedAt: detectedCurrentWeek ? now : "",
+    }),
+    createdAt: now,
+    updatedAt: now,
+  };
 }
 function ensureCollections(draft) {
   draft.scheduleSyncConfigs = Array.isArray(draft.scheduleSyncConfigs) ? draft.scheduleSyncConfigs : [];
@@ -685,7 +1377,42 @@ function getOrCreateConfigRow(draft, deviceId, ownerId = "") {
   ensureCollections(draft);
   let row = draft.scheduleSyncConfigs.find((item) => item.deviceId === deviceId);
   if (!row) {
-    row = { id: createId("xsync"), deviceId, ownerId, source: "xique", enabled: false, intervalMinutes: 60, currentTermKey: getCurrentSemesterKey(), adapterMode: "remote", baseUrl: "http://jw.sdivc.edu.cn", sampleUrl: "", sampleHtml: "", sampleJson: {}, requireCaptcha: false, needRelogin: false, needCaptchaReverify: false, paused: false, pauseReason: "", pauseUntil: "", failureCount: 0, lastAttemptAt: "", lastSuccessAt: "", lastSyncAt: "", lastSyncStatus: "", lastSyncErrorCode: "", lastError: "", nextRunAt: "", loginUsername: "", loginDisplayName: "", createdAt: nowIso(), updatedAt: nowIso() };
+    row = {
+      id: createId("xsync"),
+      deviceId,
+      ownerId,
+      source: "xique",
+      enabled: false,
+      intervalMinutes: 60,
+      currentTermKey: getCurrentSemesterKey(),
+      termStartDate: normalizeTermStartDate(config.xiqueDefaultTermStartDate || ""),
+      currentWeek: null,
+      currentWeekAt: "",
+      currentWeekSource: "",
+      adapterMode: "remote",
+      baseUrl: "http://jw.sdivc.edu.cn",
+      sampleUrl: "",
+      sampleHtml: "",
+      sampleJson: {},
+      requireCaptcha: false,
+      needRelogin: false,
+      needCaptchaReverify: false,
+      paused: false,
+      pauseReason: "",
+      pauseUntil: "",
+      failureCount: 0,
+      lastAttemptAt: "",
+      lastSuccessAt: "",
+      lastSyncAt: "",
+      lastSyncStatus: "",
+      lastSyncErrorCode: "",
+      lastError: "",
+      nextRunAt: "",
+      loginUsername: "",
+      loginDisplayName: "",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    };
     draft.scheduleSyncConfigs.unshift(row);
   }
   return row;
@@ -707,7 +1434,43 @@ function pushSyncLog(draft, entry) {
 }
 
 function buildSafeConfig(row = {}) {
-  return { id: trimString(row.id || ""), deviceId: trimString(row.deviceId || ""), ownerId: trimString(row.ownerId || ""), source: "xique", enabled: Boolean(row.enabled), intervalMinutes: normalizeIntervalMinutes(row.intervalMinutes), currentTermKey: trimString(row.currentTermKey || row.termKey || getCurrentSemesterKey()), adapterMode: trimString(row.adapterMode || "mock"), baseUrl: trimString(row.baseUrl || ""), sampleUrl: trimString(row.sampleUrl || ""), sampleHtml: trimString(row.sampleHtml || ""), requireCaptcha: Boolean(row.requireCaptcha), needRelogin: Boolean(row.needRelogin), needCaptchaReverify: Boolean(row.needCaptchaReverify), paused: Boolean(row.paused), pauseReason: trimString(row.pauseReason || ""), pauseUntil: trimString(row.pauseUntil || ""), failureCount: Number(row.failureCount || 0), lastAttemptAt: trimString(row.lastAttemptAt || ""), lastSuccessAt: trimString(row.lastSuccessAt || ""), lastSyncAt: trimString(row.lastSyncAt || row.lastSuccessAt || ""), lastSyncStatus: trimString(row.lastSyncStatus || ""), lastSyncErrorCode: trimString(row.lastSyncErrorCode || ""), lastError: trimString(row.lastError || ""), nextRunAt: trimString(row.nextRunAt || ""), loginUsername: trimString(row.loginUsername || ""), loginDisplayName: trimString(row.loginDisplayName || ""), createdAt: trimString(row.createdAt || ""), updatedAt: trimString(row.updatedAt || "") };
+  return {
+    id: trimString(row.id || ""),
+    deviceId: trimString(row.deviceId || ""),
+    ownerId: trimString(row.ownerId || ""),
+    source: "xique",
+    enabled: Boolean(row.enabled),
+    intervalMinutes: normalizeIntervalMinutes(row.intervalMinutes),
+    currentTermKey: trimString(row.currentTermKey || row.termKey || getCurrentSemesterKey()),
+    termStartDate: normalizeTermStartDate(row.termStartDate || config.xiqueDefaultTermStartDate || ""),
+    currentWeek: Number.isFinite(Number(row.currentWeek || 0)) && Number(row.currentWeek || 0) > 0
+      ? Math.floor(Number(row.currentWeek))
+      : null,
+    currentWeekAt: trimString(row.currentWeekAt || ""),
+    currentWeekSource: trimString(row.currentWeekSource || ""),
+    adapterMode: trimString(row.adapterMode || "mock"),
+    baseUrl: trimString(row.baseUrl || ""),
+    sampleUrl: trimString(row.sampleUrl || ""),
+    sampleHtml: trimString(row.sampleHtml || ""),
+    requireCaptcha: Boolean(row.requireCaptcha),
+    needRelogin: Boolean(row.needRelogin),
+    needCaptchaReverify: Boolean(row.needCaptchaReverify),
+    paused: Boolean(row.paused),
+    pauseReason: trimString(row.pauseReason || ""),
+    pauseUntil: trimString(row.pauseUntil || ""),
+    failureCount: Number(row.failureCount || 0),
+    lastAttemptAt: trimString(row.lastAttemptAt || ""),
+    lastSuccessAt: trimString(row.lastSuccessAt || ""),
+    lastSyncAt: trimString(row.lastSyncAt || row.lastSuccessAt || ""),
+    lastSyncStatus: trimString(row.lastSyncStatus || ""),
+    lastSyncErrorCode: trimString(row.lastSyncErrorCode || ""),
+    lastError: trimString(row.lastError || ""),
+    nextRunAt: trimString(row.nextRunAt || ""),
+    loginUsername: trimString(row.loginUsername || ""),
+    loginDisplayName: trimString(row.loginDisplayName || ""),
+    createdAt: trimString(row.createdAt || ""),
+    updatedAt: trimString(row.updatedAt || ""),
+  };
 }
 
 function buildSafeVault(row = {}) {
@@ -931,8 +1694,19 @@ async function createXiqueClient(configRow = {}, vaultRow = {}, options = {}) {
         const payload = await loadSamplePayload(configRow);
         return {
           termKey: trimString(payload.termKey || configRow.currentTermKey || getCurrentSemesterKey()),
+          termStartDate: normalizeTermStartDate(payload.termStartDate || configRow.termStartDate || ""),
+          currentWeek: Number.isFinite(Number(payload.currentWeek || 0)) && Number(payload.currentWeek || 0) > 0
+            ? Math.floor(Number(payload.currentWeek))
+            : null,
+          weekFilteringApplied: Number.isFinite(Number(payload.currentWeek || 0)) && Number(payload.currentWeek || 0) > 0,
           courses: Array.isArray(payload.courses) ? payload.courses : [],
-          sourceMeta: { adapterMode: trimString(configRow.adapterMode || "mock") },
+          sourceMeta: {
+            adapterMode: trimString(configRow.adapterMode || "mock"),
+            currentWeek: Number.isFinite(Number(payload.currentWeek || 0)) && Number(payload.currentWeek || 0) > 0
+              ? Math.floor(Number(payload.currentWeek))
+              : null,
+            termStartDate: normalizeTermStartDate(payload.termStartDate || configRow.termStartDate || ""),
+          },
         };
       }
       const remotePayload = await fetchRemoteCoursesPayload(configRow, activeSession);
@@ -1207,6 +1981,9 @@ function importXiqueCoursesToDraft(draft, configRow, payload, options = {}) {
   ensureCollections(draft);
   const deviceId = trimString(configRow.deviceId || options.deviceId || "");
   const termKey = trimString(payload.termKey || configRow.currentTermKey || getCurrentSemesterKey());
+  const termStartDate = normalizeTermStartDate(
+    payload.termStartDate || configRow.termStartDate || config.xiqueDefaultTermStartDate || ""
+  );
   const existing = draft.schedules.filter(
     (item) => item.deviceId === deviceId && item.source === "xique" && item.termKey === termKey
   );
@@ -1215,7 +1992,7 @@ function importXiqueCoursesToDraft(draft, configRow, payload, options = {}) {
 
   const dedupMap = new Map();
   (payload.courses || []).forEach((item, index) => {
-    const row = normalizeScheduleRowForImport(item, { index, termKey, deviceId });
+    const row = normalizeScheduleRowForImport(item, { index, termKey, deviceId, termStartDate });
     if (!row) {
       result.skipped += 1;
       return;
@@ -1250,6 +2027,9 @@ function importXiqueCoursesToDraft(draft, configRow, payload, options = {}) {
       termKey: current.termKey,
       xiqueCourseId: current.xiqueCourseId,
       xiqueClassKey: current.xiqueClassKey,
+      weeks: normalizeWeeksArray(current.weeks || current.sourceMeta?.weeks || []),
+      weekRule: trimString(current.weekRule || current.sourceMeta?.weekRule || ""),
+      termStartDate: normalizeTermStartDate(current.termStartDate || current.sourceMeta?.termStartDate || ""),
       sourceMeta: current.sourceMeta,
     });
     const nextComparable = JSON.stringify({
@@ -1268,6 +2048,9 @@ function importXiqueCoursesToDraft(draft, configRow, payload, options = {}) {
       termKey: row.termKey,
       xiqueCourseId: row.xiqueCourseId,
       xiqueClassKey: row.xiqueClassKey,
+      weeks: normalizeWeeksArray(row.weeks || row.sourceMeta?.weeks || []),
+      weekRule: trimString(row.weekRule || row.sourceMeta?.weekRule || ""),
+      termStartDate: normalizeTermStartDate(row.termStartDate || row.sourceMeta?.termStartDate || ""),
       sourceMeta: row.sourceMeta,
     });
     if (before === nextComparable) {
@@ -1337,6 +2120,21 @@ async function saveXiqueSyncConfig({ auth, deviceId, body = {} }) {
     cfg.enabled = body.enabled === undefined ? false : Boolean(body.enabled);
     cfg.intervalMinutes = normalizeIntervalMinutes(body.intervalMinutes);
     cfg.currentTermKey = trimString(body.currentTermKey || body.termKey || getCurrentSemesterKey());
+    if (body.termStartDate !== undefined) {
+      cfg.termStartDate = normalizeTermStartDate(body.termStartDate || "");
+    } else if (!trimString(cfg.termStartDate || "")) {
+      cfg.termStartDate = normalizeTermStartDate(config.xiqueDefaultTermStartDate || "");
+    }
+    if (body.currentWeek !== undefined) {
+      const manualWeek = normalizeWeekNumber(body.currentWeek);
+      cfg.currentWeek = manualWeek || null;
+      cfg.currentWeekAt = manualWeek ? nowIso() : "";
+      cfg.currentWeekSource = manualWeek ? "manual_config" : "";
+    } else if (!Number.isFinite(Number(cfg.currentWeek || 0))) {
+      cfg.currentWeek = null;
+      cfg.currentWeekAt = trimString(cfg.currentWeekAt || "");
+      cfg.currentWeekSource = trimString(cfg.currentWeekSource || "");
+    }
     if (body.adapterMode !== undefined) {
       cfg.adapterMode = trimString(body.adapterMode || "mock").toLowerCase() === "remote" ? "remote" : "mock";
     } else {
@@ -1395,6 +2193,11 @@ async function prepareXiqueLogin({ auth, deviceId, body = {}, forceCaptcha = fal
     if (body.sampleJson !== undefined) cfg.sampleJson = parseJsonLike(body.sampleJson) || {};
     if (body.requireCaptcha !== undefined) cfg.requireCaptcha = Boolean(body.requireCaptcha);
     if (body.currentTermKey !== undefined || body.termKey !== undefined) cfg.currentTermKey = trimString(body.currentTermKey || body.termKey || getCurrentSemesterKey());
+    if (body.termStartDate !== undefined) {
+      cfg.termStartDate = normalizeTermStartDate(body.termStartDate || "");
+    } else if (!trimString(cfg.termStartDate || "")) {
+      cfg.termStartDate = normalizeTermStartDate(config.xiqueDefaultTermStartDate || "");
+    }
     cfg.updatedAt = nowIso();
     vault.deviceId = deviceId;
     vault.updatedAt = nowIso();
@@ -1471,6 +2274,11 @@ async function submitXiqueImport({ auth, deviceId, body = {}, forceCaptcha = fal
   if (body.currentTermKey !== undefined || body.termKey !== undefined) {
     effectiveCfg.currentTermKey = trimString(body.currentTermKey || body.termKey || effectiveCfg.currentTermKey || getCurrentSemesterKey());
   }
+  if (body.termStartDate !== undefined) {
+    effectiveCfg.termStartDate = normalizeTermStartDate(body.termStartDate || "");
+  } else if (!trimString(effectiveCfg.termStartDate || "")) {
+    effectiveCfg.termStartDate = normalizeTermStartDate(config.xiqueDefaultTermStartDate || "");
+  }
   if (body.adapterMode !== undefined) {
     effectiveCfg.adapterMode = trimString(body.adapterMode || "mock").toLowerCase() === "remote" ? "remote" : "mock";
   }
@@ -1506,6 +2314,9 @@ async function submitXiqueImport({ auth, deviceId, body = {}, forceCaptcha = fal
       if (!nextCfg || !nextVault) return;
       nextCfg.loginUsername = trimString(effectiveCfg.loginUsername || nextCfg.loginUsername || "");
       nextCfg.currentTermKey = trimString(effectiveCfg.currentTermKey || nextCfg.currentTermKey || getCurrentSemesterKey());
+      nextCfg.termStartDate = normalizeTermStartDate(
+        effectiveCfg.termStartDate || nextCfg.termStartDate || config.xiqueDefaultTermStartDate || ""
+      );
       nextCfg.adapterMode = trimString(effectiveCfg.adapterMode || nextCfg.adapterMode || "remote").toLowerCase() === "remote" ? "remote" : "mock";
       nextCfg.baseUrl = trimString(effectiveCfg.baseUrl || nextCfg.baseUrl || "");
       nextCfg.needRelogin = true;
@@ -1569,6 +2380,18 @@ async function submitXiqueImport({ auth, deviceId, body = {}, forceCaptcha = fal
     if (!nextCfg || !nextVault) throw new HttpError(404, "xique config not found");
     nextCfg.loginUsername = trimString(effectiveCfg.loginUsername || nextCfg.loginUsername || "");
     nextCfg.currentTermKey = trimString(effectiveCfg.currentTermKey || nextCfg.currentTermKey || getCurrentSemesterKey());
+    nextCfg.termStartDate = normalizeTermStartDate(
+      payload.termStartDate ||
+      effectiveCfg.termStartDate ||
+      nextCfg.termStartDate ||
+      config.xiqueDefaultTermStartDate ||
+      ""
+    );
+    nextCfg.currentWeek = Number.isFinite(Number(payload.currentWeek || 0)) && Number(payload.currentWeek || 0) > 0
+      ? Math.floor(Number(payload.currentWeek))
+      : null;
+    nextCfg.currentWeekAt = nextCfg.currentWeek ? nowIso() : "";
+    nextCfg.currentWeekSource = nextCfg.currentWeek ? trimString(payload.currentWeekSource || "remote_auto_detect") : "";
     nextCfg.adapterMode = trimString(effectiveCfg.adapterMode || nextCfg.adapterMode || "remote").toLowerCase() === "remote" ? "remote" : "mock";
     nextCfg.baseUrl = trimString(effectiveCfg.baseUrl || nextCfg.baseUrl || "");
     nextCfg.needRelogin = false;
@@ -1602,13 +2425,16 @@ async function submitXiqueImport({ auth, deviceId, body = {}, forceCaptcha = fal
       deviceId,
       action: "import_success",
       status: "success",
-      detail: {
-        ...result,
-        loginStatus: loginResult.loginStatus,
-        ocrAttempts: Number(loginResult.ocrAttempts || 0),
-        ocrFailures: Number(loginResult.ocrFailures || 0),
-      },
-    });
+        detail: {
+          ...result,
+          loginStatus: loginResult.loginStatus,
+          ocrAttempts: Number(loginResult.ocrAttempts || 0),
+          ocrFailures: Number(loginResult.ocrFailures || 0),
+          currentWeek: nextCfg.currentWeek,
+          currentWeekSource: nextCfg.currentWeekSource,
+          termStartDate: nextCfg.termStartDate,
+        },
+      });
   });
   await logOperation({ actorId: auth.userId || auth.deviceId || "system", actorRole: auth.role || "system", action: "schedule.xique_import", targetType: "device", targetId: deviceId, detail: sanitizeDetail(result) });
   return {
@@ -1669,6 +2495,17 @@ async function runXiqueSyncByConfigId(configId, { reason = "manual", captchaAnsw
       const nextCfg = draft.scheduleSyncConfigs.find((item) => item.id === configId);
       const nextVault = draft.xiqueSessionVault.find((item) => item.configId === configId);
       if (!nextCfg || !nextVault) throw new HttpError(404, "xique config not found");
+      nextCfg.termStartDate = normalizeTermStartDate(
+        payload.termStartDate ||
+        nextCfg.termStartDate ||
+        config.xiqueDefaultTermStartDate ||
+        ""
+      );
+      nextCfg.currentWeek = Number.isFinite(Number(payload.currentWeek || 0)) && Number(payload.currentWeek || 0) > 0
+        ? Math.floor(Number(payload.currentWeek))
+        : null;
+      nextCfg.currentWeekAt = nextCfg.currentWeek ? nowIso() : "";
+      nextCfg.currentWeekSource = nextCfg.currentWeek ? trimString(payload.currentWeekSource || "remote_auto_detect") : "";
       nextCfg.needRelogin = false;
       nextCfg.needCaptchaReverify = false;
       nextCfg.paused = false;
@@ -1703,6 +2540,9 @@ async function runXiqueSyncByConfigId(configId, { reason = "manual", captchaAnsw
           loginStatus: loginResult.loginStatus,
           ocrAttempts: Number(loginResult.ocrAttempts || 0),
           ocrFailures: Number(loginResult.ocrFailures || 0),
+          currentWeek: nextCfg.currentWeek,
+          currentWeekSource: nextCfg.currentWeekSource,
+          termStartDate: nextCfg.termStartDate,
         },
       });
     });
@@ -1788,9 +2628,18 @@ function stopXiqueScheduler() {
 module.exports = {
   ACTIVE_START_HOUR,
   ACTIVE_END_HOUR,
+  WEEKDAY_LABEL_MAP,
   encryptSecret,
   decryptSecret,
   normalizeIntervalMinutes,
+  normalizeWeeksArray,
+  parseWeeksExpression,
+  normalizeTermStartDate,
+  extractCurrentWeekFromText,
+  resolveTeachingWeekContext,
+  computeCurrentWeek,
+  isCourseActiveInWeek,
+  parseScheduleSlots,
   getCurrentSemesterKey,
   isWithinActiveWindow,
   getSchedulerDecision,

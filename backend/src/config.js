@@ -19,6 +19,8 @@ module.exports = {
   xiqueSchedulerIntervalMs: Number(process.env.XIQUE_SCHEDULER_INTERVAL_MS || 60000),
   xiqueSessionTtlMs: Number(process.env.XIQUE_SESSION_TTL_MS || 6 * 60 * 60 * 1000),
   xiqueCaptchaTtlMs: Number(process.env.XIQUE_CAPTCHA_TTL_MS || 10 * 60 * 1000),
+  xiqueDefaultTermStartDate: String(process.env.XIQUE_DEFAULT_TERM_START_DATE || "").trim(),
+  xiqueDefaultTermWeeks: Number(process.env.XIQUE_DEFAULT_TERM_WEEKS || 30),
   xiqueFailureBackoffThreshold: Number(process.env.XIQUE_FAILURE_BACKOFF_THRESHOLD || 3),
   xiqueFailurePauseThreshold: Number(process.env.XIQUE_FAILURE_PAUSE_THRESHOLD || 5),
   xiqueMaxBackoffMinutes: Number(process.env.XIQUE_MAX_BACKOFF_MINUTES || 120),

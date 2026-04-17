@@ -9,6 +9,14 @@ const createId = require("../utils/id");
 const HttpError = require("../utils/httpError");
 const { getGridBucket } = require("../utils/mongo");
 const { normalizeAutoRenderPushConfig } = require("./homepage_auto_push_time.service");
+const {
+  WEEKDAY_LABEL_MAP,
+  normalizeWeeksArray,
+  normalizeTermStartDate,
+  extractCurrentWeekFromText,
+  resolveTeachingWeekContext,
+  isCourseActiveInWeek,
+} = require("./xique_sync.service");
 
 const ROOT_DIR = path.join(__dirname, "../../..");
 const QWEATHER_DIR = path.join(ROOT_DIR, "ico/QWeather-Icons-1.8.0");
@@ -1592,7 +1600,7 @@ function resolveTemplateHtml(db, config, auth, options) {
 function buildCommonDataModel(db, device, extraData) {
   const todoRows = (db.todos || []).filter((item) => String(item.deviceId || "") === String(device.id || ""));
   const scheduleRows = (db.schedules || []).filter((item) => String(item.deviceId || "") === String(device.id || ""));
-  const WEEKDAY_LABELS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+  const WEEKDAY_LABELS = [1, 2, 3, 4, 5, 6, 7].map((day) => WEEKDAY_LABEL_MAP[day] || "Monday");
 
   const todoOpen = todoRows.filter((item) => !item.done);
   const todoSummary = todoOpen.length
@@ -1634,30 +1642,113 @@ function buildCommonDataModel(db, device, extraData) {
 
   const buildDerivedXiqueFromSchedules = (rows) => {
     if (!Array.isArray(rows) || !rows.length) return null;
+    const xiqueRows = rows.filter((row) => String(row?.source || "").trim().toLowerCase() === "xique");
+    if (!xiqueRows.length) return null;
 
-    const normalized = rows
+    const termKey = xiqueRows
+      .map((item) => String(item?.termKey || "").trim())
+      .filter(Boolean)
+      .sort((a, b) => b.localeCompare(a))[0] || "";
+    const termRows = termKey
+      ? xiqueRows.filter((item) => String(item?.termKey || "").trim() === termKey)
+      : xiqueRows;
+    const syncConfigs = Array.isArray(db?.scheduleSyncConfigs) ? db.scheduleSyncConfigs : [];
+    const targetConfig =
+      syncConfigs.find(
+        (item) =>
+          String(item?.deviceId || "") === String(device.id || "") &&
+          String(item?.currentTermKey || "") === String(termKey || "")
+      ) ||
+      syncConfigs.find((item) => String(item?.deviceId || "") === String(device.id || "")) ||
+      null;
+    const getLocalDateKey = (date = new Date()) => {
+      try {
+        return new Intl.DateTimeFormat("en-CA", { timeZone: config.timezone || "Asia/Shanghai" }).format(date);
+      } catch (_) {
+        return new Intl.DateTimeFormat("en-CA").format(date);
+      }
+    };
+    const nowDateKey = getLocalDateKey(new Date());
+    const cfgWeekDateKey = targetConfig?.currentWeekAt ? getLocalDateKey(new Date(targetConfig.currentWeekAt)) : "";
+    const rowWeekCandidates = [];
+    termRows.forEach((row) => {
+      const sourceMeta = row?.sourceMeta && typeof row.sourceMeta === "object" ? row.sourceMeta : {};
+      rowWeekCandidates.push(
+        row?.currentWeek,
+        row?.weekIndex,
+        row?.teachingWeek,
+        sourceMeta.currentWeek,
+        sourceMeta.weekIndex,
+        sourceMeta.teachingWeek
+      );
+      const fromText = extractCurrentWeekFromText(row?.content || row?.note || "");
+      if (fromText) rowWeekCandidates.push(fromText);
+    });
+    const weekContext = resolveTeachingWeekContext({
+      now: new Date(),
+      timezone: config.timezone || "Asia/Shanghai",
+      currentWeekCandidates: [
+        ...rowWeekCandidates,
+        ...(cfgWeekDateKey && cfgWeekDateKey === nowDateKey
+          ? [
+              targetConfig?.currentWeek,
+              targetConfig?.weekIndex,
+              targetConfig?.teachingWeek,
+              targetConfig?.academicWeek,
+              targetConfig?.schoolWeek,
+            ]
+          : []),
+      ],
+      termStartDateCandidates: [
+        termRows[0]?.termStartDate,
+        termRows[0]?.sourceMeta?.termStartDate,
+        targetConfig?.termStartDate,
+        targetConfig?.semesterStart,
+        targetConfig?.startDate,
+      ],
+      fallbackTermStartDate: "",
+    });
+    const termStartDate = normalizeTermStartDate(weekContext.termStartDate || "");
+    const currentWeek = Number.isFinite(Number(weekContext.currentWeek || 0))
+      ? Math.floor(Number(weekContext.currentWeek))
+      : null;
+    const canFilterByWeek = Boolean(weekContext.weekFilteringApplied && currentWeek);
+
+    const normalizedAll = termRows
       .map((row) => {
-        const slotKeyRaw = String(row?.position?.slotKey || "");
-        const startPeriod = normalizePeriod(row?.position?.startPeriod, 1);
+        const slotKeyRaw = String(row?.position?.slotKey || row?.sourceKey || "");
+        const startPeriod = normalizePeriod(
+          row?.position?.startPeriod || row?.orderIndex || row?.sourceMeta?.startPeriod,
+          1
+        );
         const endPeriod = normalizePeriod(row?.position?.endPeriod, startPeriod);
         const weekday = normalizeWeekday(row?.weekday, slotKeyRaw || `${startPeriod}-${endPeriod}`);
         const weekdayLabel = WEEKDAY_LABELS[weekday - 1] || "Monday";
+        const sourceMeta = row?.sourceMeta && typeof row.sourceMeta === "object" ? row.sourceMeta : {};
+        const weeks = normalizeWeeksArray(
+          Array.isArray(row?.weeks) ? row.weeks : (Array.isArray(sourceMeta.weeks) ? sourceMeta.weeks : [])
+        );
+        const weekRule = String(row?.weekRule || sourceMeta.weekRule || (weeks.length ? "custom" : "all")).trim() || "all";
+        const isActiveThisWeek = isCourseActiveInWeek(weeks, currentWeek);
         return {
           id: String(row?.id || ""),
           courseName: String(row?.courseName || row?.title || ""),
           title: String(row?.title || row?.courseName || row?.content || ""),
-          teacherName: String(row?.teacherName || row?.teacher || ""),
-          location: String(row?.location || ""),
+          teacherName: String(row?.teacherName || row?.teacher || sourceMeta.teacherName || ""),
+          location: String(row?.location || sourceMeta.location || ""),
           weekday,
           weekdayLabel,
+          weeks,
+          weekRule,
+          isActiveThisWeek,
           position: {
             startPeriod,
             endPeriod,
             slotKey: `${weekday}-${startPeriod}-${endPeriod}`,
           },
           timeRange: {
-            startTime: String(row?.timeRange?.startTime || ""),
-            endTime: String(row?.timeRange?.endTime || ""),
+            startTime: String(row?.timeRange?.startTime || row?.startTime || ""),
+            endTime: String(row?.timeRange?.endTime || row?.endTime || ""),
           },
           termKey: String(row?.termKey || ""),
         };
@@ -1668,6 +1759,10 @@ function buildCommonDataModel(db, device, extraData) {
         if (a.position.endPeriod !== b.position.endPeriod) return a.position.endPeriod - b.position.endPeriod;
         return String(a.title || "").localeCompare(String(b.title || ""));
       });
+
+    const normalized = canFilterByWeek
+      ? normalizedAll.filter((course) => course.isActiveThisWeek)
+      : normalizedAll;
 
     const byDayMap = new Map();
     const bySlotMap = new Map();
@@ -1686,6 +1781,9 @@ function buildCommonDataModel(db, device, extraData) {
         location: course.location,
         weekday: course.weekday,
         weekdayLabel: course.weekdayLabel,
+        weeks: course.weeks,
+        weekRule: course.weekRule,
+        isActiveThisWeek: course.isActiveThisWeek,
         position: { ...course.position },
         timeRange: { ...course.timeRange },
       });
@@ -1705,13 +1803,24 @@ function buildCommonDataModel(db, device, extraData) {
         title: course.title,
         teacherName: course.teacherName,
         location: course.location,
+        weeks: course.weeks,
+        weekRule: course.weekRule,
+        isActiveThisWeek: course.isActiveThisWeek,
         timeRange: { ...course.timeRange },
       });
       bySlotMap.set(course.position.slotKey, slot);
     });
 
-    const termKey = normalized.map((item) => String(item.termKey || "").trim()).find(Boolean) || "";
-    const byDay = [...byDayMap.values()].sort((a, b) => a.weekday - b.weekday);
+    const byDay = [];
+    for (let day = 1; day <= 7; day += 1) {
+      const row = byDayMap.get(day) || {
+        weekday: day,
+        weekdayLabel: WEEKDAY_LABELS[day - 1] || "Monday",
+        count: 0,
+        courses: [],
+      };
+      byDay.push(row);
+    }
     const bySlot = [...bySlotMap.values()].sort((a, b) => {
       if (a.weekday !== b.weekday) return a.weekday - b.weekday;
       if (a.startPeriod !== b.startPeriod) return a.startPeriod - b.startPeriod;
@@ -1757,10 +1866,15 @@ function buildCommonDataModel(db, device, extraData) {
       captchaImage: "",
       captchaExpiresAt: "",
       loginUsername: "",
-      schedule: {
-        schema: "xique_schedule_v1",
-        deviceId: String(device.id || ""),
-        termKey,
+        schedule: {
+          schema: "xique_schedule_v1",
+          deviceId: String(device.id || ""),
+          termKey,
+          termStartDate,
+          currentWeek: canFilterByWeek ? Number(currentWeek) : null,
+          currentWeekSource: canFilterByWeek ? String(weekContext.currentWeekSource || "") : "",
+          weekFilteringApplied: canFilterByWeek,
+        totalCoursesRaw: normalizedAll.length,
         totalCourses: normalized.length,
         byDay,
         bySlot,
@@ -1772,6 +1886,9 @@ function buildCommonDataModel(db, device, extraData) {
           location: item.location,
           weekday: item.weekday,
           weekdayLabel: item.weekdayLabel,
+          weeks: item.weeks,
+          weekRule: item.weekRule,
+          isActiveThisWeek: item.isActiveThisWeek,
           position: { ...item.position },
           timeRange: { ...item.timeRange },
         })),
@@ -1780,6 +1897,10 @@ function buildCommonDataModel(db, device, extraData) {
       view: {
         todayWeekday,
         todayWeekdayLabel,
+        currentWeek: canFilterByWeek ? Number(currentWeek) : null,
+        currentWeekSource: canFilterByWeek ? String(weekContext.currentWeekSource || "") : "",
+        termStartDate,
+        weekFilteringApplied: canFilterByWeek,
         todayCourseCount: todayCourses.length,
         todayCourses,
         todayCourseText,
@@ -1871,6 +1992,11 @@ function buildCommonDataModel(db, device, extraData) {
       schema: "xique_schedule_v1",
       deviceId: String(device.id || ""),
       termKey: "",
+      termStartDate: "",
+      currentWeek: null,
+      currentWeekSource: "",
+      weekFilteringApplied: false,
+      totalCoursesRaw: 0,
       totalCourses: 0,
       byDay: [],
       bySlot: [],
@@ -1882,6 +2008,10 @@ function buildCommonDataModel(db, device, extraData) {
       todayWeekdayLabel: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][
         ((new Date().getDay() + 6) % 7)
       ],
+      currentWeek: null,
+      currentWeekSource: "",
+      termStartDate: "",
+      weekFilteringApplied: false,
       todayCourseCount: 0,
       todayCourses: [],
       todayCourseText: "xique schedule not imported",

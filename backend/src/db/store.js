@@ -76,6 +76,19 @@ function normalizeStringField(input, fallback = "") {
   return String(input ?? fallback);
 }
 
+function normalizeWeeksField(input, maxWeek = 30) {
+  const safeMax = Math.max(4, Number(maxWeek || 30));
+  if (!Array.isArray(input)) return [];
+  const set = new Set();
+  input.forEach((item) => {
+    const week = Math.floor(Number(item || 0));
+    if (Number.isFinite(week) && week >= 1 && week <= safeMax) {
+      set.add(week);
+    }
+  });
+  return Array.from(set.values()).sort((a, b) => a - b);
+}
+
 function normalizeBooleanField(input, fallback = false) {
   if (input === undefined || input === null || input === "") return Boolean(fallback);
   return Boolean(input);
@@ -91,6 +104,12 @@ function normalizeScheduleSyncConfigRow(row = {}) {
     enabled: normalizeBooleanField(row.enabled, false),
     intervalMinutes: normalizeIntervalMinutes(row.intervalMinutes),
     currentTermKey: normalizeStringField(row.currentTermKey || row.termKey || ""),
+    termStartDate: normalizeStringField(row.termStartDate || ""),
+    currentWeek: Number.isFinite(Number(row.currentWeek || 0)) && Number(row.currentWeek || 0) > 0
+      ? Math.floor(Number(row.currentWeek))
+      : null,
+    currentWeekAt: normalizeStringField(row.currentWeekAt || ""),
+    currentWeekSource: normalizeStringField(row.currentWeekSource || ""),
     adapterMode: normalizeStringField(row.adapterMode || "mock"),
     baseUrl: normalizeStringField(row.baseUrl || ""),
     sampleUrl: normalizeStringField(row.sampleUrl || ""),
@@ -160,6 +179,20 @@ function normalizeSyncLogRow(row = {}) {
 
 function normalizeScheduleRow(row = {}) {
   const now = new Date().toISOString();
+  const sourceMetaRaw = normalizeObjectField(row.sourceMeta);
+  const weeks = normalizeWeeksField(
+    Array.isArray(row.weeks) ? row.weeks : (Array.isArray(sourceMetaRaw.weeks) ? sourceMetaRaw.weeks : [])
+  );
+  const weekRule = normalizeStringField(
+    row.weekRule || sourceMetaRaw.weekRule || (weeks.length ? "custom" : "all")
+  );
+  const termStartDate = normalizeStringField(row.termStartDate || sourceMetaRaw.termStartDate || "");
+  const sourceMeta = {
+    ...sourceMetaRaw,
+    weeks,
+    weekRule,
+    termStartDate,
+  };
   return {
     id: normalizeStringField(row.id || createId("sch")),
     deviceId: normalizeStringField(row.deviceId || ""),
@@ -177,7 +210,10 @@ function normalizeScheduleRow(row = {}) {
     termKey: normalizeStringField(row.termKey || row.sourceTermKey || ""),
     xiqueCourseId: normalizeStringField(row.xiqueCourseId || ""),
     xiqueClassKey: normalizeStringField(row.xiqueClassKey || ""),
-    sourceMeta: normalizeObjectField(row.sourceMeta),
+    weeks,
+    weekRule,
+    termStartDate,
+    sourceMeta,
     createdAt: normalizeStringField(row.createdAt || now),
     updatedAt: normalizeStringField(row.updatedAt || now),
   };
@@ -866,6 +902,1139 @@ function normalizeStoreShape(state) {
   }
 }
 
+function quoteId(name) {
+  return `\`${String(name || "").replace(/`/g, "")}\``;
+}
+
+function safeJSONString(value) {
+  try {
+    return JSON.stringify(value ?? {});
+  } catch (_) {
+    return "{}";
+  }
+}
+
+function safeJSONParse(value, fallback = {}) {
+  if (!value) return fallback;
+  try {
+    const parsed = JSON.parse(String(value));
+    return parsed && typeof parsed === "object" ? parsed : fallback;
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function toDbDateTime(value, fallbackNow = false) {
+  let date = value ? new Date(value) : null;
+  if (!date || Number.isNaN(date.getTime())) {
+    if (!fallbackNow) return null;
+    date = new Date();
+  }
+  const pad = (n, len = 2) => String(n).padStart(len, "0");
+  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(
+    date.getUTCMinutes()
+  )}:${pad(date.getUTCSeconds())}`;
+}
+
+function fromDbDateTime(value, fallback = "") {
+  if (!value) return fallback;
+  const date = value instanceof Date ? value : new Date(String(value).replace(" ", "T") + "Z");
+  if (Number.isNaN(date.getTime())) return fallback;
+  return date.toISOString();
+}
+
+function createEmptyState() {
+  const now = new Date().toISOString();
+  return {
+    meta: {
+      createdAt: now,
+      updatedAt: now,
+      version: 2,
+    },
+    users: [],
+    devices: [],
+    bindingPins: [],
+    clusters: [],
+    firmwares: [],
+    upgradeJobs: [],
+    todos: [],
+    schedules: [],
+    tfFiles: [],
+    tfDeviceFiles: [],
+    apiTemplates: [],
+    operationLogs: [],
+    apiLogs: [],
+    nameplateLayouts: [],
+    nameplateBatchPlans: [],
+    nameplateHistory: [],
+    homepageTemplates: [],
+    homepageConfigs: [],
+    homepageImages: [],
+    badgepageTemplates: [],
+    badgepageConfigs: [],
+    badgepageImages: [],
+    weatherpageTemplates: [],
+    weatherpageConfigs: [],
+    weatherpageImages: [],
+    remoteCommandAcks: [],
+    scheduleSyncConfigs: [],
+    xiqueSessionVault: [],
+    syncLogs: [],
+  };
+}
+
+function createPayloadOnlySpec(key, table, idPrefix = "row") {
+  return {
+    key,
+    table,
+    createSql: `
+      CREATE TABLE IF NOT EXISTS ${quoteId(table)} (
+        id VARCHAR(80) NOT NULL PRIMARY KEY,
+        payload_json LONGTEXT NOT NULL,
+        created_at DATETIME NULL,
+        updated_at DATETIME NULL,
+        sort_index INT NOT NULL DEFAULT 0,
+        KEY idx_${table}_sort (sort_index),
+        KEY idx_${table}_created_at (created_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `,
+    columns: ["id", "payload_json", "created_at", "updated_at", "sort_index"],
+    toRecord: (row = {}, index = 0) => ({
+      id: normalizeStringField(row.id || `${idPrefix}_${index + 1}`),
+      payload_json: safeJSONString(row),
+      created_at: toDbDateTime(row.createdAt, true),
+      updated_at: toDbDateTime(row.updatedAt || row.createdAt, true),
+      sort_index: index,
+    }),
+    fromRecord: (record = {}) => {
+      const payload = safeJSONParse(record.payload_json, {});
+      if (payload && typeof payload === "object" && Object.keys(payload).length) {
+        return payload;
+      }
+      return {
+        id: normalizeStringField(record.id || ""),
+        createdAt: fromDbDateTime(record.created_at),
+        updatedAt: fromDbDateTime(record.updated_at),
+      };
+    },
+  };
+}
+
+const CORE_COLLECTION_SPECS = [
+  {
+    key: "users",
+    table: "users",
+    createSql: `
+      CREATE TABLE IF NOT EXISTS users (
+        id VARCHAR(64) NOT NULL PRIMARY KEY,
+        username VARCHAR(128) NOT NULL,
+        password_hash VARCHAR(255) NOT NULL,
+        role VARCHAR(32) NOT NULL DEFAULT 'user',
+        nickname VARCHAR(128) NOT NULL DEFAULT '',
+        avatar VARCHAR(512) NOT NULL DEFAULT '',
+        is_active TINYINT(1) NOT NULL DEFAULT 1,
+        status VARCHAR(32) NOT NULL DEFAULT 'enabled',
+        payload_json LONGTEXT NOT NULL,
+        created_at DATETIME NULL,
+        updated_at DATETIME NULL,
+        sort_index INT NOT NULL DEFAULT 0,
+        UNIQUE KEY uq_users_username (username),
+        KEY idx_users_role_active (role, is_active),
+        KEY idx_users_sort (sort_index)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `,
+    columns: [
+      "id",
+      "username",
+      "password_hash",
+      "role",
+      "nickname",
+      "avatar",
+      "is_active",
+      "status",
+      "payload_json",
+      "created_at",
+      "updated_at",
+      "sort_index",
+    ],
+    toRecord: (row = {}, index = 0) => {
+      const status = normalizeStringField(row.status || "enabled");
+      return {
+        id: normalizeStringField(row.id || createId("u")),
+        username: normalizeStringField(row.username || ""),
+        password_hash: normalizeStringField(row.passwordHash || row.password_hash || ""),
+        role: normalizeStringField(row.role || "user"),
+        nickname: normalizeStringField(row.nickname || ""),
+        avatar: normalizeStringField(row.avatar || ""),
+        is_active: status === "disabled" ? 0 : 1,
+        status,
+        payload_json: safeJSONString(row),
+        created_at: toDbDateTime(row.createdAt, true),
+        updated_at: toDbDateTime(row.updatedAt || row.createdAt, true),
+        sort_index: index,
+      };
+    },
+    fromRecord: (record = {}) => {
+      const payload = safeJSONParse(record.payload_json, {});
+      return {
+        ...payload,
+        id: normalizeStringField(payload.id || record.id || ""),
+        username: normalizeStringField(payload.username || record.username || ""),
+        passwordHash: normalizeStringField(payload.passwordHash || record.password_hash || ""),
+        role: normalizeStringField(payload.role || record.role || "user"),
+        nickname: normalizeStringField(payload.nickname || record.nickname || ""),
+        avatar: normalizeStringField(payload.avatar || record.avatar || ""),
+        status: normalizeStringField(payload.status || record.status || (Number(record.is_active || 0) ? "enabled" : "disabled")),
+        createdAt: normalizeStringField(payload.createdAt || fromDbDateTime(record.created_at) || ""),
+        updatedAt: normalizeStringField(payload.updatedAt || fromDbDateTime(record.updated_at) || ""),
+      };
+    },
+  },
+  {
+    key: "devices",
+    table: "devices",
+    createSql: `
+      CREATE TABLE IF NOT EXISTS devices (
+        id VARCHAR(64) NOT NULL PRIMARY KEY,
+        device_id VARCHAR(128) NOT NULL,
+        name VARCHAR(255) NOT NULL DEFAULT '',
+        owner_id VARCHAR(64) NOT NULL DEFAULT '',
+        cluster_id VARCHAR(64) NOT NULL DEFAULT '',
+        model VARCHAR(64) NOT NULL DEFAULT 'ink-screen',
+        status VARCHAR(32) NOT NULL DEFAULT 'enabled',
+        last_seen_at DATETIME NULL,
+        firmware_version VARCHAR(128) NOT NULL DEFAULT '',
+        metadata_json LONGTEXT NOT NULL,
+        payload_json LONGTEXT NOT NULL,
+        created_at DATETIME NULL,
+        updated_at DATETIME NULL,
+        sort_index INT NOT NULL DEFAULT 0,
+        UNIQUE KEY uq_devices_device_id (device_id),
+        KEY idx_devices_owner (owner_id),
+        KEY idx_devices_cluster (cluster_id),
+        KEY idx_devices_status (status),
+        KEY idx_devices_sort (sort_index)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `,
+    columns: [
+      "id",
+      "device_id",
+      "name",
+      "owner_id",
+      "cluster_id",
+      "model",
+      "status",
+      "last_seen_at",
+      "firmware_version",
+      "metadata_json",
+      "payload_json",
+      "created_at",
+      "updated_at",
+      "sort_index",
+    ],
+    toRecord: (row = {}, index = 0) => {
+      const meta = {
+        name: row.name || "",
+        displayName: row.displayName || "",
+        defaultView: row.defaultView || "",
+        remark: row.remark || "",
+        bindState: row.bindState || "",
+        boundAt: row.boundAt || "",
+        boundBy: row.boundBy || "",
+        simulated: Boolean(row.simulated),
+        apiKeys: normalizeObjectField(row.apiKeys),
+        thirdApiParams: normalizeObjectField(row.thirdApiParams),
+        thirdApiCache: normalizeObjectField(row.thirdApiCache),
+      };
+      return {
+        id: normalizeStringField(row.id || createId("dev")),
+        device_id: normalizeStringField(row.deviceId || row.id || ""),
+        name: normalizeStringField(row.displayName || row.name || row.id || ""),
+        owner_id: normalizeStringField(row.ownerId || ""),
+        cluster_id: normalizeStringField(row.clusterId || ""),
+        model: normalizeStringField(row.type || row.model || "ink-screen"),
+        status: normalizeStringField(row.status || "enabled"),
+        last_seen_at: toDbDateTime(row.lastSeenAt || row.lastLoginAt, false),
+        firmware_version: normalizeStringField(row.firmwareVersion || ""),
+        metadata_json: safeJSONString(meta),
+        payload_json: safeJSONString(row),
+        created_at: toDbDateTime(row.createdAt, true),
+        updated_at: toDbDateTime(row.updatedAt || row.createdAt, true),
+        sort_index: index,
+      };
+    },
+    fromRecord: (record = {}) => {
+      const payload = safeJSONParse(record.payload_json, {});
+      const meta = safeJSONParse(record.metadata_json, {});
+      const merged = { ...meta, ...payload };
+      if (!merged.id) merged.id = normalizeStringField(record.id || "");
+      if (!merged.deviceId) merged.deviceId = normalizeStringField(record.device_id || record.id || "");
+      if (!merged.ownerId) merged.ownerId = normalizeStringField(record.owner_id || "");
+      if (!merged.clusterId) merged.clusterId = normalizeStringField(record.cluster_id || "");
+      if (!merged.type) merged.type = normalizeStringField(record.model || "ink-screen");
+      if (!merged.status) merged.status = normalizeStringField(record.status || "enabled");
+      if (!merged.firmwareVersion) merged.firmwareVersion = normalizeStringField(record.firmware_version || "");
+      if (!merged.createdAt) merged.createdAt = fromDbDateTime(record.created_at);
+      if (!merged.updatedAt) merged.updatedAt = fromDbDateTime(record.updated_at);
+      if (!merged.lastSeenAt) merged.lastSeenAt = fromDbDateTime(record.last_seen_at, "");
+      return merged;
+    },
+  },
+  {
+    key: "clusters",
+    table: "clusters",
+    createSql: `
+      CREATE TABLE IF NOT EXISTS clusters (
+        id VARCHAR(64) NOT NULL PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        owner_id VARCHAR(64) NOT NULL DEFAULT '',
+        description TEXT NULL,
+        payload_json LONGTEXT NOT NULL,
+        created_at DATETIME NULL,
+        updated_at DATETIME NULL,
+        sort_index INT NOT NULL DEFAULT 0,
+        KEY idx_clusters_owner (owner_id),
+        KEY idx_clusters_sort (sort_index)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `,
+    columns: ["id", "name", "owner_id", "description", "payload_json", "created_at", "updated_at", "sort_index"],
+    toRecord: (row = {}, index = 0) => ({
+      id: normalizeStringField(row.id || createId("cluster")),
+      name: normalizeStringField(row.name || ""),
+      owner_id: normalizeStringField(row.ownerId || ""),
+      description: normalizeStringField(row.description || row.remark || ""),
+      payload_json: safeJSONString(row),
+      created_at: toDbDateTime(row.createdAt, true),
+      updated_at: toDbDateTime(row.updatedAt || row.createdAt, true),
+      sort_index: index,
+    }),
+    fromRecord: (record = {}) => {
+      const payload = safeJSONParse(record.payload_json, {});
+      return {
+        ...payload,
+        id: normalizeStringField(payload.id || record.id || ""),
+        name: normalizeStringField(payload.name || record.name || ""),
+        ownerId: normalizeStringField(payload.ownerId || record.owner_id || ""),
+        description: normalizeStringField(payload.description || record.description || ""),
+        createdAt: normalizeStringField(payload.createdAt || fromDbDateTime(record.created_at) || ""),
+        updatedAt: normalizeStringField(payload.updatedAt || fromDbDateTime(record.updated_at) || ""),
+      };
+    },
+  },
+  {
+    key: "bindingPins",
+    table: "binding_pins",
+    createSql: `
+      CREATE TABLE IF NOT EXISTS binding_pins (
+        id VARCHAR(64) NOT NULL PRIMARY KEY,
+        pin_code VARCHAR(32) NOT NULL,
+        device_id VARCHAR(128) NOT NULL DEFAULT '',
+        mac VARCHAR(64) NOT NULL DEFAULT '',
+        status VARCHAR(32) NOT NULL DEFAULT 'pending',
+        expires_at DATETIME NULL,
+        used_at DATETIME NULL,
+        payload_json LONGTEXT NOT NULL,
+        created_at DATETIME NULL,
+        updated_at DATETIME NULL,
+        sort_index INT NOT NULL DEFAULT 0,
+        UNIQUE KEY uq_binding_pins_pin_code (pin_code),
+        KEY idx_binding_pins_device (device_id),
+        KEY idx_binding_pins_status (status),
+        KEY idx_binding_pins_sort (sort_index)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `,
+    columns: [
+      "id",
+      "pin_code",
+      "device_id",
+      "mac",
+      "status",
+      "expires_at",
+      "used_at",
+      "payload_json",
+      "created_at",
+      "updated_at",
+      "sort_index",
+    ],
+    toRecord: (row = {}, index = 0) => ({
+      id: normalizeStringField(row.id || (row.pin ? `pin_${String(row.pin)}` : `pin_${index + 1}`)),
+      pin_code: normalizeStringField(row.pin || ""),
+      device_id: normalizeStringField(row.deviceId || ""),
+      mac: normalizeStringField(row.mac || ""),
+      status: normalizeStringField(row.status || "pending"),
+      expires_at: toDbDateTime(row.expiresAt, false),
+      used_at: toDbDateTime(row.usedAt, false),
+      payload_json: safeJSONString(row),
+      created_at: toDbDateTime(row.createdAt, true),
+      updated_at: toDbDateTime(row.updatedAt || row.createdAt, true),
+      sort_index: index,
+    }),
+    fromRecord: (record = {}) => {
+      const payload = safeJSONParse(record.payload_json, {});
+      return {
+        ...payload,
+        id: normalizeStringField(payload.id || record.id || ""),
+        pin: normalizeStringField(payload.pin || record.pin_code || ""),
+        deviceId: normalizeStringField(payload.deviceId || record.device_id || ""),
+        mac: normalizeStringField(payload.mac || record.mac || ""),
+        status: normalizeStringField(payload.status || record.status || "pending"),
+        expiresAt: normalizeStringField(payload.expiresAt || fromDbDateTime(record.expires_at, "") || ""),
+        usedAt: normalizeStringField(payload.usedAt || fromDbDateTime(record.used_at, "") || ""),
+        createdAt: normalizeStringField(payload.createdAt || fromDbDateTime(record.created_at) || ""),
+        updatedAt: normalizeStringField(payload.updatedAt || fromDbDateTime(record.updated_at) || ""),
+      };
+    },
+  },
+  {
+    key: "firmwares",
+    table: "firmwares",
+    createSql: `
+      CREATE TABLE IF NOT EXISTS firmwares (
+        id VARCHAR(64) NOT NULL PRIMARY KEY,
+        version VARCHAR(64) NOT NULL,
+        filename VARCHAR(255) NOT NULL DEFAULT '',
+        size BIGINT NOT NULL DEFAULT 0,
+        sha256 VARCHAR(128) NOT NULL DEFAULT '',
+        mongo_grid_id VARCHAR(128) NOT NULL DEFAULT '',
+        platform VARCHAR(64) NOT NULL DEFAULT 'ink-screen',
+        description TEXT NULL,
+        payload_json LONGTEXT NOT NULL,
+        created_at DATETIME NULL,
+        updated_at DATETIME NULL,
+        sort_index INT NOT NULL DEFAULT 0,
+        KEY idx_firmwares_version_platform (version, platform),
+        KEY idx_firmwares_sha256 (sha256),
+        KEY idx_firmwares_sort (sort_index)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `,
+    columns: [
+      "id",
+      "version",
+      "filename",
+      "size",
+      "sha256",
+      "mongo_grid_id",
+      "platform",
+      "description",
+      "payload_json",
+      "created_at",
+      "updated_at",
+      "sort_index",
+    ],
+    toRecord: (row = {}, index = 0) => ({
+      id: normalizeStringField(row.id || createId("fw")),
+      version: normalizeStringField(row.version || ""),
+      filename: normalizeStringField(row.fileName || row.filename || ""),
+      size: Number(row.fileSize || row.size || 0),
+      sha256: normalizeStringField(row.sha256 || ""),
+      mongo_grid_id: normalizeStringField(row.gridId || row.mongoGridId || ""),
+      platform: normalizeStringField(row.deviceType || row.platform || "ink-screen"),
+      description: normalizeStringField(row.releaseNote || row.description || ""),
+      payload_json: safeJSONString(row),
+      created_at: toDbDateTime(row.createdAt, true),
+      updated_at: toDbDateTime(row.updatedAt || row.createdAt, true),
+      sort_index: index,
+    }),
+    fromRecord: (record = {}) => {
+      const payload = safeJSONParse(record.payload_json, {});
+      return {
+        ...payload,
+        id: normalizeStringField(payload.id || record.id || ""),
+        version: normalizeStringField(payload.version || record.version || ""),
+        fileName: normalizeStringField(payload.fileName || record.filename || ""),
+        fileSize: Number(payload.fileSize || record.size || 0),
+        sha256: normalizeStringField(payload.sha256 || record.sha256 || ""),
+        gridId: normalizeStringField(payload.gridId || record.mongo_grid_id || ""),
+        deviceType: normalizeStringField(payload.deviceType || record.platform || "ink-screen"),
+        releaseNote: normalizeStringField(payload.releaseNote || record.description || ""),
+        createdAt: normalizeStringField(payload.createdAt || fromDbDateTime(record.created_at) || ""),
+        updatedAt: normalizeStringField(payload.updatedAt || fromDbDateTime(record.updated_at) || ""),
+      };
+    },
+  },
+  {
+    key: "upgradeJobs",
+    table: "upgrade_jobs",
+    createSql: `
+      CREATE TABLE IF NOT EXISTS upgrade_jobs (
+        id VARCHAR(64) NOT NULL PRIMARY KEY,
+        job_id VARCHAR(64) NOT NULL,
+        target_type VARCHAR(32) NOT NULL DEFAULT 'device',
+        target_id VARCHAR(128) NOT NULL DEFAULT '',
+        firmware_id VARCHAR(64) NOT NULL DEFAULT '',
+        status VARCHAR(32) NOT NULL DEFAULT 'pending',
+        progress INT NOT NULL DEFAULT 0,
+        message TEXT NULL,
+        created_by VARCHAR(64) NOT NULL DEFAULT '',
+        finished_at DATETIME NULL,
+        payload_json LONGTEXT NOT NULL,
+        created_at DATETIME NULL,
+        updated_at DATETIME NULL,
+        sort_index INT NOT NULL DEFAULT 0,
+        UNIQUE KEY uq_upgrade_jobs_job_id (job_id),
+        KEY idx_upgrade_jobs_target (target_type, target_id),
+        KEY idx_upgrade_jobs_status (status),
+        KEY idx_upgrade_jobs_sort (sort_index)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `,
+    columns: [
+      "id",
+      "job_id",
+      "target_type",
+      "target_id",
+      "firmware_id",
+      "status",
+      "progress",
+      "message",
+      "created_by",
+      "finished_at",
+      "payload_json",
+      "created_at",
+      "updated_at",
+      "sort_index",
+    ],
+    toRecord: (row = {}, index = 0) => ({
+      id: normalizeStringField(row.id || createId("job")),
+      job_id: normalizeStringField(row.jobId || row.id || ""),
+      target_type: normalizeStringField(row.targetType || "device"),
+      target_id: normalizeStringField(row.targetId || row.deviceId || ""),
+      firmware_id: normalizeStringField(row.firmwareId || ""),
+      status: normalizeStringField(row.status || "pending"),
+      progress: Number(row.progress || 0),
+      message: normalizeStringField(row.message || ""),
+      created_by: normalizeStringField(row.createdBy || row.operatorId || ""),
+      finished_at: toDbDateTime(row.finishedAt, false),
+      payload_json: safeJSONString(row),
+      created_at: toDbDateTime(row.createdAt, true),
+      updated_at: toDbDateTime(row.updatedAt || row.createdAt, true),
+      sort_index: index,
+    }),
+    fromRecord: (record = {}) => {
+      const payload = safeJSONParse(record.payload_json, {});
+      return {
+        ...payload,
+        id: normalizeStringField(payload.id || record.id || ""),
+        jobId: normalizeStringField(payload.jobId || record.job_id || ""),
+        targetType: normalizeStringField(payload.targetType || record.target_type || "device"),
+        targetId: normalizeStringField(payload.targetId || record.target_id || ""),
+        firmwareId: normalizeStringField(payload.firmwareId || record.firmware_id || ""),
+        status: normalizeStringField(payload.status || record.status || "pending"),
+        progress: Number(payload.progress || record.progress || 0),
+        message: normalizeStringField(payload.message || record.message || ""),
+        createdBy: normalizeStringField(payload.createdBy || record.created_by || ""),
+        finishedAt: normalizeStringField(payload.finishedAt || fromDbDateTime(record.finished_at, "") || ""),
+        createdAt: normalizeStringField(payload.createdAt || fromDbDateTime(record.created_at) || ""),
+        updatedAt: normalizeStringField(payload.updatedAt || fromDbDateTime(record.updated_at) || ""),
+      };
+    },
+  },
+  {
+    key: "todos",
+    table: "todos",
+    createSql: `
+      CREATE TABLE IF NOT EXISTS todos (
+        id VARCHAR(64) NOT NULL PRIMARY KEY,
+        owner_id VARCHAR(64) NOT NULL DEFAULT '',
+        device_id VARCHAR(128) NOT NULL DEFAULT '',
+        content TEXT NULL,
+        done TINYINT(1) NOT NULL DEFAULT 0,
+        sort_order INT NOT NULL DEFAULT 0,
+        due_at DATETIME NULL,
+        payload_json LONGTEXT NOT NULL,
+        created_at DATETIME NULL,
+        updated_at DATETIME NULL,
+        sort_index INT NOT NULL DEFAULT 0,
+        KEY idx_todos_owner (owner_id),
+        KEY idx_todos_device_done (device_id, done),
+        KEY idx_todos_sort (sort_order, sort_index)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `,
+    columns: [
+      "id",
+      "owner_id",
+      "device_id",
+      "content",
+      "done",
+      "sort_order",
+      "due_at",
+      "payload_json",
+      "created_at",
+      "updated_at",
+      "sort_index",
+    ],
+    toRecord: (row = {}, index = 0) => ({
+      id: normalizeStringField(row.id || createId("todo")),
+      owner_id: normalizeStringField(row.ownerId || ""),
+      device_id: normalizeStringField(row.deviceId || ""),
+      content: normalizeStringField(row.content || row.title || ""),
+      done: row.done ? 1 : 0,
+      sort_order: Number(row.sortOrder || row.orderIndex || 0),
+      due_at: toDbDateTime(row.dueAt, false),
+      payload_json: safeJSONString(row),
+      created_at: toDbDateTime(row.createdAt, true),
+      updated_at: toDbDateTime(row.updatedAt || row.createdAt, true),
+      sort_index: index,
+    }),
+    fromRecord: (record = {}) => {
+      const payload = safeJSONParse(record.payload_json, {});
+      return {
+        ...payload,
+        id: normalizeStringField(payload.id || record.id || ""),
+        ownerId: normalizeStringField(payload.ownerId || record.owner_id || ""),
+        deviceId: normalizeStringField(payload.deviceId || record.device_id || ""),
+        content: normalizeStringField(payload.content || record.content || ""),
+        done: payload.done !== undefined ? Boolean(payload.done) : Boolean(Number(record.done || 0)),
+        sortOrder: Number(payload.sortOrder || record.sort_order || 0),
+        dueAt: normalizeStringField(payload.dueAt || fromDbDateTime(record.due_at, "") || ""),
+        createdAt: normalizeStringField(payload.createdAt || fromDbDateTime(record.created_at) || ""),
+        updatedAt: normalizeStringField(payload.updatedAt || fromDbDateTime(record.updated_at) || ""),
+      };
+    },
+  },
+  {
+    key: "schedules",
+    table: "schedules",
+    createSql: `
+      CREATE TABLE IF NOT EXISTS schedules (
+        id VARCHAR(80) NOT NULL PRIMARY KEY,
+        device_id VARCHAR(128) NOT NULL DEFAULT '',
+        term_key VARCHAR(64) NOT NULL DEFAULT '',
+        source VARCHAR(64) NOT NULL DEFAULT 'manual',
+        source_key VARCHAR(128) NOT NULL DEFAULT '',
+        xique_course_id VARCHAR(128) NOT NULL DEFAULT '',
+        xique_class_key VARCHAR(128) NOT NULL DEFAULT '',
+        course_name VARCHAR(255) NOT NULL DEFAULT '',
+        title VARCHAR(255) NOT NULL DEFAULT '',
+        content TEXT NULL,
+        teacher_name VARCHAR(128) NOT NULL DEFAULT '',
+        location VARCHAR(255) NOT NULL DEFAULT '',
+        weekday TINYINT UNSIGNED NOT NULL DEFAULT 1,
+        start_period INT NOT NULL DEFAULT 0,
+        end_period INT NOT NULL DEFAULT 0,
+        start_time VARCHAR(16) NOT NULL DEFAULT '',
+        end_time VARCHAR(16) NOT NULL DEFAULT '',
+        weeks_json LONGTEXT NOT NULL,
+        week_rule VARCHAR(64) NOT NULL DEFAULT 'all',
+        term_start_date VARCHAR(32) NOT NULL DEFAULT '',
+        source_meta_json LONGTEXT NOT NULL,
+        is_active TINYINT(1) NOT NULL DEFAULT 1,
+        payload_json LONGTEXT NOT NULL,
+        created_at DATETIME NULL,
+        updated_at DATETIME NULL,
+        sort_index INT NOT NULL DEFAULT 0,
+        KEY idx_schedules_device_term_source (device_id, term_key, source),
+        KEY idx_schedules_source_key (source_key),
+        KEY idx_schedules_xique_class_key (xique_class_key),
+        KEY idx_schedules_weekday_period (weekday, start_period, end_period),
+        KEY idx_schedules_active (is_active),
+        KEY idx_schedules_sort (sort_index)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `,
+    columns: [
+      "id",
+      "device_id",
+      "term_key",
+      "source",
+      "source_key",
+      "xique_course_id",
+      "xique_class_key",
+      "course_name",
+      "title",
+      "content",
+      "teacher_name",
+      "location",
+      "weekday",
+      "start_period",
+      "end_period",
+      "start_time",
+      "end_time",
+      "weeks_json",
+      "week_rule",
+      "term_start_date",
+      "source_meta_json",
+      "is_active",
+      "payload_json",
+      "created_at",
+      "updated_at",
+      "sort_index",
+    ],
+    toRecord: (row = {}, index = 0) => {
+      const normalized = normalizeScheduleRow(row);
+      const sourceMeta = normalizeObjectField(normalized.sourceMeta);
+      const startPeriod =
+        Number(sourceMeta.startPeriod || sourceMeta.startSection || sourceMeta.sectionStart || row.startPeriod || 0) || 0;
+      const endPeriod =
+        Number(sourceMeta.endPeriod || sourceMeta.endSection || sourceMeta.sectionEnd || row.endPeriod || startPeriod || 0) || 0;
+      const teacherName = normalizeStringField(row.teacherName || sourceMeta.teacherName || "");
+      const location = normalizeStringField(row.location || sourceMeta.location || "");
+      return {
+        id: normalizeStringField(normalized.id || createId("sch")),
+        device_id: normalizeStringField(normalized.deviceId || ""),
+        term_key: normalizeStringField(normalized.termKey || ""),
+        source: normalizeStringField(normalized.source || "manual"),
+        source_key: normalizeStringField(normalized.sourceKey || ""),
+        xique_course_id: normalizeStringField(normalized.xiqueCourseId || ""),
+        xique_class_key: normalizeStringField(normalized.xiqueClassKey || ""),
+        course_name: normalizeStringField(normalized.courseName || normalized.title || ""),
+        title: normalizeStringField(normalized.title || normalized.courseName || ""),
+        content: normalizeStringField(normalized.content || normalized.note || ""),
+        teacher_name: teacherName,
+        location,
+        weekday: Number(normalized.weekday || 1),
+        start_period: Number(startPeriod || 0),
+        end_period: Number(endPeriod || startPeriod || 0),
+        start_time: normalizeStringField(normalized.startTime || ""),
+        end_time: normalizeStringField(normalized.endTime || ""),
+        weeks_json: safeJSONString(Array.isArray(normalized.weeks) ? normalized.weeks : []),
+        week_rule: normalizeStringField(normalized.weekRule || "all"),
+        term_start_date: normalizeStringField(normalized.termStartDate || ""),
+        source_meta_json: safeJSONString(sourceMeta),
+        is_active: normalized.isActive === false ? 0 : 1,
+        payload_json: safeJSONString(normalized),
+        created_at: toDbDateTime(normalized.createdAt, true),
+        updated_at: toDbDateTime(normalized.updatedAt || normalized.createdAt, true),
+        sort_index: index,
+      };
+    },
+    fromRecord: (record = {}) => {
+      const payload = safeJSONParse(record.payload_json, {});
+      const sourceMeta = safeJSONParse(record.source_meta_json, {});
+      const weeks = normalizeWeeksField(safeJSONParse(record.weeks_json, []));
+      const merged = {
+        ...sourceMeta,
+        ...payload.sourceMeta,
+      };
+      const output = {
+        ...payload,
+        id: normalizeStringField(payload.id || record.id || ""),
+        deviceId: normalizeStringField(payload.deviceId || record.device_id || ""),
+        termKey: normalizeStringField(payload.termKey || record.term_key || ""),
+        source: normalizeStringField(payload.source || record.source || "manual"),
+        sourceKey: normalizeStringField(payload.sourceKey || record.source_key || ""),
+        xiqueCourseId: normalizeStringField(payload.xiqueCourseId || record.xique_course_id || ""),
+        xiqueClassKey: normalizeStringField(payload.xiqueClassKey || record.xique_class_key || ""),
+        courseName: normalizeStringField(payload.courseName || record.course_name || ""),
+        title: normalizeStringField(payload.title || record.title || ""),
+        content: normalizeStringField(payload.content || record.content || ""),
+        note: normalizeStringField(payload.note || payload.content || record.content || ""),
+        weekday: Number(payload.weekday || record.weekday || 1),
+        startTime: normalizeStringField(payload.startTime || record.start_time || ""),
+        endTime: normalizeStringField(payload.endTime || record.end_time || ""),
+        weeks: Array.isArray(payload.weeks) && payload.weeks.length ? payload.weeks : weeks,
+        weekRule: normalizeStringField(payload.weekRule || record.week_rule || "all"),
+        termStartDate: normalizeStringField(payload.termStartDate || record.term_start_date || ""),
+        sourceMeta: {
+          ...merged,
+          teacherName: normalizeStringField(payload?.sourceMeta?.teacherName || record.teacher_name || ""),
+          location: normalizeStringField(payload?.sourceMeta?.location || record.location || ""),
+          startPeriod:
+            Number(payload?.sourceMeta?.startPeriod || payload.startPeriod || record.start_period || 0) || 0,
+          endPeriod: Number(payload?.sourceMeta?.endPeriod || payload.endPeriod || record.end_period || 0) || 0,
+          weeks: Array.isArray(payload?.sourceMeta?.weeks) && payload.sourceMeta.weeks.length ? payload.sourceMeta.weeks : weeks,
+          weekRule: normalizeStringField(payload?.sourceMeta?.weekRule || record.week_rule || payload.weekRule || "all"),
+          termStartDate: normalizeStringField(
+            payload?.sourceMeta?.termStartDate || record.term_start_date || payload.termStartDate || ""
+          ),
+        },
+        isActive: payload.isActive !== undefined ? Boolean(payload.isActive) : Boolean(Number(record.is_active || 1)),
+        createdAt: normalizeStringField(payload.createdAt || fromDbDateTime(record.created_at) || ""),
+        updatedAt: normalizeStringField(payload.updatedAt || fromDbDateTime(record.updated_at) || ""),
+      };
+      return normalizeScheduleRow(output);
+    },
+  },
+  {
+    key: "scheduleSyncConfigs",
+    table: "schedule_sync_configs",
+    createSql: `
+      CREATE TABLE IF NOT EXISTS schedule_sync_configs (
+        id VARCHAR(80) NOT NULL PRIMARY KEY,
+        device_id VARCHAR(128) NOT NULL DEFAULT '',
+        source VARCHAR(32) NOT NULL DEFAULT 'xique',
+        username VARCHAR(128) NOT NULL DEFAULT '',
+        encrypted_password TEXT NULL,
+        term_start_date VARCHAR(32) NOT NULL DEFAULT '',
+        interval_minutes INT NOT NULL DEFAULT 60,
+        enabled TINYINT(1) NOT NULL DEFAULT 0,
+        need_relogin TINYINT(1) NOT NULL DEFAULT 0,
+        need_captcha_reverify TINYINT(1) NOT NULL DEFAULT 0,
+        paused TINYINT(1) NOT NULL DEFAULT 0,
+        next_run_at DATETIME NULL,
+        last_sync_at DATETIME NULL,
+        last_sync_status VARCHAR(64) NOT NULL DEFAULT '',
+        last_error TEXT NULL,
+        extra_json LONGTEXT NOT NULL,
+        payload_json LONGTEXT NOT NULL,
+        created_at DATETIME NULL,
+        updated_at DATETIME NULL,
+        sort_index INT NOT NULL DEFAULT 0,
+        UNIQUE KEY uq_schedule_sync_device_source (device_id, source),
+        KEY idx_schedule_sync_next_run (next_run_at),
+        KEY idx_schedule_sync_status (last_sync_status),
+        KEY idx_schedule_sync_sort (sort_index)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `,
+    columns: [
+      "id",
+      "device_id",
+      "source",
+      "username",
+      "encrypted_password",
+      "term_start_date",
+      "interval_minutes",
+      "enabled",
+      "need_relogin",
+      "need_captcha_reverify",
+      "paused",
+      "next_run_at",
+      "last_sync_at",
+      "last_sync_status",
+      "last_error",
+      "extra_json",
+      "payload_json",
+      "created_at",
+      "updated_at",
+      "sort_index",
+    ],
+    toRecord: (row = {}, index = 0) => {
+      const normalized = normalizeScheduleSyncConfigRow(row);
+      const extra = {
+        ownerId: normalized.ownerId || "",
+        currentTermKey: normalized.currentTermKey || "",
+        currentWeek: normalized.currentWeek,
+        currentWeekAt: normalized.currentWeekAt || "",
+        currentWeekSource: normalized.currentWeekSource || "",
+        adapterMode: normalized.adapterMode || "",
+        baseUrl: normalized.baseUrl || "",
+        sampleUrl: normalized.sampleUrl || "",
+        sampleHtml: normalized.sampleHtml || "",
+        sampleJson: normalizeObjectField(normalized.sampleJson),
+        requireCaptcha: Boolean(normalized.requireCaptcha),
+        pauseReason: normalized.pauseReason || "",
+        pauseUntil: normalized.pauseUntil || "",
+        failureCount: Number(normalized.failureCount || 0),
+        lastAttemptAt: normalized.lastAttemptAt || "",
+        lastSuccessAt: normalized.lastSuccessAt || "",
+        lastSyncErrorCode: normalized.lastSyncErrorCode || "",
+        loginDisplayName: normalized.loginDisplayName || "",
+      };
+      return {
+        id: normalizeStringField(normalized.id || createId("xsync")),
+        device_id: normalizeStringField(normalized.deviceId || ""),
+        source: normalizeStringField(normalized.source || "xique"),
+        username: normalizeStringField(normalized.loginUsername || normalized.username || ""),
+        encrypted_password: normalizeStringField(normalized.encryptedPassword || normalized.credentialCipher || ""),
+        term_start_date: normalizeStringField(normalized.termStartDate || ""),
+        interval_minutes: normalizeIntervalMinutes(normalized.intervalMinutes),
+        enabled: normalized.enabled ? 1 : 0,
+        need_relogin: normalized.needRelogin ? 1 : 0,
+        need_captcha_reverify: normalized.needCaptchaReverify ? 1 : 0,
+        paused: normalized.paused ? 1 : 0,
+        next_run_at: toDbDateTime(normalized.nextRunAt, false),
+        last_sync_at: toDbDateTime(normalized.lastSyncAt || normalized.lastSuccessAt, false),
+        last_sync_status: normalizeStringField(normalized.lastSyncStatus || ""),
+        last_error: normalizeStringField(normalized.lastError || ""),
+        extra_json: safeJSONString(extra),
+        payload_json: safeJSONString(normalized),
+        created_at: toDbDateTime(normalized.createdAt, true),
+        updated_at: toDbDateTime(normalized.updatedAt || normalized.createdAt, true),
+        sort_index: index,
+      };
+    },
+    fromRecord: (record = {}) => {
+      const payload = safeJSONParse(record.payload_json, {});
+      const extra = safeJSONParse(record.extra_json, {});
+      return normalizeScheduleSyncConfigRow({
+        ...extra,
+        ...payload,
+        id: normalizeStringField(payload.id || record.id || ""),
+        deviceId: normalizeStringField(payload.deviceId || record.device_id || ""),
+        source: normalizeStringField(payload.source || record.source || "xique"),
+        loginUsername: normalizeStringField(payload.loginUsername || record.username || ""),
+        encryptedPassword: normalizeStringField(payload.encryptedPassword || record.encrypted_password || ""),
+        termStartDate: normalizeStringField(payload.termStartDate || record.term_start_date || ""),
+        intervalMinutes: Number(payload.intervalMinutes || record.interval_minutes || 60),
+        enabled: payload.enabled !== undefined ? Boolean(payload.enabled) : Boolean(Number(record.enabled || 0)),
+        needRelogin:
+          payload.needRelogin !== undefined ? Boolean(payload.needRelogin) : Boolean(Number(record.need_relogin || 0)),
+        needCaptchaReverify:
+          payload.needCaptchaReverify !== undefined
+            ? Boolean(payload.needCaptchaReverify)
+            : Boolean(Number(record.need_captcha_reverify || 0)),
+        paused: payload.paused !== undefined ? Boolean(payload.paused) : Boolean(Number(record.paused || 0)),
+        nextRunAt: normalizeStringField(payload.nextRunAt || fromDbDateTime(record.next_run_at, "") || ""),
+        lastSyncAt: normalizeStringField(payload.lastSyncAt || fromDbDateTime(record.last_sync_at, "") || ""),
+        lastSyncStatus: normalizeStringField(payload.lastSyncStatus || record.last_sync_status || ""),
+        lastError: normalizeStringField(payload.lastError || record.last_error || ""),
+        createdAt: normalizeStringField(payload.createdAt || fromDbDateTime(record.created_at) || ""),
+        updatedAt: normalizeStringField(payload.updatedAt || fromDbDateTime(record.updated_at) || ""),
+      });
+    },
+  },
+  {
+    key: "apiTemplates",
+    table: "api_templates",
+    createSql: `
+      CREATE TABLE IF NOT EXISTS api_templates (
+        id VARCHAR(80) NOT NULL PRIMARY KEY,
+        owner_id VARCHAR(64) NOT NULL DEFAULT '',
+        slug VARCHAR(128) NOT NULL,
+        name VARCHAR(255) NOT NULL,
+        method VARCHAR(16) NOT NULL DEFAULT 'GET',
+        url TEXT NULL,
+        template_json LONGTEXT NOT NULL,
+        is_active TINYINT(1) NOT NULL DEFAULT 1,
+        payload_json LONGTEXT NOT NULL,
+        created_at DATETIME NULL,
+        updated_at DATETIME NULL,
+        sort_index INT NOT NULL DEFAULT 0,
+        KEY idx_api_templates_slug (slug),
+        KEY idx_api_templates_owner (owner_id),
+        KEY idx_api_templates_active (is_active),
+        KEY idx_api_templates_sort (sort_index)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `,
+    columns: [
+      "id",
+      "owner_id",
+      "slug",
+      "name",
+      "method",
+      "url",
+      "template_json",
+      "is_active",
+      "payload_json",
+      "created_at",
+      "updated_at",
+      "sort_index",
+    ],
+    toRecord: (row = {}, index = 0) => ({
+      id: normalizeStringField(row.id || createId("tpl")),
+      owner_id: normalizeStringField(row.ownerId || ""),
+      slug: normalizeStringField(row.slug || ""),
+      name: normalizeStringField(row.name || ""),
+      method: normalizeStringField(row.method || "GET").toUpperCase(),
+      url: normalizeStringField(row.url || ""),
+      template_json: safeJSONString({
+        keyField: row.keyField || "",
+        keyIn: Array.isArray(row.keyIn) ? row.keyIn : [],
+        deviceKeyRequired: Boolean(row.deviceKeyRequired),
+        defaultParams: normalizeObjectField(row.defaultParams),
+        userInputFields: Array.isArray(row.userInputFields) ? row.userInputFields : [],
+        enabled: row.enabled !== false,
+        builtin: Boolean(row.builtin),
+        advancedEnabled: row.advancedEnabled !== false,
+        advancedConfig: ensureTemplateAdvancedConfig(row.advancedConfig, row.method, row.url),
+        keyConcatEnabled: Boolean(row.keyConcatEnabled),
+        keyConcatFields: Array.isArray(row.keyConcatFields) ? row.keyConcatFields : [],
+        keyConcatSeparator: normalizeStringField(row.keyConcatSeparator || "|"),
+      }),
+      is_active: row.enabled === false ? 0 : 1,
+      payload_json: safeJSONString(row),
+      created_at: toDbDateTime(row.createdAt, true),
+      updated_at: toDbDateTime(row.updatedAt || row.createdAt, true),
+      sort_index: index,
+    }),
+    fromRecord: (record = {}) => {
+      const payload = safeJSONParse(record.payload_json, {});
+      const tplJson = safeJSONParse(record.template_json, {});
+      return {
+        ...tplJson,
+        ...payload,
+        id: normalizeStringField(payload.id || record.id || ""),
+        ownerId: normalizeStringField(payload.ownerId || record.owner_id || ""),
+        slug: normalizeStringField(payload.slug || record.slug || ""),
+        name: normalizeStringField(payload.name || record.name || ""),
+        method: normalizeStringField(payload.method || record.method || "GET").toUpperCase(),
+        url: normalizeStringField(payload.url || record.url || ""),
+        enabled: payload.enabled !== undefined ? Boolean(payload.enabled) : Boolean(Number(record.is_active || 1)),
+        createdAt: normalizeStringField(payload.createdAt || fromDbDateTime(record.created_at) || ""),
+        updatedAt: normalizeStringField(payload.updatedAt || fromDbDateTime(record.updated_at) || ""),
+      };
+    },
+  },
+  {
+    key: "tfFiles",
+    table: "tf_files",
+    createSql: `
+      CREATE TABLE IF NOT EXISTS tf_files (
+        id VARCHAR(80) NOT NULL PRIMARY KEY,
+        owner_id VARCHAR(64) NOT NULL DEFAULT '',
+        device_id VARCHAR(128) NOT NULL DEFAULT '',
+        filename VARCHAR(255) NOT NULL DEFAULT '',
+        category VARCHAR(64) NOT NULL DEFAULT '',
+        size BIGINT NOT NULL DEFAULT 0,
+        sha256 VARCHAR(128) NOT NULL DEFAULT '',
+        mongo_grid_id VARCHAR(128) NOT NULL DEFAULT '',
+        extra_json LONGTEXT NOT NULL,
+        payload_json LONGTEXT NOT NULL,
+        created_at DATETIME NULL,
+        updated_at DATETIME NULL,
+        sort_index INT NOT NULL DEFAULT 0,
+        KEY idx_tf_files_device (device_id),
+        KEY idx_tf_files_owner (owner_id),
+        KEY idx_tf_files_category (category),
+        KEY idx_tf_files_sort (sort_index)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `,
+    columns: [
+      "id",
+      "owner_id",
+      "device_id",
+      "filename",
+      "category",
+      "size",
+      "sha256",
+      "mongo_grid_id",
+      "extra_json",
+      "payload_json",
+      "created_at",
+      "updated_at",
+      "sort_index",
+    ],
+    toRecord: (row = {}, index = 0) => ({
+      id: normalizeStringField(row.id || createId("tf")),
+      owner_id: normalizeStringField(row.ownerId || ""),
+      device_id: normalizeStringField(row.deviceId || ""),
+      filename: normalizeStringField(row.name || row.originalName || row.filename || ""),
+      category: normalizeStringField(row.category || "read"),
+      size: Number(row.size || 0),
+      sha256: normalizeStringField(row.sha256 || ""),
+      mongo_grid_id: normalizeStringField(row.gridId || row.mongoGridId || ""),
+      extra_json: safeJSONString({
+        mime: row.mime || "",
+        url: row.url || "",
+        originalName: row.originalName || "",
+      }),
+      payload_json: safeJSONString(row),
+      created_at: toDbDateTime(row.createdAt, true),
+      updated_at: toDbDateTime(row.updatedAt || row.createdAt, true),
+      sort_index: index,
+    }),
+    fromRecord: (record = {}) => {
+      const payload = safeJSONParse(record.payload_json, {});
+      const extra = safeJSONParse(record.extra_json, {});
+      return {
+        ...extra,
+        ...payload,
+        id: normalizeStringField(payload.id || record.id || ""),
+        ownerId: normalizeStringField(payload.ownerId || record.owner_id || ""),
+        deviceId: normalizeStringField(payload.deviceId || record.device_id || ""),
+        name: normalizeStringField(payload.name || record.filename || ""),
+        originalName: normalizeStringField(payload.originalName || extra.originalName || record.filename || ""),
+        category: normalizeStringField(payload.category || record.category || "read"),
+        size: Number(payload.size || record.size || 0),
+        sha256: normalizeStringField(payload.sha256 || record.sha256 || ""),
+        gridId: normalizeStringField(payload.gridId || record.mongo_grid_id || ""),
+        mime: normalizeStringField(payload.mime || extra.mime || ""),
+        url: normalizeStringField(payload.url || extra.url || ""),
+        createdAt: normalizeStringField(payload.createdAt || fromDbDateTime(record.created_at) || ""),
+        updatedAt: normalizeStringField(payload.updatedAt || fromDbDateTime(record.updated_at) || ""),
+      };
+    },
+  },
+  {
+    key: "syncLogs",
+    table: "sync_logs",
+    createSql: `
+      CREATE TABLE IF NOT EXISTS sync_logs (
+        id VARCHAR(80) NOT NULL PRIMARY KEY,
+        device_id VARCHAR(128) NOT NULL DEFAULT '',
+        source VARCHAR(64) NOT NULL DEFAULT 'xique',
+        task_id VARCHAR(128) NOT NULL DEFAULT '',
+        status VARCHAR(64) NOT NULL DEFAULT 'info',
+        message TEXT NULL,
+        detail_json LONGTEXT NOT NULL,
+        payload_json LONGTEXT NOT NULL,
+        created_at DATETIME NULL,
+        updated_at DATETIME NULL,
+        sort_index INT NOT NULL DEFAULT 0,
+        KEY idx_sync_logs_device_source (device_id, source),
+        KEY idx_sync_logs_task (task_id),
+        KEY idx_sync_logs_created (created_at),
+        KEY idx_sync_logs_sort (sort_index)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `,
+    columns: [
+      "id",
+      "device_id",
+      "source",
+      "task_id",
+      "status",
+      "message",
+      "detail_json",
+      "payload_json",
+      "created_at",
+      "updated_at",
+      "sort_index",
+    ],
+    toRecord: (row = {}, index = 0) => ({
+      id: normalizeStringField(row.id || createId("xslog")),
+      device_id: normalizeStringField(row.deviceId || ""),
+      source: normalizeStringField(row.source || "xique"),
+      task_id: normalizeStringField(row.taskId || row.configId || ""),
+      status: normalizeStringField(row.status || "info"),
+      message: normalizeStringField(row.message || row.action || ""),
+      detail_json: safeJSONString(normalizeObjectField(row.detail)),
+      payload_json: safeJSONString(row),
+      created_at: toDbDateTime(row.createdAt, true),
+      updated_at: toDbDateTime(row.updatedAt || row.createdAt, true),
+      sort_index: index,
+    }),
+    fromRecord: (record = {}) => {
+      const payload = safeJSONParse(record.payload_json, {});
+      const detail = safeJSONParse(record.detail_json, {});
+      return normalizeSyncLogRow({
+        ...payload,
+        id: normalizeStringField(payload.id || record.id || ""),
+        deviceId: normalizeStringField(payload.deviceId || record.device_id || ""),
+        source: normalizeStringField(payload.source || record.source || "xique"),
+        configId: normalizeStringField(payload.configId || payload.taskId || record.task_id || ""),
+        status: normalizeStringField(payload.status || record.status || "info"),
+        action: normalizeStringField(payload.action || record.message || ""),
+        detail: normalizeObjectField(payload.detail && typeof payload.detail === "object" ? payload.detail : detail),
+        createdAt: normalizeStringField(payload.createdAt || fromDbDateTime(record.created_at) || ""),
+      });
+    },
+  },
+];
+
+const AUX_COLLECTION_SPECS = [
+  createPayloadOnlySpec("tfDeviceFiles", "tf_device_files", "tfdev"),
+  createPayloadOnlySpec("operationLogs", "operation_logs", "oplog"),
+  createPayloadOnlySpec("apiLogs", "api_logs", "apilog"),
+  createPayloadOnlySpec("nameplateLayouts", "nameplate_layouts", "nlayout"),
+  createPayloadOnlySpec("nameplateBatchPlans", "nameplate_batch_plans", "nplan"),
+  createPayloadOnlySpec("nameplateHistory", "nameplate_history", "nhis"),
+  createPayloadOnlySpec("homepageTemplates", "homepage_templates", "hptpl"),
+  createPayloadOnlySpec("homepageConfigs", "homepage_configs", "hpcfg"),
+  createPayloadOnlySpec("homepageImages", "homepage_images", "hpimg"),
+  createPayloadOnlySpec("badgepageTemplates", "badgepage_templates", "bdtpl"),
+  createPayloadOnlySpec("badgepageConfigs", "badgepage_configs", "bdcfg"),
+  createPayloadOnlySpec("badgepageImages", "badgepage_images", "bdimg"),
+  createPayloadOnlySpec("weatherpageTemplates", "weatherpage_templates", "wttpl"),
+  createPayloadOnlySpec("weatherpageConfigs", "weatherpage_configs", "wtcfg"),
+  createPayloadOnlySpec("weatherpageImages", "weatherpage_images", "wtimg"),
+  createPayloadOnlySpec("remoteCommandAcks", "remote_command_acks", "rack"),
+  createPayloadOnlySpec("xiqueSessionVault", "xique_session_vault", "xvault"),
+];
+
+const ALL_COLLECTION_SPECS = [...CORE_COLLECTION_SPECS, ...AUX_COLLECTION_SPECS];
+
+const META_TABLE_SQL = `
+  CREATE TABLE IF NOT EXISTS store_meta (
+    id TINYINT UNSIGNED NOT NULL PRIMARY KEY,
+    version INT NOT NULL DEFAULT 2,
+    payload_json LONGTEXT NOT NULL,
+    created_at DATETIME NULL,
+    updated_at DATETIME NULL
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+`;
+
+async function execQuery(conn, sql, params = [], label = "db query") {
+  return withTimeout(conn.query(sql, params), dbOpTimeoutMs * 3, label);
+}
+
 async function getPool() {
   return mysql.createConnection({
     host: config.mysql.host,
@@ -874,7 +2043,6 @@ async function getPool() {
     password: config.mysql.password,
     database: config.mysql.database,
     charset: config.mysql.charset,
-    connectionLimit: config.mysql.connectionLimit,
     connectTimeout: config.mysql.connectTimeoutMs,
     enableKeepAlive: true,
     keepAliveInitialDelay: 10000,
@@ -902,27 +2070,148 @@ async function closeConn(conn) {
 }
 
 async function ensureSchema(conn) {
-  const sql = `
-    CREATE TABLE IF NOT EXISTS ${tableName()} (
-      id TINYINT UNSIGNED NOT NULL PRIMARY KEY,
-      payload LONGTEXT NOT NULL,
-      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-  `;
-  await conn.query(sql);
+  await execQuery(conn, META_TABLE_SQL, [], "db create store_meta");
+  for (const spec of ALL_COLLECTION_SPECS) {
+    await execQuery(conn, spec.createSql, [], `db create ${spec.table}`);
+  }
 }
 
-async function loadStateFromDB(conn) {
-  const [rows] = await conn.query(`SELECT payload FROM ${tableName()} WHERE id = 1 LIMIT 1`);
-  if (!rows.length) {
-    const initial = await getDefaultData();
-    normalizeStoreShape(initial);
-    await conn.query(`INSERT INTO ${tableName()} (id, payload) VALUES (1, ?)`, [JSON.stringify(initial)]);
-    return initial;
+async function tableExists(conn, name) {
+  const [rows] = await execQuery(
+    conn,
+    "SELECT COUNT(1) AS c FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?",
+    [String(name || "").replace(/`/g, "")],
+    "db table exists"
+  );
+  return Number(rows?.[0]?.c || 0) > 0;
+}
+
+async function shouldBootstrapFromLegacy(conn) {
+  const [metaRows] = await execQuery(conn, "SELECT COUNT(1) AS c FROM store_meta", [], "db count store_meta");
+  if (Number(metaRows?.[0]?.c || 0) > 0) return false;
+  for (const spec of CORE_COLLECTION_SPECS) {
+    const [rows] = await execQuery(conn, `SELECT COUNT(1) AS c FROM ${quoteId(spec.table)}`, [], `db count ${spec.table}`);
+    if (Number(rows?.[0]?.c || 0) > 0) {
+      return false;
+    }
   }
-  const parsed = JSON.parse(rows[0].payload);
-  normalizeStoreShape(parsed);
-  return parsed;
+  return true;
+}
+
+async function loadLegacyState(conn) {
+  const legacyTable = String(config.mysql.stateTable || "").replace(/`/g, "");
+  if (!legacyTable) return null;
+  if (!(await tableExists(conn, legacyTable))) return null;
+  try {
+    const [rows] = await execQuery(conn, `SELECT payload FROM ${tableName()} WHERE id = 1 LIMIT 1`, [], "db load legacy payload");
+    if (!rows.length) return null;
+    const parsed = safeJSONParse(rows[0].payload, null);
+    if (!parsed || typeof parsed !== "object") return null;
+    normalizeStoreShape(parsed);
+    return parsed;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function replaceCollectionRows(conn, spec, rows) {
+  await execQuery(conn, `DELETE FROM ${quoteId(spec.table)}`, [], `db clear ${spec.table}`);
+  if (!Array.isArray(rows) || !rows.length) return;
+  const chunkSize = 120;
+  const columns = spec.columns;
+  for (let start = 0; start < rows.length; start += chunkSize) {
+    const slice = rows.slice(start, start + chunkSize);
+    const records = slice.map((row, idx) => spec.toRecord(row, start + idx));
+    const placeholders = records.map(() => `(${columns.map(() => "?").join(",")})`).join(",");
+    const sql = `INSERT INTO ${quoteId(spec.table)} (${columns.map((col) => quoteId(col)).join(",")}) VALUES ${placeholders}`;
+    const params = [];
+    records.forEach((record) => {
+      columns.forEach((col) => params.push(record[col]));
+    });
+    await execQuery(conn, sql, params, `db insert ${spec.table}`);
+  }
+}
+
+async function loadCollectionRows(conn, spec) {
+  const [rows] = await execQuery(
+    conn,
+    `SELECT * FROM ${quoteId(spec.table)} ORDER BY sort_index ASC, created_at ASC, id ASC`,
+    [],
+    `db load ${spec.table}`
+  );
+  return rows.map((record) => spec.fromRecord(record));
+}
+
+async function saveStoreMeta(conn, meta = {}) {
+  const now = new Date().toISOString();
+  const merged = {
+    createdAt: normalizeStringField(meta.createdAt || now),
+    updatedAt: normalizeStringField(meta.updatedAt || now),
+    version: Number(meta.version || 2),
+  };
+  const sql = `
+    REPLACE INTO store_meta (id, version, payload_json, created_at, updated_at)
+    VALUES (1, ?, ?, ?, ?)
+  `;
+  await execQuery(
+    conn,
+    sql,
+    [merged.version, safeJSONString(merged), toDbDateTime(merged.createdAt, true), toDbDateTime(merged.updatedAt, true)],
+    "db save store_meta"
+  );
+}
+
+async function loadStoreMeta(conn) {
+  const [rows] = await execQuery(conn, "SELECT * FROM store_meta WHERE id = 1 LIMIT 1", [], "db load store_meta");
+  if (!rows.length) {
+    const now = new Date().toISOString();
+    return {
+      createdAt: now,
+      updatedAt: now,
+      version: 2,
+    };
+  }
+  const row = rows[0];
+  const payload = safeJSONParse(row.payload_json, {});
+  return {
+    createdAt: normalizeStringField(payload.createdAt || fromDbDateTime(row.created_at) || new Date().toISOString()),
+    updatedAt: normalizeStringField(payload.updatedAt || fromDbDateTime(row.updated_at) || new Date().toISOString()),
+    version: Number(payload.version || row.version || 2),
+  };
+}
+
+async function saveStateToTables(conn, state) {
+  normalizeStoreShape(state);
+  state.meta = state.meta || {};
+  state.meta.updatedAt = new Date().toISOString();
+  state.meta.version = Number(state.meta.version || 2);
+  await saveStoreMeta(conn, state.meta);
+  for (const spec of ALL_COLLECTION_SPECS) {
+    const rows = Array.isArray(state[spec.key]) ? state[spec.key] : [];
+    await replaceCollectionRows(conn, spec, rows);
+  }
+}
+
+async function loadStateFromTables(conn) {
+  const state = createEmptyState();
+  state.meta = await loadStoreMeta(conn);
+  for (const spec of ALL_COLLECTION_SPECS) {
+    state[spec.key] = await loadCollectionRows(conn, spec);
+  }
+  normalizeStoreShape(state);
+  return state;
+}
+
+async function migrateLegacyStateToMysqlTables(conn) {
+  const legacy = await loadLegacyState(conn);
+  if (!legacy) return false;
+  normalizeStoreShape(legacy);
+  if (await migrateDefaultCredentialIfNeeded(legacy)) {
+    legacy.meta = legacy.meta || {};
+    legacy.meta.updatedAt = new Date().toISOString();
+  }
+  await saveStateToTables(conn, legacy);
+  return true;
 }
 
 async function loadStoreFromDBWithRetry() {
@@ -932,14 +2221,20 @@ async function loadStoreFromDBWithRetry() {
     let conn = null;
     try {
       conn = await withTimeout(getPool(), dbOpTimeoutMs, "db connect(init)");
-      await withTimeout(ensureSchema(conn), dbOpTimeoutMs * 2, "db ensureSchema");
-      const loaded = await withTimeout(loadStateFromDB(conn), dbOpTimeoutMs * 2, "db loadState");
+      await ensureSchema(conn);
+
+      if (await shouldBootstrapFromLegacy(conn)) {
+        const migrated = await migrateLegacyStateToMysqlTables(conn);
+        if (!migrated) {
+          const initial = await getDefaultData();
+          normalizeStoreShape(initial);
+          await saveStateToTables(conn, initial);
+        }
+      }
+
+      const loaded = await loadStateFromTables(conn);
       if (await migrateDefaultCredentialIfNeeded(loaded)) {
-        await withTimeout(
-          conn.query(`UPDATE ${tableName()} SET payload = ? WHERE id = 1`, [JSON.stringify(loaded)]),
-          dbOpTimeoutMs,
-          "db migrate default credential"
-        );
+        await saveStateToTables(conn, loaded);
       }
       return loaded;
     } catch (error) {
@@ -1040,34 +2335,12 @@ async function updateDB(mutator) {
         const conn = await withTimeout(getPool(), dbOpTimeoutMs, "db connect(update)");
         try {
           await withTimeout(conn.beginTransaction(), dbOpTimeoutMs, "db beginTransaction");
-          const [rows] = await withTimeout(
-            conn.query(`SELECT payload FROM ${tableName()} WHERE id = 1 FOR UPDATE`),
-            dbOpTimeoutMs,
-            "db select for update"
-          );
-          let draft;
-          if (!rows.length) {
-            draft = await getDefaultData();
-            normalizeStoreShape(draft);
-            await withTimeout(
-              conn.query(`INSERT INTO ${tableName()} (id, payload) VALUES (1, ?)`, [JSON.stringify(draft)]),
-              dbOpTimeoutMs,
-              "db insert initial payload"
-            );
-          } else {
-            draft = JSON.parse(rows[0].payload);
-            normalizeStoreShape(draft);
-          }
-
+          const draft = await loadStateFromTables(conn);
           const result = await mutator(draft);
           normalizeStoreShape(draft);
           draft.meta = draft.meta || {};
           draft.meta.updatedAt = new Date().toISOString();
-          await withTimeout(
-            conn.query(`UPDATE ${tableName()} SET payload = ? WHERE id = 1`, [JSON.stringify(draft)]),
-            dbOpTimeoutMs,
-            "db update payload"
-          );
+          await saveStateToTables(conn, draft);
           await withTimeout(conn.commit(), dbOpTimeoutMs, "db commit");
           cache = draft;
           initializedFromDB = true;

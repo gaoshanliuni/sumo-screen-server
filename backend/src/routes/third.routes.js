@@ -11,6 +11,12 @@ const {
   saveXiqueSyncConfig,
   submitXiqueImport,
   getXiqueStatus,
+  normalizeWeeksArray,
+  normalizeTermStartDate,
+  extractCurrentWeekFromText,
+  resolveTeachingWeekContext,
+  isCourseActiveInWeek,
+  WEEKDAY_LABEL_MAP,
 } = require("../services/xique_sync.service");
 
 const router = express.Router();
@@ -128,19 +134,101 @@ function parseContentMeta(raw = "") {
 }
 
 function getWeekdayLabel(weekday) {
-  const map = {
-    1: "Monday",
-    2: "Tuesday",
-    3: "Wednesday",
-    4: "Thursday",
-    5: "Friday",
-    6: "Saturday",
-    7: "Sunday",
-  };
-  return map[Number(weekday) || 1] || "Monday";
+  return WEEKDAY_LABEL_MAP[Number(weekday) || 1] || "Monday";
 }
 
-function normalizeXiqueScheduleRow(row = {}) {
+function parseTermStartDateFromRows(rows = []) {
+  const values = rows
+    .map((row) =>
+      normalizeTermStartDate(
+        row?.termStartDate ||
+          row?.sourceMeta?.termStartDate ||
+          row?.sourceMeta?.term_start_date ||
+          ""
+      )
+    )
+    .filter(Boolean);
+  return values[0] || "";
+}
+
+function getLocalDateKey(date = new Date(), timezone = config.timezone || "Asia/Shanghai") {
+  try {
+    return new Intl.DateTimeFormat("en-CA", { timeZone: timezone }).format(date);
+  } catch (_) {
+    return new Intl.DateTimeFormat("en-CA").format(date);
+  }
+}
+
+function parseCurrentWeekFromRows(rows = []) {
+  const candidates = [];
+  rows.forEach((row) => {
+    const sourceMeta = row?.sourceMeta && typeof row.sourceMeta === "object" ? row.sourceMeta : {};
+    candidates.push(
+      row?.currentWeek,
+      row?.weekIndex,
+      row?.teachingWeek,
+      sourceMeta.currentWeek,
+      sourceMeta.weekIndex,
+      sourceMeta.teachingWeek
+    );
+    const fromText = extractCurrentWeekFromText(row?.content || row?.note || "");
+    if (fromText) candidates.push(fromText);
+  });
+  return candidates;
+}
+
+function parseCurrentWeekFromConfigRow(row = null, timezone = config.timezone || "Asia/Shanghai") {
+  if (!row || typeof row !== "object") return [];
+  const nowDateKey = getLocalDateKey(new Date(), timezone);
+  const rowDateKey = row.currentWeekAt ? getLocalDateKey(new Date(row.currentWeekAt), timezone) : "";
+  const sameDayDetected = Boolean(rowDateKey && rowDateKey === nowDateKey);
+  const candidates = [];
+  if (sameDayDetected) {
+    candidates.push(row.currentWeek, row.weekIndex, row.teachingWeek, row.academicWeek, row.schoolWeek);
+  }
+  return candidates;
+}
+
+function resolveTermStartDate(db, deviceId, termKey = "", rows = []) {
+  const fromRows = parseTermStartDateFromRows(rows);
+  if (fromRows) return fromRows;
+
+  const allConfigs = Array.isArray(db?.scheduleSyncConfigs) ? db.scheduleSyncConfigs : [];
+  const byDevice = allConfigs.filter((item) => String(item?.deviceId || "") === String(deviceId || ""));
+  const target = byDevice.find((item) => String(item?.currentTermKey || "") === String(termKey || "")) || byDevice[0];
+  const fromConfig = normalizeTermStartDate(target?.termStartDate || "");
+  if (fromConfig) return fromConfig;
+  return "";
+}
+
+function resolveXiqueWeekContext(db, deviceId, termKey = "", rows = []) {
+  const safeDb = db && typeof db === "object" ? db : {};
+  const allConfigs = Array.isArray(safeDb?.scheduleSyncConfigs) ? safeDb.scheduleSyncConfigs : [];
+  const byDevice = allConfigs.filter((item) => String(item?.deviceId || "") === String(deviceId || ""));
+  const target = byDevice.find((item) => String(item?.currentTermKey || "") === String(termKey || "")) || byDevice[0] || null;
+  const termStartDate = resolveTermStartDate(safeDb, deviceId, termKey, rows);
+
+  const weekCandidates = [
+    ...parseCurrentWeekFromRows(rows),
+    ...parseCurrentWeekFromConfigRow(target, config.timezone || "Asia/Shanghai"),
+  ];
+  const termStartCandidates = [
+    parseTermStartDateFromRows(rows),
+    normalizeTermStartDate(target?.termStartDate || ""),
+    normalizeTermStartDate(target?.semesterStart || ""),
+    normalizeTermStartDate(target?.startDate || ""),
+  ];
+
+  return resolveTeachingWeekContext({
+    now: new Date(),
+    timezone: config.timezone || "Asia/Shanghai",
+    currentWeekCandidates: weekCandidates,
+    termStartDateCandidates: termStartCandidates,
+    fallbackTermStartDate: termStartDate,
+  });
+}
+
+function normalizeXiqueScheduleRow(row = {}, currentWeek = null) {
   const weekday = Math.max(1, Math.min(7, Number(row.weekday || 1)));
   const fallbackStart = Math.max(1, Number(row.orderIndex || 1));
   const fromSourceKey = parsePeriodRangeFromSourceKey(row.sourceKey, fallbackStart);
@@ -153,6 +241,12 @@ function normalizeXiqueScheduleRow(row = {}) {
   const parsedContent = parseContentMeta(row.content || row.note || "");
   const teacherName = String(sourceMeta.teacherName || parsedContent.teacher || "").trim();
   const location = String(sourceMeta.location || parsedContent.location || "").trim();
+  const weeks = normalizeWeeksArray(
+    Array.isArray(row.weeks) ? row.weeks : (Array.isArray(sourceMeta.weeks) ? sourceMeta.weeks : [])
+  );
+  const weekRule = String(row.weekRule || sourceMeta.weekRule || (weeks.length ? "custom" : "all")).trim() || "all";
+  const termStartDate = normalizeTermStartDate(row.termStartDate || sourceMeta.termStartDate || "");
+  const isActiveThisWeek = isCourseActiveInWeek(weeks, currentWeek);
 
   return {
     id: String(row.id || ""),
@@ -169,6 +263,10 @@ function normalizeXiqueScheduleRow(row = {}) {
     location,
     weekday,
     weekdayLabel: getWeekdayLabel(weekday),
+    weeks,
+    weekRule,
+    isActiveThisWeek,
+    termStartDate,
     position: {
       startPeriod,
       endPeriod,
@@ -204,14 +302,23 @@ function buildXiqueScheduleDataset(db, { deviceId, termKey = "" } = {}) {
     }
   }
 
-  const courses = candidateRows
-    .map((item) => normalizeXiqueScheduleRow(item))
+  const resolvedTermKey = normalizedTermKey || (candidateRows[0] ? String(candidateRows[0].termKey || "") : "");
+  const weekContext = resolveXiqueWeekContext(safeDb, normalizedDeviceId, resolvedTermKey, candidateRows);
+  const termStartDate = normalizeTermStartDate(weekContext.termStartDate || "");
+  const currentWeek = Number.isFinite(Number(weekContext.currentWeek || 0))
+    ? Math.floor(Number(weekContext.currentWeek))
+    : null;
+  const canFilterByWeek = Boolean(weekContext.weekFilteringApplied && currentWeek);
+
+  const allCourses = candidateRows
+    .map((item) => normalizeXiqueScheduleRow(item, currentWeek))
     .sort((a, b) => {
       if (a.weekday !== b.weekday) return a.weekday - b.weekday;
       if (a.position.startPeriod !== b.position.startPeriod) return a.position.startPeriod - b.position.startPeriod;
       if (a.position.endPeriod !== b.position.endPeriod) return a.position.endPeriod - b.position.endPeriod;
       return String(a.courseName || "").localeCompare(String(b.courseName || ""));
     });
+  const courses = canFilterByWeek ? allCourses.filter((item) => item.isActiveThisWeek) : allCourses;
 
   const byDay = [];
   for (let day = 1; day <= 7; day += 1) {
@@ -251,7 +358,12 @@ function buildXiqueScheduleDataset(db, { deviceId, termKey = "" } = {}) {
   return {
     schema: "xique_schedule_v1",
     deviceId: normalizedDeviceId,
-    termKey: normalizedTermKey || (courses[0] ? String(courses[0].termKey || "") : ""),
+    termKey: resolvedTermKey,
+    termStartDate,
+    currentWeek: canFilterByWeek ? Number(currentWeek) : null,
+    currentWeekSource: canFilterByWeek ? String(weekContext.currentWeekSource || "") : "",
+    weekFilteringApplied: canFilterByWeek,
+    totalCoursesRaw: allCourses.length,
     totalCourses: courses.length,
     byDay,
     bySlot,
@@ -295,7 +407,13 @@ function sanitizeXiqueScheduleDataset(input = {}) {
   const schema = String(safe.schema || "xique_schedule_v1");
   const deviceId = String(safe.deviceId || "");
   const termKey = String(safe.termKey || "");
+  const termStartDate = normalizeTermStartDate(safe.termStartDate || "");
+  const currentWeekRaw = Number(safe.currentWeek || 0);
+  const currentWeek = Number.isFinite(currentWeekRaw) && currentWeekRaw > 0 ? Math.floor(currentWeekRaw) : null;
+  const currentWeekSource = String(safe.currentWeekSource || "");
+  const weekFilteringApplied = Boolean(safe.weekFilteringApplied && currentWeek);
   const totalCourses = Number(safe.totalCourses || 0);
+  const totalCoursesRaw = Number(safe.totalCoursesRaw || totalCourses);
   const generatedAt = String(safe.generatedAt || new Date().toISOString());
 
   const normalizeCourse = (item = {}) => {
@@ -307,6 +425,11 @@ function sanitizeXiqueScheduleDataset(input = {}) {
     const endPeriod = Math.max(startPeriod, Number(positionRaw.endPeriod || startPeriod));
     const startTime = String(timeRaw.startTime || "").trim();
     const endTime = String(timeRaw.endTime || "").trim();
+    const weeks = normalizeWeeksArray(row.weeks);
+    const weekRule = String(row.weekRule || (weeks.length ? "custom" : "all")).trim() || "all";
+    const activeThisWeek = row.isActiveThisWeek === undefined
+      ? isCourseActiveInWeek(weeks, currentWeek)
+      : Boolean(row.isActiveThisWeek);
     return {
       id: String(row.id || ""),
       deviceId: String(row.deviceId || ""),
@@ -322,6 +445,9 @@ function sanitizeXiqueScheduleDataset(input = {}) {
       location: String(row.location || ""),
       weekday,
       weekdayLabel: String(row.weekdayLabel || getWeekdayLabel(weekday)),
+      weeks,
+      weekRule,
+      isActiveThisWeek: activeThisWeek,
       position: {
         startPeriod,
         endPeriod,
@@ -372,6 +498,11 @@ function sanitizeXiqueScheduleDataset(input = {}) {
     schema,
     deviceId,
     termKey,
+    termStartDate,
+    currentWeek,
+    currentWeekSource,
+    weekFilteringApplied,
+    totalCoursesRaw: Number.isFinite(totalCoursesRaw) ? totalCoursesRaw : courses.length,
     totalCourses: Number.isFinite(totalCourses) ? totalCourses : courses.length,
     byDay,
     bySlot,
@@ -425,6 +556,10 @@ function buildTodayViewFromSchedule(schedule = {}) {
   return {
     todayWeekday,
     todayWeekdayLabel,
+    currentWeek: safeSchedule.currentWeek,
+    currentWeekSource: safeSchedule.currentWeekSource || "",
+    termStartDate: safeSchedule.termStartDate || "",
+    weekFilteringApplied: Boolean(safeSchedule.weekFilteringApplied),
     todayCourseCount,
     todayCourses,
     todayCourseText,
