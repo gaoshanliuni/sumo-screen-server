@@ -23,6 +23,7 @@ now_boot.log
 .cache/
 .tmp/
 *.tmp
+.worktrees/
 frontend-vue/.vite/
 
 # PlatformIO / embedded build artifacts
@@ -36,4 +37,3 @@ frontend-vue/.vite/
 # Python
 __pycache__/
 *.pyc
-
