@@ -1,8 +1,8 @@
-﻿const express = require("express");
+const express = require("express");
 const asyncHandler = require("../utils/asyncHandler");
 const HttpError = require("../utils/httpError");
 const createId = require("../utils/id");
-const { readDB, readDBCached, updateDB } = require("../db/store");
+const { readDB, readDBCached, updateDB, updateDBOptimistic } = require("../db/store");
 const { signToken, verifyToken } = require("../utils/jwt");
 const { authRequired, allowRoles } = require("../middleware/auth");
 const { ensureDeviceAccess } = require("../utils/access");
@@ -32,23 +32,23 @@ const {
   getLatestWeatherImage,
   buildDeviceWeatherPayload,
 } = require("../services/weatherpage.service");
+const { refreshTemplatesForPageRequest } = require("../services/api_template_refresh.service");
+const { createPlayCollectionService } = require("../services/play_collection.service");
+const { ensureCollectionE6AssetsReady } = require("../services/e6/e6_asset_retry.service");
+const {
+  eventMatchesCursor,
+  eventToDeviceCommand,
+  isDeviceCommandEvent,
+  pendingAckToDeviceCommand,
+  sanitizeDeviceEventForRealtime,
+  shouldSkipCommandPoll,
+  shouldSkipHistoryReplay,
+} = require("../services/hardware_command_bridge.service");
+const { resolvePublicBaseUrl } = require("../utils/publicOrigin");
+const config = require("../config");
 
 const router = express.Router();
-
-const REMOTE_REPLAY_MAX_AGE_MS = 45000;
-
-function shouldSkipHistoryReplay(event) {
-  const t = String(event?.type || "");
-  if (t.startsWith("homepage.") || t.startsWith("badgepage.") || t.startsWith("weatherpage.")) {
-    return true;
-  }
-  if (t.startsWith("remote.")) {
-    const ts = Date.parse(String(event?.timestamp || ""));
-    if (!Number.isFinite(ts)) return true;
-    return Date.now() - ts > REMOTE_REPLAY_MAX_AGE_MS;
-  }
-  return false;
-}
+const collectionService = createPlayCollectionService();
 
 const PIN_TTL_SECONDS = 10 * 60;
 const PIN_MAX_ATTEMPTS = 5;
@@ -61,6 +61,176 @@ const TF_CATEGORY_ALIASES = {
   wallpaper: "background",
   custom: "photo",
 };
+
+function isSkippableE6ManifestPrepareError(error) {
+  const status = Number(error?.status || 500);
+  const message = String(error?.message || "");
+  return (status === 409 || status === 404) && /图片|E6|原图|GridFS|文件|资源/.test(message);
+}
+
+async function handleHardwarePoll(req, res) {
+  const deviceId = String(req.auth.deviceId || "");
+  const after = String(req.query?.after || req.query?.afterEventId || req.body?.after || req.body?.afterEventId || "").trim();
+  const limit = Math.max(1, Math.min(10, Number(req.query?.limit || req.body?.limit || 1)));
+  const history = getDeviceHistory(deviceId).filter((event) => isDeviceCommandEvent(event) && !shouldSkipCommandPoll(event));
+  const cursorIndex = after ? history.findIndex((event) => eventMatchesCursor(event, after)) : -1;
+  const startIndex = after
+    ? (cursorIndex >= 0 ? cursorIndex + 1 : Math.max(0, history.length - limit))
+    : Math.max(0, history.length - limit);
+  let commands = history.slice(Math.max(0, startIndex), Math.max(0, startIndex) + limit).map(eventToDeviceCommand);
+  if (!commands.length) {
+    const db = await readDBCached();
+    commands = (db.remoteCommandAcks || [])
+      .filter((row) => String(row.deviceId || "") === deviceId)
+      .filter((row) => !after || String(row.commandId || row.id || "") !== after)
+      .map(pendingAckToDeviceCommand)
+      .filter(Boolean)
+      .sort((a, b) => String(a.timestamp || "").localeCompare(String(b.timestamp || "")))
+      .slice(0, limit);
+  }
+  touchDevicePresence(deviceId);
+  res.success(
+    {
+      deviceId,
+      command: commands[0] || null,
+      commands,
+      poll_interval_seconds: 5,
+    },
+    "ok"
+  );
+}
+
+async function handleHardwareStatus(req, res) {
+  const now = new Date().toISOString();
+  const payload = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
+  const deviceId = String(req.auth.deviceId || "");
+  touchDevicePresence(deviceId);
+  res.success({ id: deviceId, deviceId, acceptedAt: now }, "状态已上报");
+
+  setImmediate(() => {
+    updateDBOptimistic((draft) => {
+    const device = draft.devices.find((item) => item.id === req.auth.deviceId);
+    if (!device) throw new HttpError(404, "设备不存在");
+    if (payload.currentCollectionId !== undefined) device.currentCollectionId = String(payload.currentCollectionId || "");
+    if (payload.currentPlayMode !== undefined || payload.playMode !== undefined) {
+      device.currentPlayMode = String(payload.currentPlayMode || payload.playMode || "");
+    }
+    if (payload.lastDisplayImageId !== undefined || payload.imageId !== undefined || payload.image_id !== undefined) {
+      device.lastDisplayImageId = String(payload.lastDisplayImageId || payload.imageId || payload.image_id || "");
+    }
+    if (payload.lastDisplayCollectionId !== undefined || payload.collectionId !== undefined) {
+      device.lastDisplayCollectionId = String(payload.lastDisplayCollectionId || payload.collectionId || "");
+    }
+    if (payload.lastDisplayItemIndex !== undefined || payload.itemIndex !== undefined) {
+      device.lastDisplayItemIndex = Number(payload.lastDisplayItemIndex ?? payload.itemIndex ?? 0) || 0;
+    }
+    if (payload.temperature !== undefined) device.temperature = payload.temperature;
+    if (payload.humidity !== undefined) device.humidity = payload.humidity;
+    if (payload.rssi !== undefined || payload.wifi_rssi !== undefined) device.rssi = Number(payload.rssi ?? payload.wifi_rssi ?? 0) || "";
+    if (payload.batteryVoltage !== undefined) device.batteryVoltage = payload.batteryVoltage;
+    if (payload.batteryPercent !== undefined) device.batteryPercent = payload.batteryPercent;
+    if (payload.sdCardStatus !== undefined || payload.sd_status !== undefined) {
+      device.sdCardStatus = String(payload.sdCardStatus || payload.sd_status || "");
+    }
+    if (payload.sdFreeBytes !== undefined || payload.sd_free_bytes !== undefined) {
+      device.sdFreeBytes = Number(payload.sdFreeBytes ?? payload.sd_free_bytes ?? 0) || "";
+    }
+    if (payload.status !== undefined) device.lastDisplayStatus = String(payload.status || "");
+    if (payload.refresh_ms !== undefined || payload.refreshMs !== undefined) {
+      device.lastRefreshMs = Number(payload.refresh_ms ?? payload.refreshMs ?? 0) || 0;
+    }
+    if (payload.download_ms !== undefined || payload.downloadMs !== undefined) {
+      device.lastDownloadMs = Number(payload.download_ms ?? payload.downloadMs ?? 0) || 0;
+    }
+    device.lastScreenRefreshAt = now;
+    device.lastLoginAt = now;
+    device.updatedAt = now;
+    })
+      .then(() => {
+        publishDeviceEvent({
+          type: "device.status",
+          deviceId,
+          payload: {
+            imageId: payload.lastDisplayImageId || payload.imageId || payload.image_id || "",
+            collectionId: payload.lastDisplayCollectionId || payload.collectionId || "",
+            status: payload.status || "",
+            timestamp: now,
+          },
+        });
+      })
+      .catch((error) => {
+        // eslint-disable-next-line no-console
+        console.warn(`[hardware.status] async update skipped device=${deviceId}: ${String(error?.message || error)}`);
+      });
+  });
+}
+
+async function handleRemoteAck(req, res) {
+  const commandId = String(req.body?.commandId || req.params?.commandId || "").trim();
+  const eventType = String(req.body?.eventType || req.body?.type || "").trim();
+  const status = normalizeAckStatus(req.body?.status || "success");
+  const message = String(req.body?.message || req.body?.error || req.body?.reason || "").trim();
+  const payload =
+    req.body?.payload && typeof req.body.payload === "object" && !Array.isArray(req.body.payload)
+      ? req.body.payload
+      : {};
+
+  if (!commandId) throw new HttpError(400, "commandId不能为空");
+
+  let updated = null;
+  await updateDBOptimistic((draft) => {
+    const device = draft.devices.find((item) => item.id === req.auth.deviceId);
+    if (!device) throw new HttpError(404, "设备不存在");
+    updated = markRemoteAck(draft, {
+      commandId,
+      deviceId: req.auth.deviceId,
+      eventType,
+      status,
+      message,
+      payload,
+    });
+    if (!updated) throw new HttpError(404, "命令不存在或不属于当前设备");
+  });
+
+  publishDeviceEvent({
+    type: "remote.ack",
+    deviceId: req.auth.deviceId,
+    payload: {
+      commandId,
+      eventType: updated?.eventType || eventType,
+      status,
+      message,
+    },
+  });
+
+  logOperation({
+    actorId: req.auth.deviceId,
+    actorRole: "device",
+    action: "hardware.remote_ack",
+    targetType: "remote_command",
+    targetId: commandId,
+    detail: {
+      eventType: updated?.eventType || eventType,
+      status,
+      message,
+    },
+  }).catch((error) => {
+    // eslint-disable-next-line no-console
+    console.warn(`[hardware.remote_ack] operation log skipped: ${String(error?.message || error)}`);
+  });
+
+  res.success(
+    {
+      commandId,
+      deviceId: req.auth.deviceId,
+      eventType: updated?.eventType || eventType,
+      status,
+      message,
+      ackedAt: updated?.ackedAt || "",
+    },
+    "ack已记录"
+  );
+}
 
 function normalizeMac(value) {
   return String(value || "")
@@ -169,10 +339,29 @@ function buildDeliveredSet(files = []) {
   return delivered;
 }
 
-function canDeviceAccessTfFile(file, device) {
+function canDeviceAccessTfFile(file, device, db) {
   if (!file || !device) return false;
-  if (!device.ownerId) return false;
-  return String(file.ownerId || "") === String(device.ownerId || "");
+  if (device.ownerId && String(file.ownerId || "") === String(device.ownerId || "")) return true;
+  if (!db) return false;
+
+  const fileId = String(file.id || "");
+  const renderedAsset = (db.e6RenderedAssets || []).find(
+    (asset) => String(asset.binaryTfFileId || "") === fileId || String(asset.previewTfFileId || "") === fileId
+  );
+  if (!renderedAsset) return false;
+
+  const imageId = String(renderedAsset.imageId || "");
+  const currentCollectionIds = [device.currentCollectionId, device.lastDisplayCollectionId]
+    .map((id) => String(id || "").trim())
+    .filter(Boolean);
+  if (!imageId || !currentCollectionIds.length) return false;
+
+  return (db.playCollectionItems || []).some(
+    (item) =>
+      item.enabled !== false &&
+      currentCollectionIds.includes(String(item.collectionId || "")) &&
+      String(item.imageId || "") === imageId
+  );
 }
 
 async function streamTfFile(file, res) {
@@ -183,6 +372,9 @@ async function streamTfFile(file, res) {
   const safeName = encodeURIComponent(file.originalName || file.name || file.id);
   res.setHeader("Content-Type", file.mime || "application/octet-stream");
   res.setHeader("Content-Disposition", `attachment; filename=\"${safeName}\"`);
+  if (Number(file.size || 0) > 0) {
+    res.setHeader("Content-Length", String(Number(file.size || 0)));
+  }
   if (file.sha256) {
     res.setHeader("X-File-Sha256", file.sha256);
   }
@@ -218,6 +410,43 @@ function generateUniquePin(draft) {
     if (!active.has(pin)) return pin;
   }
   return String(Math.floor(Math.random() * 1000000)).padStart(6, "0");
+}
+
+function buildBootstrapForDevice(device, expiresAt) {
+  return {
+    token: signToken(
+      {
+        role: "bootstrap",
+        tokenType: "hardware_bind_bootstrap",
+        deviceId: device.id,
+        mac: device.mac,
+      },
+      BOOTSTRAP_TOKEN_EXPIRES_IN
+    ),
+    expiresAt,
+  };
+}
+
+function buildPendingBindPayload(device, pin) {
+  return {
+    mode: "pending_bind",
+    device: toHardwareDevicePayload(device),
+    bind: {
+      pin: pin.pin,
+      expiresAt: pin.expiresAt,
+      ttlSeconds: PIN_TTL_SECONDS,
+      attemptsLeft: Math.max(0, Number(pin.maxAttempts || PIN_MAX_ATTEMPTS) - Number(pin.attempts || 0)),
+    },
+    bootstrap: buildBootstrapForDevice(device, pin.expiresAt),
+  };
+}
+
+function findActivePendingPin(db, deviceId, nowTs) {
+  return (db.bindingPins || []).find((item) => {
+    if (String(item.deviceId || "") !== String(deviceId || "")) return false;
+    if (String(item.status || "") !== "pending") return false;
+    return new Date(item.expiresAt || 0).getTime() > nowTs;
+  });
 }
 
 function applyAutoRegisterOnDraft({
@@ -347,11 +576,37 @@ async function runAutoRegisterFlow({ rawMac, type = "ink-screen", remark = "", s
 
   const now = new Date();
   const nowIso = now.toISOString();
+  const nowTs = now.getTime();
   const expiresAt = new Date(now.getTime() + PIN_TTL_SECONDS * 1000).toISOString();
+
+  const cached = await readDBCached();
+  const cachedDevice = (cached.devices || []).find((item) => item.mac === mac);
+  if (cachedDevice && cachedDevice.status === "blocked") {
+    throw new HttpError(403, "设备已封禁");
+  }
+  if (cachedDevice && cachedDevice.bindState === "bound" && cachedDevice.ownerId) {
+    return {
+      mac,
+      resultPayload: {
+        mode: "already_bound",
+        device: toHardwareDevicePayload(cachedDevice),
+        hardwareAuth: createHardwareAuth(cached, cachedDevice),
+      },
+      reused: true,
+    };
+  }
+  const activePin = cachedDevice ? findActivePendingPin(cached, cachedDevice.id, nowTs) : null;
+  if (cachedDevice && activePin) {
+    return {
+      mac,
+      resultPayload: buildPendingBindPayload(cachedDevice, activePin),
+      reused: true,
+    };
+  }
 
   let resultPayload = null;
   let publishQueue = [];
-  await updateDB((draft) => {
+  await updateDBOptimistic((draft) => {
     const applied = applyAutoRegisterOnDraft({
       draft,
       mac,
@@ -415,7 +670,7 @@ router.get(
     const nowTs = now.getTime();
     let resultPayload = null;
 
-    await updateDB((draft) => {
+    await updateDBOptimistic((draft) => {
       const device = draft.devices.find((item) => item.id === auth.deviceId && item.mac === auth.mac);
       if (!device) throw new HttpError(404, "设备不存在");
 
@@ -556,6 +811,18 @@ router.get(
     const device = db.devices.find((item) => item.id === req.auth.deviceId);
     if (!device) throw new HttpError(404, "设备不存在");
 
+    try {
+      await refreshTemplatesForPageRequest({
+        auth: req.auth,
+        deviceId: req.auth.deviceId,
+        pageType: ["homepage", "badgepage", "weatherpage"],
+        requestSource: "hardware.config",
+      });
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.warn(`[hardware.config] template refresh skipped: ${String(error?.message || error)}`);
+    }
+
     const templates = db.apiTemplates
       .filter((item) => item.enabled)
       .map((tpl) => ({
@@ -599,6 +866,18 @@ router.get(
   authRequired,
   allowRoles("device"),
   asyncHandler(async (req, res) => {
+    try {
+      await refreshTemplatesForPageRequest({
+        auth: req.auth,
+        deviceId: req.auth.deviceId,
+        pageType: "homepage",
+        requestSource: "hardware.homepage",
+      });
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.warn(`[hardware.homepage] template refresh skipped: ${String(error?.message || error)}`);
+    }
+
     const db = await readDB();
     const device = db.devices.find((item) => item.id === req.auth.deviceId);
     if (!device) throw new HttpError(404, "设备不存在");
@@ -620,6 +899,18 @@ router.get(
   authRequired,
   allowRoles("device"),
   asyncHandler(async (req, res) => {
+    try {
+      await refreshTemplatesForPageRequest({
+        auth: req.auth,
+        deviceId: req.auth.deviceId,
+        pageType: "badgepage",
+        requestSource: "hardware.badgepage",
+      });
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.warn(`[hardware.badgepage] template refresh skipped: ${String(error?.message || error)}`);
+    }
+
     const db = await readDB();
     const device = db.devices.find((item) => item.id === req.auth.deviceId);
     if (!device) throw new HttpError(404, "设备不存在");
@@ -641,6 +932,18 @@ router.get(
   authRequired,
   allowRoles("device"),
   asyncHandler(async (req, res) => {
+    try {
+      await refreshTemplatesForPageRequest({
+        auth: req.auth,
+        deviceId: req.auth.deviceId,
+        pageType: "weatherpage",
+        requestSource: "hardware.weatherpage",
+      });
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.warn(`[hardware.weatherpage] template refresh skipped: ${String(error?.message || error)}`);
+    }
+
     const db = await readDB();
     const device = db.devices.find((item) => item.id === req.auth.deviceId);
     if (!device) throw new HttpError(404, "设备不存在");
@@ -674,7 +977,7 @@ router.post(
       }))
       .filter((item) => item.name && TF_CATEGORY_SET.has(item.category));
 
-    await updateDB((draft) => {
+    await updateDBOptimistic((draft) => {
       const device = draft.devices.find((item) => item.id === req.auth.deviceId);
       if (!device) {
         throw new HttpError(404, "设备不存在");
@@ -727,7 +1030,7 @@ router.get(
     const deliveredSet = buildDeliveredSet(localRecord?.files || []);
 
     const files = db.tfFiles
-      .filter((file) => canDeviceAccessTfFile(file, device))
+      .filter((file) => canDeviceAccessTfFile(file, device, db))
       .filter((file) => {
         const category = String(file.category || "").toLowerCase();
         const variants = [
@@ -770,7 +1073,7 @@ router.get(
 
     const file = db.tfFiles.find((item) => item.id === fileId);
     if (!file) throw new HttpError(404, "文件不存在");
-    if (!canDeviceAccessTfFile(file, device)) {
+    if (!canDeviceAccessTfFile(file, device, db)) {
       throw new HttpError(403, "无权限下载该文件");
     }
 
@@ -866,7 +1169,7 @@ router.post(
 
     let updatedJob = null;
     let deviceFirmwareVersion = "";
-    await updateDB((draft) => {
+    await updateDBOptimistic((draft) => {
       const device = draft.devices.find((item) => item.id === req.auth.deviceId);
       if (!device) throw new HttpError(404, "设备不存在");
       const job = draft.upgradeJobs.find((item) => item.id === jobId && item.deviceId === req.auth.deviceId);
@@ -964,11 +1267,11 @@ router.get(
       // handlers can spend long time processing stale image/control events and delay
       // newly issued remote commands.
       if (shouldSkipHistoryReplay(event)) return;
-      writeSse(res, "device-event", { channel: "sse", ...event });
+      writeSse(res, "device-event", { channel: "sse", ...sanitizeDeviceEventForRealtime(event) });
     });
 
     const unsubscribe = subscribeDevice(deviceId, (event) => {
-      writeSse(res, "device-event", { channel: "sse", ...event });
+      writeSse(res, "device-event", { channel: "sse", ...sanitizeDeviceEventForRealtime(event) });
     });
 
     const heartbeat = setInterval(() => {
@@ -989,73 +1292,53 @@ router.get(
   })
 );
 
+router.get(
+  "/events/poll",
+  authRequired,
+  allowRoles("device"),
+  asyncHandler(handleHardwarePoll)
+);
+
+router.get(
+  "/poll",
+  authRequired,
+  allowRoles("device"),
+  asyncHandler(handleHardwarePoll)
+);
+
+router.post(
+  "/poll",
+  authRequired,
+  allowRoles("device"),
+  asyncHandler(handleHardwarePoll)
+);
+
+router.post(
+  "/status",
+  authRequired,
+  allowRoles("device"),
+  asyncHandler(handleHardwareStatus)
+);
+
+router.post(
+  "/report",
+  authRequired,
+  allowRoles("device"),
+  asyncHandler(handleHardwareStatus)
+);
+
 router.post(
   "/remote/ack",
   authRequired,
   allowRoles("device"),
-  asyncHandler(async (req, res) => {
-    const commandId = String(req.body?.commandId || "").trim();
-    const eventType = String(req.body?.eventType || req.body?.type || "").trim();
-    const status = normalizeAckStatus(req.body?.status || "success");
-    const message = String(req.body?.message || "").trim();
-    const payload =
-      req.body?.payload && typeof req.body.payload === "object" && !Array.isArray(req.body.payload)
-        ? req.body.payload
-        : {};
+  asyncHandler(handleRemoteAck)
+);
 
-    if (!commandId) throw new HttpError(400, "commandId不能为空");
-
-    let updated = null;
-    await updateDB((draft) => {
-      const device = draft.devices.find((item) => item.id === req.auth.deviceId);
-      if (!device) throw new HttpError(404, "设备不存在");
-      updated = markRemoteAck(draft, {
-        commandId,
-        deviceId: req.auth.deviceId,
-        eventType,
-        status,
-        message,
-        payload,
-      });
-      if (!updated) throw new HttpError(404, "命令不存在或不属于当前设备");
-    });
-
-    publishDeviceEvent({
-      type: "remote.ack",
-      deviceId: req.auth.deviceId,
-      payload: {
-        commandId,
-        eventType: updated?.eventType || eventType,
-        status,
-        message,
-      },
-    });
-
-    await logOperation({
-      actorId: req.auth.deviceId,
-      actorRole: "device",
-      action: "hardware.remote_ack",
-      targetType: "remote_command",
-      targetId: commandId,
-      detail: {
-        eventType: updated?.eventType || eventType,
-        status,
-        message,
-      },
-    });
-
-    res.success(
-      {
-        commandId,
-        deviceId: req.auth.deviceId,
-        eventType: updated?.eventType || eventType,
-        status,
-        message,
-        ackedAt: updated?.ackedAt || "",
-      },
-      "ack已记录"
-    );
-  })
+router.post(
+  "/commands/:commandId/ack",
+  authRequired,
+  allowRoles("device"),
+  asyncHandler(handleRemoteAck)
 );
 
 router.post(
@@ -1103,6 +1386,43 @@ router.post(
         ? "模拟入口已弃用：设备已绑定，已按真机链路返回"
         : "模拟入口已弃用：已按真机链路注册，等待 PIN 绑定"
     );
+  })
+);
+
+router.get(
+  "/collections/:collectionId/manifest",
+  authRequired,
+  allowRoles("device", "admin", "user"),
+  asyncHandler(async (req, res) => {
+    const deviceId = req.auth.role === "device" ? String(req.auth.deviceId || "") : String(req.query.deviceId || "");
+    let e6PrepareWarning = null;
+    try {
+      await ensureCollectionE6AssetsReady({
+        collectionId: req.params.collectionId,
+        deviceIds: [deviceId],
+        auth: req.auth,
+      });
+    } catch (error) {
+      if (!isSkippableE6ManifestPrepareError(error)) throw error;
+      e6PrepareWarning = error?.message || String(error || "E6 prepare skipped");
+      console.warn(`[hardware manifest] E6 prepare warning collection=${req.params.collectionId} device=${deviceId}: ${e6PrepareWarning}`);
+    }
+    const db = await readDB();
+    const baseUrl = resolvePublicBaseUrl(req, config.publicOrigin);
+    if (req.auth.role !== "device") {
+      ensureDeviceAccess(db, req.auth, deviceId);
+    }
+    const manifest = collectionService.buildManifest(db, req.auth, {
+      collectionId: req.params.collectionId,
+      deviceId,
+      baseUrl,
+      version: req.query.version ?? req.query.localVersion ?? req.query.local_version,
+      skipInvalidItems: true,
+    });
+    if (e6PrepareWarning) {
+      manifest.warning = e6PrepareWarning;
+    }
+    res.success(manifest, "ok");
   })
 );
 

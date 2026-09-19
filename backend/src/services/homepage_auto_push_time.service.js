@@ -207,7 +207,7 @@ function normalizeAutoRenderPushConfig(input = {}, options = {}) {
 
   const safe = input && typeof input === "object" && !Array.isArray(input) ? input : {};
   const enabled = normalizeBoolean(safe.enabled, false);
-  const intervalEnabled = normalizeBoolean(
+  let intervalEnabled = normalizeBoolean(
     safe.interval_enabled ?? safe.intervalEnabled,
     DEFAULT_INTERVAL_ENABLED
   );
@@ -219,6 +219,11 @@ function normalizeAutoRenderPushConfig(input = {}, options = {}) {
   );
   const intervalMinutes = normalizeIntervalMinutes(safe.interval_minutes || safe.intervalMinutes || DEFAULT_INTERVAL_MINUTES);
   const fixedTimes = normalizeFixedTimes(safe.fixed_times || safe.fixedTimes || []);
+  // Avoid dead configurations: if auto mode is enabled but both fixed times and interval are disabled,
+  // force interval mode back on so scheduler always has candidates.
+  if (enabled && !intervalEnabled && fixedTimes.length === 0) {
+    intervalEnabled = true;
+  }
 
   const normalized = {
     enabled,

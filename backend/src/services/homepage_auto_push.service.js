@@ -66,6 +66,28 @@ function getSchedulerDecision(now, autoConfig, deviceId) {
   return { shouldRun: true, reason: "due" };
 }
 
+function getHomepageAutoPushSchedulerRuntime() {
+  const state = global.__homepageAutoPushScheduler || null;
+  if (!state) {
+    return {
+      started: false,
+      intervalMs: 0,
+      startedAt: "",
+      lastTickAt: "",
+      running: false,
+      lastTickResult: null,
+    };
+  }
+  return {
+    started: true,
+    intervalMs: Number(state.intervalMs || 0),
+    startedAt: String(state.startedAt || ""),
+    lastTickAt: String(state.lastTickAt || ""),
+    running: Boolean(state.running),
+    lastTickResult: state.lastTickResult || null,
+  };
+}
+
 async function persistAutoResult({ ownerId, deviceId, reason, status, errorMessage }) {
   const now = new Date();
   const nowText = now.toISOString();
@@ -211,6 +233,8 @@ async function getHomepageAutoPushStatus({ auth, deviceId }) {
     now: new Date(),
     recomputeNext: false,
   });
+  const decision = getSchedulerDecision(new Date(), auto, String(device.id || ""));
+  const scheduler = getHomepageAutoPushSchedulerRuntime();
   return {
     deviceId: String(device.id || ""),
     enabled: Boolean(auto.enabled),
@@ -227,35 +251,75 @@ async function getHomepageAutoPushStatus({ auth, deviceId }) {
     last_error: auto.last_error,
     last_reason: auto.last_reason,
     running: RUNNING_DEVICE_IDS.has(device.id),
+    scheduler_decision: String(decision.reason || "unknown"),
+    scheduler: {
+      started: Boolean(scheduler.started),
+      running: Boolean(scheduler.running),
+      started_at: String(scheduler.startedAt || ""),
+      last_tick_at: String(scheduler.lastTickAt || ""),
+      interval_ms: Number(scheduler.intervalMs || 0),
+    },
     allowed_intervals: [...ALLOWED_INTERVALS],
   };
 }
 
-async function ensureNextRunAtForEnabledRows(now = new Date()) {
-  await updateDB((draft) => {
+function prepareHomepageAutoConfigRow(row, now = new Date()) {
+  const currentConfig = row?.config && typeof row.config === "object" ? row.config : {};
+  const normalized = normalizeForNow(currentConfig.auto_render_push, { now, recomputeNext: false });
+  const nextRunRaw = String(normalized.next_run_at || "").trim();
+  const hasValidNextRunAt = Boolean(nextRunRaw) && Number.isFinite(Date.parse(nextRunRaw));
+  const nextRunInitialized = Boolean(normalized.enabled && !hasValidNextRunAt);
+  if (nextRunInitialized) {
+    normalized.next_run_at = computeNextAutoRenderRunAt(
+      normalized,
+      now,
+      config.timezone || "Asia/Shanghai"
+    );
+  }
+  const nextConfig = homepageService.deepMerge(currentConfig, { auto_render_push: normalized });
+  return {
+    changed: JSON.stringify(nextConfig) !== JSON.stringify(currentConfig),
+    nextConfig,
+    nextRunInitialized,
+  };
+}
+
+async function ensureNextRunAtForEnabledRows(now = new Date(), options = {}) {
+  // Avoid the expensive full-state update path on the common no-op tick.
+  const snapshot = options.snapshot || await readDB();
+  const snapshotRows = Array.isArray(snapshot[homepageService.configKey])
+    ? snapshot[homepageService.configKey]
+    : [];
+  const needsUpdate = snapshotRows.some(
+    (row) => row?.deviceId && prepareHomepageAutoConfigRow(row, now).changed
+  );
+  if (!needsUpdate) return { changed: 0, updateAttempted: false };
+
+  // Recompute from the transaction's fresh draft instead of applying a stale
+  // snapshot patch. This keeps concurrent configuration edits intact.
+  const result = await updateDB((draft) => {
     const rows = Array.isArray(draft[homepageService.configKey]) ? draft[homepageService.configKey] : [];
+    let changed = 0;
     rows.forEach((row) => {
       if (!row?.deviceId) return;
-      const normalized = normalizeForNow(row.config?.auto_render_push, { now, recomputeNext: false });
-      if (!normalized.enabled) {
-        row.config = homepageService.deepMerge(row.config || {}, { auto_render_push: normalized });
-        return;
+      const prepared = prepareHomepageAutoConfigRow(row, now);
+      if (!prepared.changed) return;
+      row.config = prepared.nextConfig;
+      if (prepared.nextRunInitialized) {
+        row.updatedAt = now.toISOString();
+        row.updatedBy = "system";
       }
-      if (String(normalized.next_run_at || "").trim()) {
-        row.config = homepageService.deepMerge(row.config || {}, { auto_render_push: normalized });
-        return;
-      }
-      normalized.next_run_at = computeNextAutoRenderRunAt(normalized, now, config.timezone || "Asia/Shanghai");
-      row.config = homepageService.deepMerge(row.config || {}, { auto_render_push: normalized });
-      row.updatedAt = now.toISOString();
-      row.updatedBy = "system";
+      changed += 1;
     });
+    return { changed };
   });
+  return { changed: Number(result?.changed || 0), updateAttempted: true };
 }
 
 async function runHomepageAutoPushSchedulerTick(now = new Date()) {
-  await ensureNextRunAtForEnabledRows(now);
-  const db = await readDB();
+  let db = await readDB();
+  const initialized = await ensureNextRunAtForEnabledRows(now, { snapshot: db });
+  if (initialized.updateAttempted) db = await readDB();
   const rows = Array.isArray(db[homepageService.configKey]) ? db[homepageService.configKey] : [];
   const dueRows = [];
 
@@ -361,4 +425,7 @@ module.exports = {
   runHomepageAutoPushSchedulerTick,
   startHomepageAutoPushScheduler,
   stopHomepageAutoPushScheduler,
+  getHomepageAutoPushSchedulerRuntime,
+  prepareHomepageAutoConfigRow,
+  ensureNextRunAtForEnabledRows,
 };

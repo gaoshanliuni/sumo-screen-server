@@ -43,6 +43,29 @@
           <p class="muted">OpenAPI 调试、统一启动链路说明和错误码提示。</p>
           <a href="/vue-app/#/docs"><button type="button">打开 API 文档</button></a>
         </article>
+
+        <article class="card">
+          <h3>小程序入口</h3>
+          <p class="muted">微信扫码进入小程序。</p>
+          <figure class="miniapp-entry">
+            <img
+              class="miniapp-qr"
+              src="/assets/wechat-mini-program-entry.jpg"
+              alt="微信小程序码"
+              loading="lazy"
+              onerror="this.onerror=null;this.src='/assets/wechat-mini-program-entry.svg';"
+            />
+            <figcaption class="miniapp-caption">请使用微信扫一扫</figcaption>
+          </figure>
+          <a
+            href="/assets/wechat-mini-program-entry.jpg"
+            target="_blank"
+            rel="noopener"
+            onclick="this.href=document.querySelector('.miniapp-qr').currentSrc;"
+          >
+            <button class="secondary" type="button">查看小程序码</button>
+          </a>
+        </article>
       </section>
     </main>
   </body>

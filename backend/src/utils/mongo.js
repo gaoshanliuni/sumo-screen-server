@@ -18,7 +18,12 @@ async function getMongoClient() {
   }
 
   if (!client) {
-    client = new MongoClient(config.mongoUri, { ignoreUndefined: true });
+    client = new MongoClient(config.mongoUri, {
+      ignoreUndefined: true,
+      serverSelectionTimeoutMS: Number(process.env.MONGO_SERVER_SELECTION_TIMEOUT_MS || 8000),
+      connectTimeoutMS: Number(process.env.MONGO_CONNECT_TIMEOUT_MS || 8000),
+      socketTimeoutMS: Number(process.env.MONGO_SOCKET_TIMEOUT_MS || 30000),
+    });
   }
 
   connectPromise = (async () => {
@@ -68,9 +73,27 @@ async function getGridBucket(bucketName = "tf_files") {
   return buckets.get(bucketName);
 }
 
+async function closeMongoClient() {
+  if (connectPromise) {
+    try {
+      await connectPromise;
+    } catch (_) {
+      // ignore pending connection failures during shutdown
+    }
+  }
+  if (client) {
+    await client.close();
+  }
+  client = null;
+  database = null;
+  connectPromise = null;
+  buckets.clear();
+}
+
 module.exports = {
   getMongoClient,
   getMongoDb,
   getGridBucket,
+  closeMongoClient,
   ObjectId,
 };

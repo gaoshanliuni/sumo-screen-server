@@ -10,6 +10,7 @@ const { ensureDeviceAccess, resolveTargetDeviceIds, getVisibleDeviceIds } = requ
 const { logOperation } = require("../utils/logging");
 const { publishDeviceEvent } = require("../utils/realtime.hub");
 const { getGridBucket, ObjectId } = require("../utils/mongo");
+const { validateFullFirmwareZip } = require("../services/firmware/full_firmware_bundle.service");
 
 const router = express.Router();
 
@@ -33,6 +34,10 @@ function toObjectId(value) {
 
 async function getFirmwareBucket() {
   return await getGridBucket("firmware_files");
+}
+
+async function getFullFirmwareBucket() {
+  return await getGridBucket("firmware_full_bundles");
 }
 
 function createJob({ deviceId, firmwareId, force = false, scheduledAt = "" }, actor) {
@@ -193,6 +198,121 @@ router.post(
     });
 
     res.success(firmware, "固件上传成功");
+  })
+);
+
+router.get(
+  "/full-bundles",
+  allowRoles("admin", "user"),
+  asyncHandler(async (req, res) => {
+    const db = await readDB();
+    res.success(db.fullFirmwareBundles || [], "ok");
+  })
+);
+
+router.post(
+  "/full/upload",
+  allowRoles("admin"),
+  upload.single("file"),
+  asyncHandler(async (req, res) => {
+    if (!req.file) throw new HttpError(400, "请先选择完整固件ZIP包");
+    const validation = validateFullFirmwareZip(req.file.buffer);
+    const manifest = validation.manifest;
+    const now = new Date().toISOString();
+    const bundleId = createId("fwfull");
+    const safeName = req.file.originalname || `${bundleId}.zip`;
+    const hash = sha256Hex(req.file.buffer);
+
+    const bucket = await getFullFirmwareBucket();
+    const uploadStream = bucket.openUploadStream(`${bundleId}_${safeName}`, {
+      contentType: req.file.mimetype || "application/zip",
+      metadata: {
+        bundleId,
+        version: manifest.version,
+        deviceType: manifest.deviceType,
+        chip: manifest.chip,
+        flashSize: manifest.flashSize,
+        sha256: hash,
+      },
+    });
+    const gridId = await new Promise((resolve, reject) => {
+      uploadStream.on("error", reject);
+      uploadStream.on("finish", () => resolve(uploadStream.id));
+      uploadStream.end(req.file.buffer);
+    });
+
+    const bundle = {
+      id: bundleId,
+      version: String(req.body?.version || manifest.version || ""),
+      releaseNote: String(req.body?.releaseNote || manifest.notes || ""),
+      deviceType: String(req.body?.deviceType || manifest.deviceType || "ink-screen"),
+      packageType: manifest.packageType,
+      chip: manifest.chip,
+      flashSize: manifest.flashSize,
+      flashSizeBytes: manifest.flashSizeBytes,
+      fileName: safeName,
+      fileUrl: `/api/firmware/full/${bundleId}/download`,
+      manifestUrl: `/api/firmware/full/${bundleId}/manifest`,
+      gridId: String(gridId),
+      fileSize: req.file.size,
+      mime: req.file.mimetype || "application/zip",
+      sha256: hash,
+      manifest,
+      files: validation.files,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    await updateDB((draft) => {
+      draft.fullFirmwareBundles = Array.isArray(draft.fullFirmwareBundles) ? draft.fullFirmwareBundles : [];
+      draft.fullFirmwareBundles.unshift(bundle);
+    });
+
+    await logOperation({
+      actorId: req.auth.userId,
+      actorRole: "admin",
+      action: "firmware.full_upload",
+      targetType: "firmware_full_bundle",
+      targetId: bundle.id,
+      detail: { version: bundle.version, deviceType: bundle.deviceType, chip: bundle.chip, flashSize: bundle.flashSize },
+    });
+
+    res.success(bundle, "完整固件包上传成功", 201);
+  })
+);
+
+router.get(
+  "/full/:bundleId/manifest",
+  allowRoles("admin", "user"),
+  asyncHandler(async (req, res) => {
+    const db = await readDB();
+    const bundle = (db.fullFirmwareBundles || []).find((item) => item.id === req.params.bundleId);
+    if (!bundle) throw new HttpError(404, "完整固件包不存在");
+    res.success(bundle.manifest || {}, "ok");
+  })
+);
+
+router.get(
+  "/full/:bundleId/download",
+  allowRoles("admin", "user"),
+  asyncHandler(async (req, res) => {
+    const db = await readDB();
+    const bundle = (db.fullFirmwareBundles || []).find((item) => item.id === req.params.bundleId);
+    if (!bundle) throw new HttpError(404, "完整固件包不存在");
+    if (!bundle.gridId) throw new HttpError(404, "完整固件文件不存在");
+    const objectId = toObjectId(bundle.gridId);
+    if (!objectId) throw new HttpError(404, "完整固件文件不存在");
+    const safeName = encodeURIComponent(bundle.fileName || `${bundle.id}.zip`);
+    res.setHeader("Content-Type", bundle.mime || "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename=\"${safeName}\"`);
+    res.setHeader("Content-Length", String(bundle.fileSize || 0));
+    const bucket = await getFullFirmwareBucket();
+    const downloadStream = bucket.openDownloadStream(objectId);
+    downloadStream.on("error", () => {
+      if (!res.headersSent) res.status(404).end();
+      else res.end();
+    });
+    downloadStream.pipe(res);
   })
 );
 

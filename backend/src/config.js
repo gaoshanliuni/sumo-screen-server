@@ -1,5 +1,16 @@
+const path = require("path");
+const dotenv = require("dotenv");
+
+dotenv.config();
+dotenv.config({ path: path.join(__dirname, "../.env") });
+
 module.exports = {
   port: Number(process.env.PORT || 8890),
+  listenHost: String(
+    process.env.LISTEN_HOST ||
+      process.env.HOST ||
+      (process.platform === "win32" ? "127.0.0.1" : "0.0.0.0")
+  ).trim(),
   trustProxy: String(process.env.TRUST_PROXY || "1") !== "0",
   forceHttps: String(process.env.FORCE_HTTPS || "0") === "1",
   hstsMaxAgeSec: Number(process.env.HSTS_MAX_AGE_SEC || 31536000),
@@ -13,8 +24,18 @@ module.exports = {
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || "7d",
   jwtLegacyExpiryGraceSec: Number(process.env.JWT_LEGACY_EXPIRY_GRACE_SEC || 30 * 24 * 60 * 60),
   requestTimeoutMs: Number(process.env.REQUEST_TIMEOUT_MS || 8000),
+  httpKeepAliveTimeoutMs: Number(process.env.HTTP_KEEP_ALIVE_TIMEOUT_MS || 65000),
+  httpHeadersTimeoutMs: Number(process.env.HTTP_HEADERS_TIMEOUT_MS || 66000),
+  apiTemplateRefreshSchedulerIntervalMs: Number(process.env.API_TEMPLATE_REFRESH_SCHEDULER_INTERVAL_MS || 60000),
+  defaultApiTemplateRefreshMode: String(process.env.DEFAULT_API_TEMPLATE_REFRESH_MODE || "interval").trim() || "interval",
+  defaultApiTemplateRefreshIntervalMinutes: Number(process.env.DEFAULT_API_TEMPLATE_REFRESH_INTERVAL_MINUTES || 10),
+  defaultApiTemplateCacheTtlSeconds: Number(process.env.DEFAULT_API_TEMPLATE_CACHE_TTL_SECONDS || 300),
+  defaultApiTemplateMinRequestGapSeconds: Number(process.env.DEFAULT_API_TEMPLATE_MIN_REQUEST_GAP_SECONDS || 30),
+  defaultApiTemplateRefreshTimeoutMs: Number(process.env.DEFAULT_API_TEMPLATE_REFRESH_TIMEOUT_MS || 8000),
+  defaultApiTemplateRefreshJitterSeconds: Number(process.env.DEFAULT_API_TEMPLATE_REFRESH_JITTER_SECONDS || 15),
+  defaultApiTemplateFallbackToStale: String(process.env.DEFAULT_API_TEMPLATE_FALLBACK_TO_STALE || "1") !== "0",
   dbRetryCooldownMs: Number(process.env.DB_RETRY_COOLDOWN_MS || 120000),
-  mongoUri: process.env.MONGO_URI || "",
+  mongoUri: process.env.MONGO_URI || process.env.MONGODB_URI || process.env.MONGO_URL || "",
   xiqueVaultSecret: process.env.XIQUE_VAULT_SECRET || process.env.JWT_SECRET || "ink-screen-xique-vault-secret",
   xiqueSchedulerIntervalMs: Number(process.env.XIQUE_SCHEDULER_INTERVAL_MS || 60000),
   xiqueSessionTtlMs: Number(process.env.XIQUE_SESSION_TTL_MS || 6 * 60 * 60 * 1000),
@@ -32,6 +53,55 @@ module.exports = {
   xiqueOcrAutoSetup: String(process.env.XIQUE_OCR_AUTO_SETUP || "1") !== "0",
   xiqueOcrMaxFailuresBeforeManual: Number(process.env.XIQUE_OCR_MAX_FAILURES_BEFORE_MANUAL || 2),
   xiqueCaptchaExpectedLength: Number(process.env.XIQUE_CAPTCHA_EXPECTED_LENGTH || 4),
+  redis: {
+    enabled: String(process.env.REDIS_ENABLED || "0") === "1",
+    url: process.env.REDIS_URL || "",
+    username: process.env.REDIS_USERNAME || "",
+    password: process.env.REDIS_PASSWORD || "",
+    defaultTtlSeconds: Number(process.env.CACHE_DEFAULT_TTL_SECONDS || 30),
+    dashboardTtlSeconds: Number(process.env.CACHE_DASHBOARD_TTL_SECONDS || 10),
+    deviceListTtlSeconds: Number(process.env.CACHE_DEVICE_LIST_TTL_SECONDS || 15),
+  },
+  taskQueue: {
+    enabled: String(process.env.TASK_QUEUE_ENABLED || "0") === "1",
+    deviceOnlineTtlSeconds: Number(process.env.DEVICE_ONLINE_TTL_SECONDS || 90),
+  },
+  ai: {
+    enabled: String(process.env.AI_ENABLED || "1") !== "0",
+    provider: process.env.AI_PROVIDER || "deepseek",
+    deepseekBaseUrl: process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com",
+    deepseekApiKey: process.env.DEEPSEEK_API_KEY || "",
+    deepseekModel: process.env.DEEPSEEK_MODEL || "deepseek-chat",
+    maxToolCalls: Number(process.env.AI_MAX_TOOL_CALLS || 8),
+    timeoutMs: Number(process.env.AI_TIMEOUT_MS || 20000),
+    rateLimitPerMinute: Number(process.env.AI_RATE_LIMIT_PER_MINUTE || 20),
+  },
+  asr: {
+    provider: process.env.ASR_PROVIDER || "azure_speech",
+    azureSpeechKey: process.env.AZURE_SPEECH_KEY || process.env.AZURE_SPEECH_API_KEY || "",
+    azureSpeechRegion: process.env.AZURE_SPEECH_REGION || "",
+    azureSpeechEndpoint: process.env.AZURE_SPEECH_ENDPOINT || "",
+    azureSpeechLanguage: process.env.AZURE_SPEECH_LANGUAGE || "zh-CN",
+    fasterWhisperCommand: process.env.FASTER_WHISPER_COMMAND || "",
+    fasterWhisperArgs: process.env.FASTER_WHISPER_ARGS || "",
+    fasterWhisperModel: process.env.FASTER_WHISPER_MODEL || "small",
+    fasterWhisperLanguage: process.env.FASTER_WHISPER_LANGUAGE || "zh",
+    fasterWhisperOutputFormat: process.env.FASTER_WHISPER_OUTPUT_FORMAT || "json",
+    timeoutMs: Number(process.env.ASR_TIMEOUT_MS || 30000),
+  },
+  mcp: {
+    enabled: String(process.env.MCP_ENABLED || "1") !== "0",
+    transport: process.env.MCP_TRANSPORT || "stdio",
+    port: Number(process.env.MCP_PORT || 8899),
+    authToken: process.env.MCP_AUTH_TOKEN || "",
+    allowAdminTools: String(process.env.MCP_ALLOW_ADMIN_TOOLS || "0") === "1",
+  },
+  tfCleanup: {
+    enabled: String(process.env.TF_CLEANUP_ENABLED || "1") !== "0",
+    intervalMs: Number(process.env.TF_CLEANUP_INTERVAL_MS || 60 * 60 * 1000),
+    orphanMinAgeMs: Number(process.env.TF_CLEANUP_ORPHAN_MIN_AGE_MS || 10 * 60 * 1000),
+    maxGridOrphansPerRun: Number(process.env.TF_CLEANUP_MAX_GRID_ORPHANS_PER_RUN || 500),
+  },
   mysql: {
     host: process.env.DB_HOST || "gaoshanliuni.top",
     port: Number(process.env.DB_PORT || 3306),
@@ -39,7 +109,7 @@ module.exports = {
     password: process.env.DB_PASSWORD || "XiBk2QSddRheG2Ya",
     database: process.env.DB_NAME || "shuimoping",
     charset: process.env.DB_CHARSET || "utf8mb4",
-    connectionLimit: Number(process.env.DB_POOL_SIZE || 10),
+    connectionLimit: Number(process.env.DB_POOL_SIZE || 32),
     connectTimeoutMs: Number(process.env.DB_CONNECT_TIMEOUT_MS || 12000),
     opTimeoutMs: Number(process.env.DB_OP_TIMEOUT_MS || 120000),
     stateTable: process.env.DB_STATE_TABLE || "app_state",

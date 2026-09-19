@@ -10,6 +10,7 @@ const { logOperation } = require("../utils/logging");
 const { ensureDeviceAccess, resolveTargetDeviceIds } = require("../utils/access");
 const { getGridBucket, ObjectId } = require("../utils/mongo");
 const { publishDeviceEvent } = require("../utils/realtime.hub");
+const { previewE6Buffer } = require("../services/e6/e6_converter.service");
 
 const router = express.Router();
 router.use(allowRoles("admin", "user"));
@@ -107,6 +108,19 @@ async function streamTfFile(file, res) {
     else res.end();
   });
   downloadStream.pipe(res);
+}
+
+async function readTfFileBuffer(file) {
+  const bucket = await getBucket();
+  const objectId = toObjectId(file.gridId);
+  if (!objectId) throw new HttpError(404, "文件数据不存在");
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    const stream = bucket.openDownloadStream(objectId);
+    stream.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+    stream.on("error", reject);
+    stream.on("end", () => resolve(Buffer.concat(chunks)));
+  });
 }
 
 async function respondDeviceFiles(req, res, deviceId) {
@@ -338,6 +352,24 @@ router.post(
     });
 
     res.success(record, "文件已上传");
+  })
+);
+
+router.get(
+  "/:fileId/e6-preview",
+  asyncHandler(async (req, res) => {
+    const { fileId } = req.params;
+    const db = await readDB();
+    const file = db.tfFiles.find((item) => item.id === fileId);
+    if (!file) throw new HttpError(404, "文件不存在");
+    if (req.auth.role === "user" && file.ownerId !== req.auth.userId) {
+      throw new HttpError(403, "无权限预览该文件");
+    }
+    const buffer = await readTfFileBuffer(file);
+    const png = await previewE6Buffer(buffer);
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Cache-Control", "no-store");
+    res.end(png);
   })
 );
 

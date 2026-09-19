@@ -7,6 +7,7 @@ export type DeviceInfo = {
   mac: string;
   status: string;
   type: string;
+  deviceType?: string;
   ownerId: string;
   ownerUsername?: string;
   ownerNickname?: string;

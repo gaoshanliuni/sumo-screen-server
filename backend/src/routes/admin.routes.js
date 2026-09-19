@@ -6,12 +6,14 @@ const { allowRoles } = require("../middleware/auth");
 const { readDB, updateDB } = require("../db/store");
 const { logOperation } = require("../utils/logging");
 const { publishDeviceEvent } = require("../utils/realtime.hub");
+const { createAiConfigService } = require("../services/ai/ai_config.service");
 const createId = require("../utils/id");
 const dashboardRoutes = require("./dashboard.routes");
 
 const router = express.Router();
 router.use(allowRoles("admin"));
 router.use("/dashboard", dashboardRoutes);
+const aiConfigService = createAiConfigService();
 
 function buildUserSummary(user, db) {
   const deviceCount = db.devices.filter((item) => item.ownerId === user.id && item.bindState === "bound").length;
@@ -103,6 +105,71 @@ router.get(
     }
 
     res.success(users.map((item) => buildUserSummary(item, db)), "ok");
+  })
+);
+
+router.get(
+  "/ai/configs",
+  asyncHandler(async (req, res) => {
+    const db = await readDB();
+    res.success(aiConfigService.listProviderConfigs(db, req.auth), "ok");
+  })
+);
+
+router.post(
+  "/ai/configs",
+  asyncHandler(async (req, res) => {
+    let created = null;
+    await updateDB((draft) => {
+      created = aiConfigService.createProviderConfig(draft, req.auth, req.body || {});
+    });
+    await logOperation({
+      actorId: req.auth.userId,
+      actorRole: "admin",
+      action: "ai.config.create",
+      targetType: "ai_config",
+      targetId: created.id,
+      detail: { provider: created.provider, model: created.model },
+    });
+    res.success(created, "AI配置已创建", 201);
+  })
+);
+
+router.patch(
+  "/ai/configs/:configId",
+  asyncHandler(async (req, res) => {
+    let updated = null;
+    await updateDB((draft) => {
+      updated = aiConfigService.updateProviderConfig(draft, req.auth, req.params.configId, req.body || {});
+    });
+    await logOperation({
+      actorId: req.auth.userId,
+      actorRole: "admin",
+      action: "ai.config.update",
+      targetType: "ai_config",
+      targetId: updated.id,
+      detail: { provider: updated.provider, model: updated.model, enabled: updated.enabled },
+    });
+    res.success(updated, "AI配置已更新");
+  })
+);
+
+router.post(
+  "/ai/batch-assign",
+  asyncHandler(async (req, res) => {
+    let result = null;
+    await updateDB((draft) => {
+      result = aiConfigService.assignConfigToUsers(draft, req.auth, req.body || {});
+    });
+    await logOperation({
+      actorId: req.auth.userId,
+      actorRole: "admin",
+      action: "ai.config.assign",
+      targetType: "ai_config",
+      targetId: result.configId,
+      detail: { assigned: result.assigned },
+    });
+    res.success(result, "AI配置已分配");
   })
 );
 

@@ -26,6 +26,25 @@ components:
           example: ok
         data:
           nullable: true
+    DashboardOverview:
+      type: object
+      properties:
+        role: { type: string, enum: [admin, user] }
+        deviceTotal: { type: integer }
+        deviceBound: { type: integer }
+        deviceUnbound: { type: integer }
+        deviceOnline: { type: integer }
+        deviceOffline: { type: integer }
+        blockedDevices: { type: integer }
+        todoCount: { type: integer }
+        scheduleCount: { type: integer }
+        firmwareCount: { type: integer }
+        clusterTotal: { type: integer }
+        firmwareTotal: { type: integer }
+        userTotal: { type: integer }
+        apiStats: { type: object }
+        firmwareDistribution: { type: object }
+        counts: { type: object }
     User:
       type: object
       properties:
@@ -364,6 +383,54 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ApiResponse' }
+
+  /api/health/live:
+    get:
+      summary: 存活检查
+      description: 进程能够处理 HTTP 请求时返回 200，不依赖 Store readiness。
+      responses:
+        '200':
+          description: process is alive
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiResponse' }
+
+  /api/health/ready:
+    get:
+      summary: 就绪检查
+      description: Store 已初始化且 optimistic persistence 未处于持续失败状态时返回 200。
+      responses:
+        '200':
+          description: service is ready
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiResponse' }
+        '503':
+          description: Store 未初始化或持久化状态 degraded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiResponse' }
+
+  /api/dashboard/overview:
+    get:
+      summary: Dashboard 聚合概览
+      description: 按当前 admin/user 权限一次返回设备、在线状态、TODO、课表、固件等统计。
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: '#/components/schemas/ApiResponse' }
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/DashboardOverview' }
+        '401':
+          description: 未认证
+        '403':
+          description: 角色无权限
 
   /api/auth/user/login:
     post:

@@ -5,6 +5,7 @@ const asyncHandler = require("../utils/asyncHandler");
 const HttpError = require("../utils/httpError");
 const { allowRoles } = require("../middleware/auth");
 const { readDB, updateDB } = require("../db/store");
+const { paginateRows } = require("../repositories/pagination");
 
 const router = express.Router();
 router.use(allowRoles("admin"));
@@ -194,8 +195,11 @@ router.get(
       );
     }
 
+    if (req.query?.page !== undefined || req.query?.pageSize !== undefined || String(req.query?.paged || "") === "true") {
+      return res.success(paginateRows(list, { page: req.query?.page || 1, pageSize: req.query?.pageSize || limit || 20 }), "ok");
+    }
     list = list.slice(0, Number(limit));
-    res.success(list, "ok");
+    return res.success(list, "ok");
   })
 );
 
@@ -213,8 +217,11 @@ router.get(
       list = list.filter((item) => item.success === expectSuccess);
     }
 
+    if (req.query?.page !== undefined || req.query?.pageSize !== undefined || String(req.query?.paged || "") === "true") {
+      return res.success(paginateRows(list, { page: req.query?.page || 1, pageSize: req.query?.pageSize || limit || 20 }), "ok");
+    }
     list = list.slice(0, Number(limit));
-    res.success(list, "ok");
+    return res.success(list, "ok");
   })
 );
 

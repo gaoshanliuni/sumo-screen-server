@@ -3,7 +3,7 @@ const axios = require("axios");
 const asyncHandler = require("../utils/asyncHandler");
 const HttpError = require("../utils/httpError");
 const { allowRoles } = require("../middleware/auth");
-const { readDB, updateDB } = require("../db/store");
+const { readDB, patchDeviceThirdApiCache } = require("../db/store");
 const { ensureDeviceAccess } = require("../utils/access");
 const { logApi } = require("../utils/logging");
 const config = require("../config");
@@ -18,10 +18,15 @@ const {
   isCourseActiveInWeek,
   WEEKDAY_LABEL_MAP,
 } = require("../services/xique_sync.service");
+const {
+  normalizeTemplateRefreshConfig,
+  buildCacheMeta,
+  registerTemplateExecutor,
+} = require("../services/api_template_refresh.service");
 
 const router = express.Router();
 
-function buildThirdCacheEntry(tpl, advancedResult) {
+function buildThirdCacheEntry(tpl, advancedResult, options = {}) {
   const steps = Array.isArray(advancedResult?.steps)
     ? advancedResult.steps.slice(-5).map((step) => ({
         name: String(step?.name || ""),
@@ -29,6 +34,20 @@ function buildThirdCacheEntry(tpl, advancedResult) {
         output: step?.output !== undefined ? step.output : step?.raw,
       }))
     : [];
+
+  const refreshConfig = normalizeTemplateRefreshConfig(tpl?.refreshConfig, {
+    slug: tpl?.slug,
+  });
+  const meta = buildCacheMeta({
+    deviceId: options.deviceId,
+    slug: tpl?.slug,
+    refreshConfig,
+    refreshStatus: "success",
+    lastError: "",
+    lastLatencyMs: Number(options.latencyMs || 0),
+    lastRefreshSource: String(options.refreshSource || "manual_api"),
+    lastRequestAt: new Date().toISOString(),
+  });
 
   return {
     template: {
@@ -42,6 +61,7 @@ function buildThirdCacheEntry(tpl, advancedResult) {
       steps,
     },
     updatedAt: new Date().toISOString(),
+    ...meta,
   };
 }
 
@@ -970,287 +990,325 @@ async function runAdvancedTemplate(tpl, device, inputParams) {
     steps: results,
   };
 }
+async function executeTemplateAndCache({
+  auth,
+  slug,
+  deviceId,
+  params = {},
+  refreshSource = "manual_api",
+}) {
+  const safeSlug = String(slug || "").trim();
+  const start = Date.now();
+  const db = await readDB();
+  const tpl = db.apiTemplates.find((item) => item.slug === safeSlug && item.enabled);
+  if (!tpl) throw new HttpError(404, "API模板不存在或未启用");
+  if (!deviceId) throw new HttpError(400, "deviceId不能为空");
+
+  const device = ensureDeviceAccess(db, auth, deviceId);
+  if (device.status === "blocked") throw new HttpError(403, "设备已封禁");
+
+  const deviceParams =
+    device.thirdApiParams && typeof device.thirdApiParams === "object" && !Array.isArray(device.thirdApiParams)
+      ? device.thirdApiParams[safeSlug]
+      : {};
+  const safeDeviceParams =
+    deviceParams && typeof deviceParams === "object" && !Array.isArray(deviceParams) ? deviceParams : {};
+  const baseParams = {
+    ...(tpl.defaultParams || {}),
+    ...safeDeviceParams,
+    ...(params && typeof params === "object" ? params : {}),
+  };
+  if (safeSlug === "weather") {
+    const cityId = String(baseParams.cityId || baseParams.cityID || baseParams.location || "").trim();
+    if (cityId) {
+      baseParams.location = cityId;
+      baseParams.cityId = cityId;
+    }
+    if (baseParams.cityID !== undefined) {
+      delete baseParams.cityID;
+    }
+  }
+
+  async function persistThirdCacheEntry(cacheEntry, sourceTag) {
+    const writeStartedAt = Date.now();
+    await patchDeviceThirdApiCache({
+      deviceId,
+      slug: safeSlug,
+      updater: () => cacheEntry,
+    });
+    // eslint-disable-next-line no-console
+    console.info(
+      `[api-template-refresh] cache-write source=${String(sourceTag || refreshSource || "manual_api")} device=${String(
+        deviceId || ""
+      )} slug=${safeSlug} ms=${Date.now() - writeStartedAt}`
+    );
+  }
+  if (safeSlug === "addressparse" && !baseParams.address && params?.address) {
+    baseParams.address = params.address;
+  }
+
+  try {
+    if (safeSlug === "todo") {
+      const doneFilter = parseBooleanParam(baseParams.done);
+      const todoDataset = buildTodoTemplateDataset(db, {
+        deviceId,
+        doneFilter,
+        limit: baseParams.limit,
+      });
+
+      const formatted = {
+        status: "ok",
+        schema: todoDataset.schema,
+        deviceId,
+        total: Number(todoDataset.total || 0),
+        openCount: Number(todoDataset.openCount || 0),
+        doneCount: Number(todoDataset.doneCount || 0),
+        filteredCount: Number(todoDataset.filteredCount || 0),
+        todos: Array.isArray(todoDataset.todos) ? todoDataset.todos : [],
+        generatedAt: String(todoDataset.generatedAt || new Date().toISOString()),
+      };
+      const advancedResult = {
+        output: formatted,
+        vars: {},
+        steps: [
+          {
+            name: "todo_collect",
+            status: 200,
+            output: formatted,
+            raw: todoDataset,
+          },
+        ],
+      };
+      const latencyMs = Date.now() - start;
+      await logApi({
+        callerRole: auth.role,
+        callerId: auth.userId || auth.deviceId || "",
+        deviceId,
+        templateSlug: safeSlug,
+        success: true,
+        statusCode: 200,
+        latencyMs,
+      });
+
+      const cacheEntry = buildThirdCacheEntry(tpl, advancedResult, {
+        deviceId,
+        refreshSource,
+        latencyMs,
+      });
+      await persistThirdCacheEntry(cacheEntry, refreshSource);
+
+      return {
+        template: { slug: tpl.slug, name: tpl.name },
+        deviceId,
+        formatted,
+        raw: advancedResult,
+        cacheEntry,
+        statusCode: 200,
+      };
+    }
+
+    if (safeSlug === "xique_schedule") {
+      await saveXiqueSyncConfig({
+        auth,
+        deviceId,
+        body: {
+          deviceId,
+          enabled: false,
+          intervalMinutes: 60,
+          loginUsername: String(baseParams.loginUsername || baseParams.username || "").trim(),
+          currentTermKey: String(baseParams.currentTermKey || baseParams.termKey || "").trim(),
+          adapterMode: String(baseParams.adapterMode || "remote").trim(),
+          baseUrl: String(baseParams.baseUrl || "").trim(),
+          requireCaptcha: false,
+        },
+      });
+
+      const xiqueResult = await submitXiqueImport({
+        auth,
+        deviceId,
+        body: {
+          loginUsername: String(baseParams.loginUsername || baseParams.username || "").trim(),
+          username: String(baseParams.username || "").trim(),
+          password: String(baseParams.password || "").trim(),
+          captchaAnswer: String(baseParams.captchaAnswer || "").trim(),
+          captchaSession: String(baseParams.captchaSession || "").trim(),
+          currentTermKey: String(baseParams.currentTermKey || baseParams.termKey || "").trim(),
+          termKey: String(baseParams.termKey || "").trim(),
+          adapterMode: String(baseParams.adapterMode || "").trim(),
+          baseUrl: String(baseParams.baseUrl || "").trim(),
+          forceCaptcha: Boolean(baseParams.forceCaptcha),
+        },
+      });
+
+      const xiqueStatus = await getXiqueStatus({ auth, deviceId });
+      const latestDb = await readDB();
+      const rawSchedule = buildXiqueScheduleDataset(latestDb, {
+        deviceId,
+        termKey: String(xiqueResult?.termKey || xiqueResult?.result?.termKey || ""),
+      });
+      const schedule = sanitizeXiqueScheduleDataset(rawSchedule);
+      const view = buildTodayViewFromSchedule(schedule);
+      const formatted = {
+        status: String(xiqueResult?.status || "unknown"),
+        termKey: String(xiqueResult?.termKey || xiqueResult?.result?.termKey || ""),
+        imported: Number(xiqueResult?.result?.imported || 0),
+        added: Number(xiqueResult?.result?.added || 0),
+        updated: Number(xiqueResult?.result?.updated || 0),
+        skipped: Number(xiqueResult?.result?.skipped || 0),
+        overwritten: Number(xiqueResult?.result?.overwritten || 0),
+        reason: String(xiqueResult?.reason || ""),
+        needRelogin: Boolean(xiqueResult?.needRelogin),
+        needCaptchaReverify: Boolean(xiqueStatus?.config?.needCaptchaReverify),
+        needManualCaptcha: Boolean(xiqueResult?.needManualCaptcha),
+        taskId: String(xiqueResult?.taskId || xiqueResult?.configId || ""),
+        captchaSession: String(xiqueResult?.captchaSession || ""),
+        captchaImage: String(xiqueResult?.captchaImage || ""),
+        captchaExpiresAt: String(xiqueResult?.captchaExpiresAt || ""),
+        loginUsername: String(xiqueStatus?.config?.loginUsername || ""),
+        schedule,
+        view,
+      };
+      const advancedResult = {
+        output: formatted,
+        vars: {},
+        steps: [
+          {
+            name: "xique_import",
+            status: 200,
+            output: formatted,
+            raw: xiqueResult,
+          },
+        ],
+      };
+      const latencyMs = Date.now() - start;
+      await logApi({
+        callerRole: auth.role,
+        callerId: auth.userId || auth.deviceId || "",
+        deviceId,
+        templateSlug: safeSlug,
+        success: true,
+        statusCode: 200,
+        latencyMs,
+      });
+
+      const cacheEntry = buildThirdCacheEntry(tpl, advancedResult, {
+        deviceId,
+        refreshSource,
+        latencyMs,
+      });
+      await persistThirdCacheEntry(cacheEntry, refreshSource);
+
+      return {
+        template: { slug: tpl.slug, name: tpl.name },
+        deviceId,
+        formatted,
+        raw: advancedResult,
+        cacheEntry,
+        statusCode: 200,
+      };
+    }
+
+    const runtimeTpl = {
+      ...tpl,
+      advancedConfig: ensureAdvancedTemplateConfig(tpl),
+    };
+    const advancedResult = await runAdvancedTemplate(runtimeTpl, device, baseParams);
+    const statusCode = Number(advancedResult.steps?.[advancedResult.steps.length - 1]?.status || 200);
+    const latencyMs = Date.now() - start;
+
+    await logApi({
+      callerRole: auth.role,
+      callerId: auth.userId || auth.deviceId || "",
+      deviceId,
+      templateSlug: safeSlug,
+      success: true,
+      statusCode,
+      latencyMs,
+    });
+
+    const cacheEntry = buildThirdCacheEntry(tpl, advancedResult, {
+      deviceId,
+      refreshSource,
+      latencyMs,
+    });
+    await persistThirdCacheEntry(cacheEntry, refreshSource);
+
+    return {
+      template: {
+        slug: tpl.slug,
+        name: tpl.name,
+      },
+      deviceId,
+      formatted: advancedResult.output,
+      raw: advancedResult,
+      cacheEntry,
+      statusCode,
+    };
+  } catch (error) {
+    const latencyMs = Date.now() - start;
+    const message = error.response?.data?.msg || error.message || "第三方调用失败";
+    const statusCode = error.response?.status || 502;
+
+    await logApi({
+      callerRole: auth.role,
+      callerId: auth.userId || auth.deviceId || "",
+      deviceId,
+      templateSlug: safeSlug,
+      success: false,
+      statusCode,
+      latencyMs,
+      error: String(message),
+    });
+
+    throw new HttpError(502, `第三方API异常: ${message}`);
+  }
+}
+
+registerTemplateExecutor(async (options = {}) =>
+  executeTemplateAndCache({
+    auth: options.auth,
+    slug: options.slug,
+    deviceId: options.deviceId,
+    params: options.params || options.inputParams || {},
+    refreshSource: options.refreshSource || "manual_api",
+  })
+);
+
 router.post(
   "/:slug",
   allowRoles("admin", "user", "device"),
   asyncHandler(async (req, res) => {
     const { slug } = req.params;
-    const start = Date.now();
-    const db = await readDB();
-    const tpl = db.apiTemplates.find((item) => item.slug === slug && item.enabled);
-    if (!tpl) throw new HttpError(404, "API模板不存在或未启用");
-
-    const params = req.body?.params && typeof req.body.params === "object" ? req.body.params : {};
+    const params = req.body?.params && typeof req.body.params === "object" ? { ...req.body.params } : {};
+    if (req.body?.address !== undefined && params.address === undefined) {
+      params.address = req.body.address;
+    }
     const deviceId = req.auth.role === "device" ? req.auth.deviceId : req.body?.deviceId;
-    if (!deviceId) throw new HttpError(400, "deviceId不能为空");
-
-    const device = ensureDeviceAccess(db, req.auth, deviceId);
-    if (device.status === "blocked") throw new HttpError(403, "设备已封禁");
-
-    const deviceParams =
-      device.thirdApiParams && typeof device.thirdApiParams === "object" && !Array.isArray(device.thirdApiParams)
-        ? device.thirdApiParams[slug]
-        : {};
-    const safeDeviceParams =
-      deviceParams && typeof deviceParams === "object" && !Array.isArray(deviceParams) ? deviceParams : {};
-    const baseParams = {
-      ...(tpl.defaultParams || {}),
-      ...safeDeviceParams,
-      ...params,
-    };
-    if (slug === "weather") {
-      const cityId = String(baseParams.cityId || baseParams.cityID || baseParams.location || "").trim();
-      if (cityId) {
-        baseParams.location = cityId;
-        baseParams.cityId = cityId;
-      }
-      if (baseParams.cityID !== undefined) {
-        delete baseParams.cityID;
-      }
-    }
-    if (slug === "addressparse" && !baseParams.address && req.body?.address) {
-      baseParams.address = req.body.address;
-    }
-
-    try {
-      if (slug === "todo") {
-        const doneFilter = parseBooleanParam(baseParams.done);
-        const todoDataset = buildTodoTemplateDataset(db, {
-          deviceId,
-          doneFilter,
-          limit: baseParams.limit,
-        });
-
-        const formatted = {
-          status: "ok",
-          schema: todoDataset.schema,
-          deviceId,
-          total: Number(todoDataset.total || 0),
-          openCount: Number(todoDataset.openCount || 0),
-          doneCount: Number(todoDataset.doneCount || 0),
-          filteredCount: Number(todoDataset.filteredCount || 0),
-          todos: Array.isArray(todoDataset.todos) ? todoDataset.todos : [],
-          generatedAt: String(todoDataset.generatedAt || new Date().toISOString()),
-        };
-        const advancedResult = {
-          output: formatted,
-          vars: {},
-          steps: [
-            {
-              name: "todo_collect",
-              status: 200,
-              output: formatted,
-              raw: todoDataset,
-            },
-          ],
-        };
-        const latencyMs = Date.now() - start;
-        await logApi({
-          callerRole: req.auth.role,
-          callerId: req.auth.userId || req.auth.deviceId || "",
-          deviceId,
-          templateSlug: slug,
-          success: true,
-          statusCode: 200,
-          latencyMs,
-        });
-
-        const cacheEntry = buildThirdCacheEntry(tpl, advancedResult);
-        await updateDB((draft) => {
-          draft.devices = Array.isArray(draft.devices) ? draft.devices : [];
-          const target = draft.devices.find((item) => String(item.id || "") === String(deviceId || ""));
-          if (!target) return;
-          target.thirdApiCache =
-            target.thirdApiCache && typeof target.thirdApiCache === "object" && !Array.isArray(target.thirdApiCache)
-              ? target.thirdApiCache
-              : {};
-          target.thirdApiCache[slug] = cacheEntry;
-          target.updatedAt = new Date().toISOString();
-        });
-
-        return res.success(
-          {
-            template: { slug: tpl.slug, name: tpl.name },
-            deviceId,
-            formatted,
-            raw: advancedResult,
-          },
-          "调用成功"
-        );
-      }
-
-      if (slug === "xique_schedule") {
-        await saveXiqueSyncConfig({
-          auth: req.auth,
-          deviceId,
-          body: {
-            deviceId,
-            enabled: false,
-            intervalMinutes: 60,
-            loginUsername: String(baseParams.loginUsername || baseParams.username || "").trim(),
-            currentTermKey: String(baseParams.currentTermKey || baseParams.termKey || "").trim(),
-            adapterMode: String(baseParams.adapterMode || "remote").trim(),
-            baseUrl: String(baseParams.baseUrl || "").trim(),
-            requireCaptcha: false,
-          },
-        });
-
-        const xiqueResult = await submitXiqueImport({
-          auth: req.auth,
-          deviceId,
-          body: {
-            loginUsername: String(baseParams.loginUsername || baseParams.username || "").trim(),
-            username: String(baseParams.username || "").trim(),
-            password: String(baseParams.password || "").trim(),
-            captchaAnswer: String(baseParams.captchaAnswer || "").trim(),
-            captchaSession: String(baseParams.captchaSession || "").trim(),
-            currentTermKey: String(baseParams.currentTermKey || baseParams.termKey || "").trim(),
-            termKey: String(baseParams.termKey || "").trim(),
-            adapterMode: String(baseParams.adapterMode || "").trim(),
-            baseUrl: String(baseParams.baseUrl || "").trim(),
-            forceCaptcha: Boolean(baseParams.forceCaptcha),
-          },
-        });
-
-        const xiqueStatus = await getXiqueStatus({ auth: req.auth, deviceId });
-        const latestDb = await readDB();
-        const rawSchedule = buildXiqueScheduleDataset(latestDb, {
-          deviceId,
-          termKey: String(xiqueResult?.termKey || xiqueResult?.result?.termKey || ""),
-        });
-        const schedule = sanitizeXiqueScheduleDataset(rawSchedule);
-        const view = buildTodayViewFromSchedule(schedule);
-        const formatted = {
-          status: String(xiqueResult?.status || "unknown"),
-          termKey: String(xiqueResult?.termKey || xiqueResult?.result?.termKey || ""),
-          imported: Number(xiqueResult?.result?.imported || 0),
-          added: Number(xiqueResult?.result?.added || 0),
-          updated: Number(xiqueResult?.result?.updated || 0),
-          skipped: Number(xiqueResult?.result?.skipped || 0),
-          overwritten: Number(xiqueResult?.result?.overwritten || 0),
-          reason: String(xiqueResult?.reason || ""),
-          needRelogin: Boolean(xiqueResult?.needRelogin),
-          needCaptchaReverify: Boolean(xiqueStatus?.config?.needCaptchaReverify),
-          needManualCaptcha: Boolean(xiqueResult?.needManualCaptcha),
-          taskId: String(xiqueResult?.taskId || xiqueResult?.configId || ""),
-          captchaSession: String(xiqueResult?.captchaSession || ""),
-          captchaImage: String(xiqueResult?.captchaImage || ""),
-          captchaExpiresAt: String(xiqueResult?.captchaExpiresAt || ""),
-          loginUsername: String(xiqueStatus?.config?.loginUsername || ""),
-          schedule,
-          view,
-        };
-        const advancedResult = {
-          output: formatted,
-          vars: {},
-          steps: [
-            {
-              name: "xique_import",
-              status: 200,
-              output: formatted,
-              raw: xiqueResult,
-            },
-          ],
-        };
-        const latencyMs = Date.now() - start;
-        await logApi({
-          callerRole: req.auth.role,
-          callerId: req.auth.userId || req.auth.deviceId || "",
-          deviceId,
-          templateSlug: slug,
-          success: true,
-          statusCode: 200,
-          latencyMs,
-        });
-
-        const cacheEntry = buildThirdCacheEntry(tpl, advancedResult);
-        await updateDB((draft) => {
-          draft.devices = Array.isArray(draft.devices) ? draft.devices : [];
-          const target = draft.devices.find((item) => String(item.id || "") === String(deviceId || ""));
-          if (!target) return;
-          target.thirdApiCache =
-            target.thirdApiCache && typeof target.thirdApiCache === "object" && !Array.isArray(target.thirdApiCache)
-              ? target.thirdApiCache
-              : {};
-          target.thirdApiCache[slug] = cacheEntry;
-          target.updatedAt = new Date().toISOString();
-        });
-
-        return res.success(
-          {
-            template: { slug: tpl.slug, name: tpl.name },
-            deviceId,
-            formatted,
-            raw: advancedResult,
-          },
-          formatted.status === "imported" ? "调用成功" : "调用成功（需要验证码或重验证）"
-        );
-      }
-
-      const runtimeTpl = {
-        ...tpl,
-        advancedConfig: ensureAdvancedTemplateConfig(tpl),
-      };
-      const advancedResult = await runAdvancedTemplate(runtimeTpl, device, baseParams);
-      const statusCode = Number(advancedResult.steps?.[advancedResult.steps.length - 1]?.status || 200);
-      const latencyMs = Date.now() - start;
-
-      await logApi({
-        callerRole: req.auth.role,
-        callerId: req.auth.userId || req.auth.deviceId || "",
-        deviceId,
-        templateSlug: slug,
-        success: true,
-        statusCode,
-        latencyMs,
-      });
-
-      const cacheEntry = buildThirdCacheEntry(tpl, advancedResult);
-      await updateDB((draft) => {
-        draft.devices = Array.isArray(draft.devices) ? draft.devices : [];
-        const target = draft.devices.find((item) => String(item.id || "") === String(deviceId || ""));
-        if (!target) return;
-        target.thirdApiCache =
-          target.thirdApiCache && typeof target.thirdApiCache === "object" && !Array.isArray(target.thirdApiCache)
-            ? target.thirdApiCache
-            : {};
-        target.thirdApiCache[slug] = cacheEntry;
-        target.updatedAt = new Date().toISOString();
-      });
-
-      res.success(
-        {
-          template: {
-            slug: tpl.slug,
-            name: tpl.name,
-          },
-          deviceId,
-          formatted: advancedResult.output,
-          raw: advancedResult,
-        },
-        "调用成功"
-      );
-    } catch (error) {
-      const latencyMs = Date.now() - start;
-      const message = error.response?.data?.msg || error.message || "第三方调用失败";
-      const statusCode = error.response?.status || 502;
-
-      await logApi({
-        callerRole: req.auth.role,
-        callerId: req.auth.userId || req.auth.deviceId || "",
-        deviceId,
-        templateSlug: slug,
-        success: false,
-        statusCode,
-        latencyMs,
-        error: String(message),
-      });
-
-      throw new HttpError(502, `第三方API异常: ${message}`);
-    }
+    const result = await executeTemplateAndCache({
+      auth: req.auth,
+      slug,
+      deviceId,
+      params,
+      refreshSource: "manual_api",
+    });
+    const message =
+      String(slug || "") === "xique_schedule" &&
+      String(result?.formatted?.status || "") !== "imported"
+        ? "调用成功（需要验证码或重验证）"
+        : "调用成功";
+    res.success(
+      {
+        template: result.template,
+        deviceId: result.deviceId,
+        formatted: result.formatted,
+        raw: result.raw,
+      },
+      message
+    );
   })
 );
 
 module.exports = router;
+module.exports.executeTemplateAndCache = executeTemplateAndCache;
 
 

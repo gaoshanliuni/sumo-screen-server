@@ -13,6 +13,7 @@ const { publishDeviceEvent } = require("../utils/realtime.hub");
 const { logOperation } = require("../utils/logging");
 const { getGridBucket } = require("../utils/mongo");
 const { createPendingAck, waitForAckMap } = require("../utils/remoteAck");
+const { buildCommonDataModel, interpolateForTemplate } = require("../services/page_profile.service");
 
 const router = express.Router();
 router.use(allowRoles("admin", "user"));
@@ -432,12 +433,15 @@ async function pushRenderedNameplateToDevices({
     }
 
     const deviceType = String(device.type || layout.deviceType || "ink-screen");
-    const cacheKey = `${ownerId}|${deviceType}|${name}|${title}`;
+    const dataModel = buildCommonDataModel(db, device, {});
+    const resolvedName = (interpolateForTemplate(name, dataModel) || name || "").trim();
+    const resolvedTitle = (interpolateForTemplate(title, dataModel) || title || "").trim();
+    const cacheKey = `${ownerId}|${deviceType}|${resolvedName}|${resolvedTitle}`;
 
     try {
       let saved = fileCache.get(cacheKey);
       if (!saved) {
-        const pngBuffer = await renderNameplateImageBuffer({ layout, name, title, deviceType });
+        const pngBuffer = await renderNameplateImageBuffer({ layout, name: resolvedName, title: resolvedTitle, deviceType });
         const fileName = `nameplate_${deviceType}_${Date.now()}.png`;
         saved = await saveRemoteFile({
           ownerId,
@@ -473,7 +477,7 @@ async function pushRenderedNameplateToDevices({
         eventType: "remote.show_image",
         source: "nameplate.show_image",
         auth,
-        meta: { layoutId: layout.id, name, title },
+        meta: { layoutId: layout.id, name: resolvedName, title: resolvedTitle, templateName: name, templateTitle: title },
       });
 
       publishDeviceEvent({
@@ -492,8 +496,10 @@ async function pushRenderedNameplateToDevices({
           },
           meta: {
             mode: "nameplate",
-            name,
-            title,
+            name: resolvedName,
+            title: resolvedTitle,
+            templateName: name,
+            templateTitle: title,
             layoutId: layout.id,
           },
         },

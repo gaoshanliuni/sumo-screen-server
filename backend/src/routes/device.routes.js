@@ -2,11 +2,12 @@ const express = require("express");
 const asyncHandler = require("../utils/asyncHandler");
 const HttpError = require("../utils/httpError");
 const createId = require("../utils/id");
-const { readDB, updateDB } = require("../db/store");
+const { readDB, updateDB, updateDBOptimistic } = require("../db/store");
 const { allowRoles } = require("../middleware/auth");
 const { ensureDeviceAccess, resolveTargetDeviceIds } = require("../utils/access");
 const { logOperation } = require("../utils/logging");
 const { publishDeviceEvent, getDevicePresence } = require("../utils/realtime.hub");
+const { paginateRows } = require("../repositories/pagination");
 
 const router = express.Router();
 
@@ -264,7 +265,11 @@ router.get(
       });
     }
 
-    res.success(rows, "ok");
+    if (req.query?.page !== undefined || req.query?.pageSize !== undefined || String(req.query?.paged || "") === "true") {
+      return res.success(paginateRows(rows, { page: req.query?.page || 1, pageSize: req.query?.pageSize || 20 }), "ok");
+    }
+
+    return res.success(rows, "ok");
   })
 );
 
@@ -314,7 +319,7 @@ router.post(
 
     const now = new Date().toISOString();
     let updatedDevice = null;
-    await updateDB((draft) => {
+    await updateDBOptimistic((draft) => {
       const pinTarget = draft.bindingPins.find((item) => item.id === pinRow.id);
       if (!pinTarget || pinTarget.status !== "pending") {
         throw new HttpError(400, "PIN码无效或已失效");

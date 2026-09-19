@@ -35,6 +35,23 @@
             </div>
           </el-tab-pane>
 
+          <el-tab-pane :label="`设备变量 (${filteredDeviceVariables.length})`" name="device">
+            <div class="panel-scroll">
+              <div v-if="loading" class="panel-loading">变量加载中...</div>
+              <div v-else-if="!filteredDeviceVariables.length" class="panel-empty">暂无匹配的设备变量</div>
+              <button
+                v-for="item in filteredDeviceVariables"
+                :key="item.path"
+                type="button"
+                class="variable-item"
+                @click="insertVariable(item.path)"
+              >
+                <div class="variable-path">{{ displayPlaceholder(item) }}</div>
+                <div class="variable-meta">{{ item.example || item.type || item.path }}</div>
+              </button>
+            </div>
+          </el-tab-pane>
+
           <el-tab-pane :label="`API模板变量 (${filteredApiGroupCount})`" name="api">
             <div class="panel-scroll">
               <div v-if="loading" class="panel-loading">变量加载中...</div>
@@ -53,24 +70,33 @@
                     </div>
                   </template>
                   <div class="group-sections">
-                    <section v-for="bucket in group.buckets" :key="`${group.slug}-${bucket.key}`" class="group-section">
-                      <div class="group-subtitle-row">
-                        <span class="group-subtitle">{{ bucket.label }}</span>
-                        <el-tag size="small" type="success">{{ bucket.items.length }}</el-tag>
-                      </div>
-                      <div class="group-items">
-                        <button
-                          v-for="item in bucket.items"
-                          :key="item.path"
-                          type="button"
-                          class="variable-item"
-                          @click="insertVariable(item.path)"
-                        >
-                          <div class="variable-path">{{ displayPlaceholder(item) }}</div>
-                          <div class="variable-meta">{{ item.example || item.type || item.path }}</div>
-                        </button>
-                      </div>
-                    </section>
+                    <el-collapse v-model="openApiBuckets" class="api-buckets">
+                      <el-collapse-item
+                        v-for="bucket in group.buckets"
+                        :key="`${group.slug}-${bucket.key}`"
+                        :name="apiBucketName(group, bucket)"
+                        class="api-bucket"
+                      >
+                        <template #title>
+                          <div class="group-subtitle-row">
+                            <span class="group-subtitle">{{ bucket.label }}</span>
+                            <el-tag size="small" type="success">{{ bucket.items.length }}</el-tag>
+                          </div>
+                        </template>
+                        <div class="group-items">
+                          <button
+                            v-for="item in bucket.items"
+                            :key="item.path"
+                            type="button"
+                            class="variable-item"
+                            @click="insertVariable(item.path)"
+                          >
+                            <div class="variable-path">{{ displayPlaceholder(item) }}</div>
+                            <div class="variable-meta">{{ item.example || item.type || item.path }}</div>
+                          </button>
+                        </div>
+                      </el-collapse-item>
+                    </el-collapse>
                   </div>
                 </el-collapse-item>
               </el-collapse>
@@ -90,7 +116,7 @@ type TemplateVariableItem = {
   placeholder: string;
   type: string;
   example: string;
-  source?: "base" | "api";
+  source?: "base" | "api" | "device";
   slug?: string;
   sourceLabel?: string;
   categoryKey?: string;
@@ -123,7 +149,7 @@ const props = withDefaults(
     loading: false,
     isMobile: false,
     title: "插入变量",
-    subtitle: "基础变量 / API模板变量",
+    subtitle: "基础变量 / 设备变量 / API模板变量",
   }
 );
 
@@ -134,11 +160,12 @@ const emit = defineEmits<{
 }>();
 
 const keyword = ref("");
-const activeTab = ref<"base" | "api">("base");
+const activeTab = ref<"base" | "device" | "api">("base");
 const panel = reactive({ left: 20, top: 104, width: 520 });
 const dragging = ref(false);
 const dragState = reactive({ startX: 0, startY: 0, startLeft: 0, startTop: 0 });
 const openGroups = ref<string[]>([]);
+const openApiBuckets = ref<string[]>([]);
 
 function closePanel() {
   emit("update:modelValue", false);
@@ -200,6 +227,7 @@ watch(
       if (!openGroups.value.length) {
         openGroups.value = [];
       }
+      openApiBuckets.value = [];
     }
   },
   { immediate: true }
@@ -208,9 +236,9 @@ watch(
 watch(
   () => props.variables,
   () => {
-    if (!openGroups.value.length) return;
     const groups = filteredApiGroups.value.map((group) => group.slug);
     openGroups.value = openGroups.value.filter((slug) => groups.includes(slug));
+    syncOpenApiBuckets();
   },
   { deep: true }
 );
@@ -226,7 +254,14 @@ function matchesKeyword(item: TemplateVariableItem) {
 }
 
 const filteredBaseVariables = computed(() => {
-  return (props.variables || []).filter((item) => (item.source || "base") !== "api" && matchesKeyword(item));
+  return (props.variables || []).filter((item) => (item.source || "base") === "base" && matchesKeyword(item));
+});
+
+const filteredDeviceVariables = computed(() => {
+  return (props.variables || []).filter((item) => {
+    const path = String(item.path || "");
+    return item.source === "device" && path.startsWith("deviceVariables.") && matchesKeyword(item);
+  });
 });
 
 const filteredApiGroups = computed<ApiVariableGroup[]>(() => {
@@ -285,6 +320,21 @@ const filteredApiGroups = computed<ApiVariableGroup[]>(() => {
 });
 
 const filteredApiGroupCount = computed(() => filteredApiGroups.value.length);
+
+function apiBucketName(group: ApiVariableGroup, bucket: ApiVariableBucket) {
+  return `${group.slug}:${bucket.key}`;
+}
+
+function syncOpenApiBuckets() {
+  const allNames = new Set<string>();
+  filteredApiGroups.value.forEach((group) => {
+    group.buckets.forEach((bucket) => {
+      const name = apiBucketName(group, bucket);
+      allNames.add(name);
+    });
+  });
+  openApiBuckets.value = openApiBuckets.value.filter((name) => allNames.has(name));
+}
 
 function insertVariable(path: string) {
   emit("insert", path);

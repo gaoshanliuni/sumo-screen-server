@@ -6,6 +6,8 @@ const { allowRoles } = require("../middleware/auth");
 const { readDB, updateDB } = require("../db/store");
 const { ensureDeviceAccess } = require("../utils/access");
 const { logOperation } = require("../utils/logging");
+const { normalizeTemplateRefreshConfig } = require("../services/api_template_refresh_config.service");
+const { paginateRows } = require("../repositories/pagination");
 
 const router = express.Router();
 const KEYIN_ALLOWED = new Set(["header", "query", "body"]);
@@ -89,7 +91,10 @@ router.get(
   asyncHandler(async (req, res) => {
     const db = await readDB();
     const list = req.auth.role === "admin" ? db.apiTemplates : db.apiTemplates.filter((item) => item.enabled);
-    res.success(list, "ok");
+    if (req.query?.page !== undefined || req.query?.pageSize !== undefined || String(req.query?.paged || "") === "true") {
+      return res.success(paginateRows(list, { page: req.query?.page || 1, pageSize: req.query?.pageSize || 20 }), "ok");
+    }
+    return res.success(list, "ok");
   })
 );
 
@@ -112,6 +117,7 @@ router.post(
       defaultParams = {},
       enabled = true,
       advancedConfig = {},
+      refreshConfig = undefined,
     } = req.body || {};
 
     if (!name || !slug) throw new HttpError(400, "name/slug为必填项");
@@ -139,6 +145,7 @@ router.post(
       defaultParams: typeof defaultParams === "object" && !Array.isArray(defaultParams) ? defaultParams : {},
       enabled: Boolean(enabled),
       advancedConfig: ensureAdvancedConfig(advancedConfig, normalizedMethod, normalizedUrl),
+      refreshConfig: normalizeTemplateRefreshConfig(refreshConfig, { slug: nextSlug }),
       builtin: false,
       createdAt: now,
       updatedAt: now,
@@ -188,6 +195,7 @@ router.post(
         "defaultParams",
         "enabled",
         "advancedConfig",
+        "refreshConfig",
       ];
       Object.keys(payload).forEach((key) => {
         if (!allowed.includes(key)) return;
@@ -200,8 +208,12 @@ router.post(
         else if (key === "advancedConfig") {
           tpl.advancedConfig = normalizeAdvancedConfig(payload.advancedConfig);
         }
+        else if (key === "refreshConfig") {
+          tpl.refreshConfig = normalizeTemplateRefreshConfig(payload.refreshConfig, { slug: tpl.slug });
+        }
         else tpl[key] = payload[key];
       });
+      tpl.refreshConfig = normalizeTemplateRefreshConfig(tpl.refreshConfig, { slug: tpl.slug });
       tpl.advancedConfig = ensureAdvancedConfig(tpl.advancedConfig, tpl.method, tpl.url);
       const firstStep = Array.isArray(tpl.advancedConfig?.steps) ? tpl.advancedConfig.steps[0] : null;
       if (firstStep && firstStep.legacyCompat) {

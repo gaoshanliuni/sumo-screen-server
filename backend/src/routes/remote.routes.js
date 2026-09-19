@@ -11,6 +11,10 @@ const { logOperation } = require("../utils/logging");
 const { publishDeviceEvent } = require("../utils/realtime.hub");
 const { getGridBucket } = require("../utils/mongo");
 const { createPendingAck, waitForAckMap } = require("../utils/remoteAck");
+const {
+  normalizeBackendBaseUrl,
+  buildBackendUrlCommandPayload,
+} = require("../services/remote_control.service");
 
 const router = express.Router();
 router.use(allowRoles("admin", "user"));
@@ -267,6 +271,65 @@ async function buildAckedResponse({ req, target, sentSuccess, sendFailed }) {
   result.ackTimeoutMs = waitMs;
   return result;
 }
+
+router.post(
+  "/update-backend-url",
+  asyncHandler(async (req, res) => {
+    const backendBaseUrl = normalizeBackendBaseUrl(req.body?.backendBaseUrl);
+    const db = await readDB();
+    const target = resolveBatchTargets(db, req.auth, req.body || {});
+    if (target.targetIds.length === 0) {
+      return res.success(buildBatchResult({ requestedCount: target.requestedCount, denied: target.denied, success: [], failed: [] }), "没有可下发设备");
+    }
+
+    const sentSuccess = [];
+    const failed = [];
+    for (const deviceId of target.targetIds) {
+      try {
+        const command = await createCommandAck({
+          deviceId,
+          eventType: "remote.update_backend_url",
+          source: "remote.update_backend_url",
+          auth: req.auth,
+          meta: { backendBaseUrl },
+        });
+
+        publishDeviceEvent({
+          type: "remote.update_backend_url",
+          deviceId,
+          payload: buildBackendUrlCommandPayload({
+            commandId: command.commandId,
+            backendBaseUrl,
+          }),
+        });
+
+        sentSuccess.push({
+          deviceId,
+          commandId: command.commandId,
+          backendBaseUrl,
+        });
+      } catch (error) {
+        failed.push({ deviceId, reason: error?.message || "下发失败" });
+      }
+    }
+
+    await logOperation({
+      actorId: req.auth.userId,
+      actorRole: req.auth.role,
+      action: "remote.update_backend_url",
+      targetType: "device_batch",
+      targetId: `count:${target.targetIds.length}`,
+      detail: {
+        backendBaseUrl,
+        requestedCount: target.requestedCount,
+        successCount: sentSuccess.length,
+      },
+    });
+
+    const result = await buildAckedResponse({ req, target, sentSuccess, sendFailed: failed });
+    res.success(result, result.ackedSuccessCount > 0 ? "后端地址已写入设备" : "后端地址下发未获设备确认");
+  })
+);
 
 router.post(
   "/switch-view",

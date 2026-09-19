@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div class="page" :class="{ 'dark-mode': darkMode }">
     <el-card class="panel">
       <template #header>
@@ -48,7 +48,12 @@
             </div>
             <el-menu :default-active="activePanel" class="drawer-menu" @select="onSelectPanel">
               <el-menu-item v-for="item in sidebarMenuItems" :key="item.index" :index="item.index">
-                {{ item.label }}
+                <span class="menu-item-content">
+                  <svg class="menu-svg" viewBox="0 0 24 24" aria-hidden="true">
+                    <path :d="iconPaths[item.icon] || iconPaths.default" />
+                  </svg>
+                  <span>{{ item.label }}</span>
+                </span>
               </el-menu-item>
             </el-menu>
           </div>
@@ -61,7 +66,12 @@
             @select="onSelectPanel"
           >
             <el-menu-item v-for="item in sidebarMenuItems" :key="item.index" :index="item.index">
-              {{ item.label }}
+              <span class="menu-item-content">
+                <svg class="menu-svg" viewBox="0 0 24 24" aria-hidden="true">
+                  <path :d="iconPaths[item.icon] || iconPaths.default" />
+                </svg>
+                <span>{{ item.label }}</span>
+              </span>
             </el-menu-item>
           </el-menu>
         </el-aside>
@@ -194,6 +204,66 @@
               </div>
             </el-card>
           </section>
+
+          <section v-if="activePanel === 'ai'" class="section-wrap ai-page-wrap">
+            <AiChatPanel
+              :token="auth.token"
+              :effective-text="aiEffectiveText"
+              :initial-thinking-enabled="aiConfigForm.thinkingEnabled"
+              @open-settings="openAiSettingsDrawer"
+            />
+          </section>
+
+          <el-drawer v-model="aiSettingsDrawerOpen" title="AI设置" direction="rtl" size="min(720px, 92%)" append-to-body>
+            <div class="ai-settings-drawer">
+              <el-card>
+                <template #header>我的 AI 配置</template>
+                <el-form :model="aiConfigForm" label-width="98px" size="small">
+                  <el-form-item label="名称"><el-input v-model="aiConfigForm.name" placeholder="我的 DeepSeek" /></el-form-item>
+                  <el-form-item label="提供商">
+                    <el-select v-model="aiConfigForm.provider" style="width:100%">
+                      <el-option label="DeepSeek" value="deepseek" />
+                    </el-select>
+                  </el-form-item>
+                  <el-form-item label="接入 URL"><el-input v-model="aiConfigForm.baseUrl" placeholder="https://api.deepseek.com" /></el-form-item>
+                  <el-form-item label="模型"><el-input v-model="aiConfigForm.model" placeholder="deepseek-chat" /></el-form-item>
+                  <el-form-item label="API Key"><el-input v-model="aiConfigForm.apiKey" show-password placeholder="留空则保留原密钥" /></el-form-item>
+                  <el-form-item label="启用"><el-switch v-model="aiConfigForm.enabled" /></el-form-item>
+                  <el-form-item label="思考模式"><el-switch v-model="aiConfigForm.thinkingEnabled" /></el-form-item>
+                </el-form>
+                <div class="row-actions">
+                  <el-button @click="loadAiConfig">刷新</el-button>
+                  <el-button type="primary" :loading="aiConfigLoading" @click="saveAiConfig">保存我的 AI 配置</el-button>
+                  <el-tag>{{ aiEffectiveText }}</el-tag>
+                </div>
+              </el-card>
+
+              <el-card v-if="isAdmin">
+                <template #header>管理员批量分配</template>
+                <el-form label-width="98px" size="small">
+                  <el-form-item label="配置名"><el-input v-model="adminAiConfigForm.name" /></el-form-item>
+                  <el-form-item label="接入 URL"><el-input v-model="adminAiConfigForm.baseUrl" placeholder="https://api.deepseek.com" /></el-form-item>
+                  <el-form-item label="模型"><el-input v-model="adminAiConfigForm.model" placeholder="deepseek-chat" /></el-form-item>
+                  <el-form-item label="API Key"><el-input v-model="adminAiConfigForm.apiKey" show-password /></el-form-item>
+                  <el-form-item label="配置">
+                    <el-select v-model="adminAiAssignForm.configId" filterable style="width:100%">
+                      <el-option v-for="cfg in adminAiConfigs" :key="cfg.id" :label="`${cfg.name} · ${cfg.model} · ${cfg.apiKeyMask || '未设Key'}`" :value="cfg.id" />
+                    </el-select>
+                  </el-form-item>
+                  <el-form-item label="用户">
+                    <el-select v-model="adminAiAssignForm.userIds" multiple filterable style="width:100%">
+                      <el-option v-for="u in adminUsers" :key="u.id" :label="ownerOptionLabel(u)" :value="u.id" />
+                    </el-select>
+                  </el-form-item>
+                </el-form>
+                <div class="row-actions">
+                  <el-button @click="loadAdminAiConfigs">刷新配置</el-button>
+                  <el-button type="primary" @click="createAdminAiProvider">新建配置</el-button>
+                  <el-button type="warning" @click="assignAdminAiProvider">批量分配</el-button>
+                </div>
+              </el-card>
+            </div>
+          </el-drawer>
 
           <section v-if="activePanel === 'devicePin'" class="section-wrap">
             <h3>设备与PIN</h3>
@@ -377,6 +447,11 @@
                   <el-table :data="templateRows" height="260" size="small" @row-click="pickTemplateRow">
                     <el-table-column prop="name" label="名称" min-width="120" />
                     <el-table-column prop="slug" label="slug" min-width="120" />
+                    <el-table-column label="刷新模式" width="140">
+                      <template #default="scope">
+                        {{ scope.row.refreshConfig?.mode || "interval" }}
+                      </template>
+                    </el-table-column>
                     <el-table-column label="启用" width="80"><template #default="scope">{{ scope.row.enabled ? "是" : "否" }}</template></el-table-column>
                     <el-table-column label="需设备Key" width="110"><template #default="scope">{{ scope.row.deviceKeyRequired ? "是" : "否" }}</template></el-table-column>
                   </el-table>
@@ -411,6 +486,45 @@
                         <div v-for="line in templateAdvancedSummaryLines" :key="line" class="advanced-summary-line">{{ line }}</div>
                         <div v-if="!templateAdvancedSummaryLines.length" class="advanced-summary-empty">未配置多步处理</div>
                       </div>
+                    </el-form-item>
+                    <el-form-item label="刷新模式">
+                      <div class="row-actions">
+                        <el-select v-model="templateDraft.refreshConfig.mode" style="width:240px">
+                          <el-option label="manual（仅手动刷新）" value="manual" />
+                          <el-option label="interval（定时刷新）" value="interval" />
+                          <el-option label="on_request（按请求刷新）" value="on_request" />
+                          <el-option label="stale_while_revalidate（过期先返回旧缓存）" value="stale_while_revalidate" />
+                        </el-select>
+                        <el-switch v-model="templateDraft.refreshConfig.enabled" />
+                        <span style="font-size:12px;color:#64748b">启用刷新策略</span>
+                      </div>
+                    </el-form-item>
+                    <el-form-item label="定时间隔(分钟)" v-if="templateDraft.refreshConfig.mode === 'interval'">
+                      <el-select v-model="templateDraft.refreshConfig.intervalMinutes" style="width:200px">
+                        <el-option label="10 分钟" :value="10" />
+                        <el-option label="30 分钟" :value="30" />
+                        <el-option label="1 小时" :value="60" />
+                        <el-option label="2 小时" :value="120" />
+                        <el-option label="6 小时" :value="360" />
+                      </el-select>
+                    </el-form-item>
+                    <el-form-item label="缓存 TTL(秒)">
+                      <el-input-number v-model="templateDraft.refreshConfig.ttlSeconds" :min="30" :max="86400" />
+                    </el-form-item>
+                    <el-form-item
+                      label="最小请求间隔(秒)"
+                      v-if="templateDraft.refreshConfig.mode === 'on_request' || templateDraft.refreshConfig.mode === 'stale_while_revalidate'"
+                    >
+                      <el-input-number v-model="templateDraft.refreshConfig.minRequestGapSeconds" :min="0" :max="86400" />
+                    </el-form-item>
+                    <el-form-item label="刷新超时(ms)">
+                      <el-input-number v-model="templateDraft.refreshConfig.timeoutMs" :min="500" :max="120000" />
+                    </el-form-item>
+                    <el-form-item label="错峰抖动(秒)" v-if="templateDraft.refreshConfig.mode === 'interval'">
+                      <el-input-number v-model="templateDraft.refreshConfig.jitterSeconds" :min="0" :max="3600" />
+                    </el-form-item>
+                    <el-form-item label="失败回退旧缓存">
+                      <el-switch v-model="templateDraft.refreshConfig.fallbackToStale" />
                     </el-form-item>
                     <el-form-item label="需要设备Key"><el-switch v-model="templateDraft.deviceKeyRequired" /></el-form-item>
                     <el-form-item label="启用"><el-switch v-model="templateDraft.enabled" /></el-form-item>
@@ -534,7 +648,10 @@
             <h3>固件管理</h3>
             <div class="row-actions">
               <el-button @click="loadFirmwareRows">刷新固件</el-button>
+              <el-button @click="loadFullFirmwareBundles">刷新完整包</el-button>
               <el-button @click="loadUpgradeJobs">刷新升级任务</el-button>
+              <el-button @click="openDispatchPicker('firmware')">弹窗选择升级设备</el-button>
+              <el-tag type="warning">目标设备 {{ batchTargetDeviceIds.firmware.length || deviceStore.selectedIds.length }} 台</el-tag>
               <el-button type="primary" @click="batchUpgradeLatest">批量升级已选设备（最新）</el-button>
             </div>
             <el-row :gutter="12">
@@ -563,6 +680,32 @@
                 </el-card>
               </el-col>
             </el-row>
+            <el-card>
+              <template #header>完整固件 ZIP / Web Serial 刷入准备</template>
+              <div v-if="isAdmin" class="row-actions" style="margin-bottom:8px">
+                <input type="file" accept=".zip,application/zip" @change="onFullFirmwareFileChange" />
+                <el-button type="primary" :disabled="!fullFirmwareFile" @click="uploadFullFirmwareBundle">上传并校验完整包</el-button>
+                <el-tag type="info">E6 校验：esp32 / 4MB / bootloader + partition-table + app</el-tag>
+              </div>
+              <el-table :data="fullFirmwareBundles" height="240" size="small">
+                <el-table-column prop="version" label="版本" width="120" />
+                <el-table-column prop="deviceType" label="设备类型" width="150" />
+                <el-table-column prop="chip" label="芯片" width="90" />
+                <el-table-column prop="flashSize" label="Flash" width="90" />
+                <el-table-column prop="fileName" label="文件名" min-width="180" />
+                <el-table-column label="分区" min-width="220">
+                  <template #default="scope">
+                    {{ (scope.row.files || []).map((f: any) => `${f.type}@${f.offsetHex}`).join(" / ") }}
+                  </template>
+                </el-table-column>
+                <el-table-column label="操作" width="150">
+                  <template #default="scope">
+                    <el-button link type="primary" @click="openFullFirmwareManifest(scope.row)">manifest</el-button>
+                    <el-button link type="info" @click="downloadFullFirmwareBundle(scope.row)">下载</el-button>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </el-card>
             <el-card>
               <template #header>升级任务</template>
               <el-table :data="upgradeRows" height="240" size="small">
@@ -697,6 +840,16 @@
             </el-row>
           </section>
 
+          <section v-if="activePanel === 'systemUpgrade' && isAdmin" class="section-wrap">
+            <h3>系统升级</h3>
+            <SystemUpgradePanel :token="auth.token" />
+          </section>
+
+          <section v-if="activePanel === 'albumCollections'" class="section-wrap">
+            <h3>相册与集合</h3>
+            <E6AlbumPanel :token="auth.token" :devices="deviceStore.devices" @refresh-devices="refreshDevices" />
+          </section>
+
           <section v-if="activePanel === 'devices'" class="section-wrap">
             <h3>设备框选与筛选</h3>
             <div class="row-actions">
@@ -717,6 +870,117 @@
               <el-button type="danger" plain @click="batchDeleteSelectedDevices">删除已选设备</el-button>
               <el-button v-if="isAdmin" type="danger" @click="batchDeleteAllFiltered">删除筛选结果全部设备</el-button>
             </div>
+            <el-card style="margin-bottom:12px">
+              <template #header>硬件连接地址</template>
+              <div class="row-actions">
+                <el-input v-model="backendUrlForm.backendBaseUrl" clearable placeholder="http://192.168.9.106:8890 或 https://epd.gaoshanliuni.top:19999" style="width:420px">
+                  <template #prepend>后端地址</template>
+                </el-input>
+                <el-button @click="fillCurrentBackendBaseUrl">填入当前地址</el-button>
+                <el-select v-model="backendUrlClusterIds" multiple clearable filterable placeholder="选择设备池" style="width:260px">
+                  <el-option v-for="c in clusters" :key="c.id" :label="c.name" :value="c.id" />
+                </el-select>
+                <el-button @click="openDispatchPicker('backendUrl')">弹窗选择设备</el-button>
+                <el-tag type="warning">设备 {{ batchTargetDeviceIds.backendUrl.length || deviceStore.selectedIds.length }} 台</el-tag>
+                <el-tag>设备池 {{ backendUrlClusterIds.length }} 个</el-tag>
+                <el-button type="primary" :loading="backendUrlDispatchLoading" @click="dispatchBackendUrl">下发连接地址</el-button>
+              </div>
+            </el-card>
+            <el-card style="margin-bottom:12px">
+              <template #header>浏览器 USB / NVS</template>
+              <el-radio-group v-model="usbNvsState.mode" class="usb-nvs-mode-tabs" size="small">
+                <el-radio-button value="usb">USB 本地读取</el-radio-button>
+                <el-radio-button value="online">在线下发 NVS</el-radio-button>
+              </el-radio-group>
+
+              <section v-if="usbNvsState.mode === 'usb'" class="usb-nvs-page">
+                <div class="row-actions">
+                  <el-button type="primary" :loading="usbNvsState.connecting" @click="connectUsbNvsDevice">连接电脑当前 USB 设备</el-button>
+                  <el-button :disabled="!usbNvsState.connected" @click="disconnectUsbNvsDevice">断开</el-button>
+                  <el-tag :type="usbNvsSupportTagType">{{ usbNvsState.status }}</el-tag>
+                </div>
+                <el-alert type="info" :closable="false" show-icon style="margin:8px 0">
+                  <template #default>
+                    USB 本地模式只读取当前浏览器连接的硬件，不会自动套用后台已选设备；读取结果来自硬件串口返回的 NVS 值。
+                  </template>
+                </el-alert>
+                <el-row :gutter="12">
+                  <el-col :md="8" :xs="24">
+                    <el-form label-width="86px" size="small">
+                      <el-form-item label="NVS offset"><el-input v-model="usbNvsState.offset" /></el-form-item>
+                      <el-form-item label="NVS size"><el-input v-model="usbNvsState.size" /></el-form-item>
+                      <el-form-item label="namespace"><el-input v-model="usbNvsState.namespace" /></el-form-item>
+                      <el-form-item label="key"><el-input v-model="usbNvsState.key" placeholder="留空读取全部已支持项" /></el-form-item>
+                    </el-form>
+                  </el-col>
+                  <el-col :md="16" :xs="24">
+                    <div class="row-actions">
+                      <el-button type="primary" :disabled="!usbNvsState.connected" :loading="usbNvsState.loading" @click="readUsbHardwareNvs">USB 读取硬件 NVS</el-button>
+                    </div>
+                    <el-table :data="usbNvsEntries" height="260" size="small" style="margin-top:8px">
+                      <el-table-column prop="namespace" label="namespace" width="130" />
+                      <el-table-column prop="key" label="key" width="150" />
+                      <el-table-column prop="type" label="type" width="90" />
+                      <el-table-column prop="value" label="硬件当前值" min-width="220" show-overflow-tooltip />
+                    </el-table>
+                  </el-col>
+                </el-row>
+              </section>
+
+              <section v-if="usbNvsState.mode === 'online'" class="usb-nvs-page">
+                <div class="row-actions">
+                  <el-select v-model="usbNvsState.selectedDeviceId" filterable clearable placeholder="选择要在线下发的后端设备" style="width:300px">
+                    <el-option v-for="d in deviceStore.devices" :key="d.id" :label="d.displayName || d.remark || d.id" :value="d.id" />
+                  </el-select>
+                  <el-tag type="success">后端 NVS 适配器已启用</el-tag>
+                </div>
+                <el-alert type="warning" :closable="false" show-icon style="margin:8px 0">
+                  <template #default>
+                    在线模式读取后端 shadow，并通过 nvs.write 指令下发到选中的在线设备；必须显式选择设备，不会使用 USB 连接或全局选中设备。
+                  </template>
+                </el-alert>
+                <el-row :gutter="12">
+                  <el-col :md="8" :xs="24">
+                    <el-form label-width="86px" size="small">
+                      <el-form-item label="namespace"><el-input v-model="usbNvsState.namespace" /></el-form-item>
+                      <el-form-item label="key">
+                        <el-select v-model="usbNvsState.key" filterable allow-create default-first-option>
+                          <el-option v-for="entry in usbNvsEntries" :key="entry.key" :label="`${entry.key} (${entry.namespace})`" :value="entry.key" />
+                        </el-select>
+                      </el-form-item>
+                      <el-form-item label="value"><el-input v-model="usbNvsState.value" /></el-form-item>
+                      <el-form-item label="重启"><el-switch v-model="usbNvsState.reboot" /></el-form-item>
+                    </el-form>
+                  </el-col>
+                  <el-col :md="16" :xs="24">
+                    <div class="row-actions">
+                      <el-button :loading="usbNvsState.loading" @click="readUsbNvsPartition">读取后端 Shadow</el-button>
+                      <el-button type="primary" :loading="usbNvsState.loading" @click="writeUsbNvsPartition">在线下发 NVS</el-button>
+                      <el-button :loading="usbNvsState.loading" @click="loadUsbNvsBackups">刷新备份</el-button>
+                      <el-button type="warning" :disabled="!selectedNvsBackupId" :loading="usbNvsState.loading" @click="restoreSelectedUsbNvsBackup">恢复选中备份</el-button>
+                    </div>
+                    <el-table :data="usbNvsEntries" height="180" size="small" style="margin-top:8px">
+                      <el-table-column prop="namespace" label="namespace" width="130" />
+                      <el-table-column prop="key" label="key" width="150" />
+                      <el-table-column prop="type" label="type" width="90" />
+                      <el-table-column prop="value" label="shadow value" min-width="180" show-overflow-tooltip />
+                    </el-table>
+                    <el-table :data="usbNvsBackups" height="150" size="small" style="margin-top:8px" @row-click="pickUsbNvsBackup">
+                      <el-table-column width="48">
+                        <template #default="scope">
+                          <el-radio v-model="selectedNvsBackupId" :label="scope.row.id">&nbsp;</el-radio>
+                        </template>
+                      </el-table-column>
+                      <el-table-column prop="createdAt" label="备份时间" min-width="160" />
+                      <el-table-column prop="reason" label="原因" width="90" />
+                      <el-table-column label="keys" min-width="180" show-overflow-tooltip>
+                        <template #default="scope">{{ (scope.row.keys || []).join(", ") || "-" }}</template>
+                      </el-table-column>
+                    </el-table>
+                  </el-col>
+                </el-row>
+              </section>
+            </el-card>
             <device-lasso-picker
               ref="pickerRef"
               :devices="deviceStore.devices"
@@ -731,6 +995,7 @@
               <el-tag>筛选后 {{ filteredDeviceIds.length }} 台</el-tag>
               <el-tag type="warning">已选 {{ deviceStore.selectedIds.length }} 台</el-tag>
             </div>
+            <E6DeviceDetailCard v-if="selectedE6DetailDevice" :device="selectedE6DetailDevice" />
             <el-card>
               <template #header>已选设备快速编辑</template>
               <el-table :data="quickEditRows" height="280" size="small">
@@ -739,13 +1004,111 @@
                   <template #default="scope">{{ scope.row.online ? "在线" : "离线" }}</template>
                 </el-table-column>
                 <el-table-column label="绑定用户" min-width="190">
-                  <template #default="scope">{{ scope.row.ownerNickname || scope.row.ownerUsername || scope.row.ownerId || "-" }}</template>
+                  <template #default="scope">
+                    <el-select v-if="isAdmin" v-model="scope.row.ownerId" clearable filterable placeholder="未绑定" style="width:100%">
+                      <el-option v-for="u in ownerSelectOptions" :key="u.id" :label="ownerOptionLabel(u)" :value="u.id" />
+                    </el-select>
+                    <span v-else>{{ scope.row.ownerNickname || scope.row.ownerUsername || scope.row.ownerId || "-" }}</span>
+                  </template>
                 </el-table-column>
                 <el-table-column label="显示名字" min-width="150"><template #default="scope"><el-input v-model="scope.row.displayName" /></template></el-table-column>
                 <el-table-column label="备注" min-width="180"><template #default="scope"><el-input v-model="scope.row.remark" /></template></el-table-column>
                 <el-table-column label="设备池" min-width="180"><template #default="scope">{{ (scope.row.clusterNames || []).join("、") || "-" }}</template></el-table-column>
                 <el-table-column label="操作" width="90">
                   <template #default="scope"><el-button link type="primary" @click="saveDeviceQuickEdit(scope.row)">保存</el-button></template>
+                </el-table-column>
+              </el-table>
+            </el-card>
+          </section>
+
+          <section v-if="activePanel === 'deviceVariables'" class="section-wrap">
+            <h3>设备变量</h3>
+            <div class="row-actions">
+              <el-select v-model="deviceVariableDeviceId" filterable placeholder="选择设备" style="width:360px" @change="loadDeviceVariables">
+                <el-option v-for="d in deviceStore.devices" :key="d.id" :label="deviceOptionLabel(d)" :value="d.id" />
+              </el-select>
+              <el-button :loading="deviceVariableLoading" @click="loadDeviceVariables">刷新变量</el-button>
+              <el-button type="primary" plain @click="openDeviceVariableBatchDialog">批量设置变量</el-button>
+            </div>
+            <el-row :gutter="12">
+              <el-col :md="9" :xs="24">
+                <el-card>
+                  <template #header>{{ deviceVariableEditingName ? '修改基础变量' : '新增基础变量' }}</template>
+                  <el-form :model="deviceVariableDraft" label-width="74px" size="small">
+                    <el-form-item label="变量名">
+                      <el-select
+                        v-model="deviceVariableDraft.name"
+                        filterable
+                        allow-create
+                        default-first-option
+                        clearable
+                        style="width:100%"
+                        placeholder="选择已有变量名或直接输入"
+                      >
+                        <el-option v-for="name in deviceVariableBaseNameOptions" :key="name" :label="name" :value="name" />
+                      </el-select>
+                    </el-form-item>
+                    <el-form-item label="变量">
+                      <el-select
+                        v-model="deviceVariableDraft.value"
+                        filterable
+                        allow-create
+                        default-first-option
+                        clearable
+                        style="width:100%"
+                        placeholder="选择已有变量或直接输入"
+                      >
+                        <el-option v-for="value in deviceVariableBaseValueOptions" :key="value" :label="value" :value="value" />
+                      </el-select>
+                    </el-form-item>
+                  </el-form>
+                  <div class="row-actions">
+                    <el-button type="primary" @click="saveDeviceVariable">保存变量</el-button>
+                    <el-button @click="resetDeviceVariableDraft">清空</el-button>
+                  </div>
+                </el-card>
+              </el-col>
+              <el-col :md="15" :xs="24">
+                <el-card>
+                  <template #header>基础变量</template>
+                  <el-table :data="deviceVariableBaseRows" height="300" size="small" v-loading="deviceVariableLoading">
+                    <el-table-column prop="name" label="变量名" min-width="140" />
+                    <el-table-column prop="value" label="变量" min-width="180" show-overflow-tooltip />
+                    <el-table-column label="模板路径" min-width="220">
+                      <template #default="scope">{{ deviceVariablePlaceholder(scope.row.name) }}</template>
+                    </el-table-column>
+                    <el-table-column prop="updatedAt" label="更新时间" min-width="170" />
+                    <el-table-column label="操作" width="130">
+                      <template #default="scope">
+                        <el-button link type="primary" @click="editDeviceVariable(scope.row)">修改</el-button>
+                        <el-button link type="danger" @click="deleteDeviceVariable(scope.row)">删除</el-button>
+                      </template>
+                    </el-table-column>
+                  </el-table>
+                </el-card>
+              </el-col>
+            </el-row>
+            <el-card style="margin-top:12px">
+              <template #header>当前获取的 API 变量</template>
+              <div class="row-actions" style="margin-bottom:8px">
+                <el-input
+                  v-model="deviceVariableApiKeyword"
+                  clearable
+                  placeholder="模糊搜索 API 变量名、路径、当前值、模板"
+                  style="max-width:420px"
+                />
+                <el-tag>匹配 {{ filteredDeviceVariableApiRows.length }} / {{ deviceVariableApiRows.length }}</el-tag>
+              </div>
+              <el-table :data="filteredDeviceVariableApiRows" height="360" size="small" v-loading="deviceVariableLoading">
+                <el-table-column prop="templateName" label="模板" min-width="130" />
+                <el-table-column prop="name" label="变量名" min-width="180" show-overflow-tooltip />
+                <el-table-column prop="value" label="当前变量" min-width="220" show-overflow-tooltip />
+                <el-table-column prop="path" label="模板路径" min-width="280" show-overflow-tooltip />
+                <el-table-column prop="updatedAt" label="更新时间" min-width="170" />
+                <el-table-column label="操作" width="110">
+                  <template #default="scope">
+                    <el-button link type="primary" @click="copyApiVariableToBase(scope.row)">转为基础变量</el-button>
+                  </template>
                 </el-table-column>
               </el-table>
             </el-card>
@@ -866,6 +1229,151 @@
             </el-row>
           </section>
 
+          <section v-if="activePanel === 'taskPlans'" class="section-wrap">
+            <h3>计划任务</h3>
+            <div class="row-actions">
+              <el-button :loading="taskPlanLoading" @click="loadTaskPlans">刷新任务</el-button>
+              <el-button type="primary" plain @click="resetTaskPlanDraft">新建任务</el-button>
+              <el-tag>低优先级会避让高优先级；手动执行优先级最高</el-tag>
+            </div>
+            <el-row :gutter="12">
+              <el-col :md="10" :xs="24">
+                <el-card>
+                  <template #header>任务列表</template>
+                  <el-table :data="taskPlans" height="420" size="small" @row-click="pickTaskPlan">
+                    <el-table-column prop="name" label="名称" min-width="150" />
+                    <el-table-column prop="priority" label="优先级" width="80" />
+                    <el-table-column label="启用" width="70">
+                      <template #default="scope">{{ scope.row.enabled ? "是" : "否" }}</template>
+                    </el-table-column>
+                    <el-table-column prop="nextRunAt" label="下次执行" min-width="170" />
+                    <el-table-column label="操作" width="150">
+                      <template #default="scope">
+                        <el-button link type="primary" @click.stop="runTaskPlanNow(scope.row)">执行</el-button>
+                        <el-button link type="danger" @click.stop="deleteTaskPlan(scope.row)">删除</el-button>
+                      </template>
+                    </el-table-column>
+                  </el-table>
+                </el-card>
+              </el-col>
+              <el-col :md="14" :xs="24">
+                <el-card>
+                  <template #header>{{ taskPlanDraft.id ? '编辑计划任务' : '新建计划任务' }}</template>
+                  <el-form :model="taskPlanDraft" label-width="92px" size="small">
+                    <el-form-item label="任务名称"><el-input v-model="taskPlanDraft.name" /></el-form-item>
+                    <el-form-item label="描述"><el-input v-model="taskPlanDraft.description" /></el-form-item>
+                    <el-form-item label="启用"><el-switch v-model="taskPlanDraft.enabled" /></el-form-item>
+                    <el-form-item label="优先级"><el-input-number v-model="taskPlanDraft.priority" :min="0" :max="9999" /></el-form-item>
+                    <el-form-item label="目标设备">
+                      <el-select v-model="taskPlanDraft.targetDeviceIds" multiple collapse-tags collapse-tags-tooltip filterable style="width:100%">
+                        <el-option v-for="d in deviceStore.devices" :key="d.id" :label="deviceOptionLabel(d)" :value="d.id" />
+                      </el-select>
+                    </el-form-item>
+                    <el-form-item label="目标设备池">
+                      <el-select v-model="taskPlanDraft.targetClusterIds" multiple collapse-tags collapse-tags-tooltip filterable style="width:100%">
+                        <el-option v-for="c in clusters" :key="c.id" :label="c.name" :value="c.id" />
+                      </el-select>
+                    </el-form-item>
+                    <el-form-item label="调度模式">
+                      <el-select v-model="taskPlanDraft.scheduleMode" style="width:220px">
+                        <el-option label="一次性" value="once" />
+                        <el-option label="每周几" value="weekly" />
+                        <el-option label="日历月日" value="calendar" />
+                      </el-select>
+                    </el-form-item>
+                    <el-form-item label="一次时间" v-if="taskPlanDraft.scheduleMode === 'once'">
+                      <el-date-picker v-model="taskPlanOnceAt" type="datetime" placeholder="选择执行时间" style="width:260px" />
+                    </el-form-item>
+                    <el-form-item label="星期" v-if="taskPlanDraft.scheduleMode === 'weekly'">
+                      <el-checkbox-group v-model="taskPlanWeekdays">
+                        <el-checkbox :label="1">周一</el-checkbox>
+                        <el-checkbox :label="2">周二</el-checkbox>
+                        <el-checkbox :label="3">周三</el-checkbox>
+                        <el-checkbox :label="4">周四</el-checkbox>
+                        <el-checkbox :label="5">周五</el-checkbox>
+                        <el-checkbox :label="6">周六</el-checkbox>
+                        <el-checkbox :label="7">周日</el-checkbox>
+                      </el-checkbox-group>
+                    </el-form-item>
+                    <el-form-item label="月日" v-if="taskPlanDraft.scheduleMode === 'calendar'">
+                      <el-input v-model="taskPlanCalendarDatesText" placeholder="例如：05-12,06-01" />
+                    </el-form-item>
+                    <el-form-item label="执行时间" v-if="taskPlanDraft.scheduleMode !== 'once'">
+                      <el-input v-model="taskPlanTimesText" placeholder="例如：09:00,18:30" />
+                    </el-form-item>
+                  </el-form>
+
+                  <div class="row-between" style="margin:8px 0">
+                    <strong>动作步骤</strong>
+                    <el-button size="small" @click="addTaskPlanStep">新增步骤</el-button>
+                  </div>
+                  <el-table :data="taskPlanSteps" height="280" size="small">
+                    <el-table-column label="#" width="46"><template #default="scope">{{ scope.$index + 1 }}</template></el-table-column>
+                    <el-table-column label="动作" min-width="170">
+                      <template #default="scope">
+                        <el-select v-model="scope.row.actionType" style="width:100%">
+                          <el-option label="修改基础变量" value="device.variable.upsert" />
+                          <el-option label="刷新API模板" value="api_template.refresh" />
+                          <el-option label="下发后端地址" value="remote.update_backend_url" />
+                          <el-option label="切换设备界面" value="remote.switch_view" />
+                        </el-select>
+                      </template>
+                    </el-table-column>
+                    <el-table-column label="参数" min-width="300">
+                      <template #default="scope">
+                        <div class="stack-vertical compact">
+                          <template v-if="scope.row.actionType === 'device.variable.upsert'">
+                            <el-input v-model="scope.row.name" placeholder="变量名" />
+                            <el-input v-model="scope.row.value" placeholder="变量值" />
+                          </template>
+                          <template v-else-if="scope.row.actionType === 'api_template.refresh'">
+                            <el-select v-model="scope.row.slug" filterable placeholder="API模板slug" style="width:100%">
+                              <el-option v-for="tpl in templateRows" :key="tpl.slug" :label="`${tpl.name} (${tpl.slug})`" :value="tpl.slug" />
+                            </el-select>
+                          </template>
+                          <template v-else-if="scope.row.actionType === 'remote.update_backend_url'">
+                            <el-input v-model="scope.row.backendBaseUrl" placeholder="https://example.com:19999" />
+                          </template>
+                          <template v-else>
+                            <el-select v-model="scope.row.view" style="width:100%">
+                              <el-option label="主页" value="home" />
+                              <el-option label="天气" value="weather" />
+                              <el-option label="桌牌" value="badge" />
+                              <el-option label="待办" value="todo" />
+                              <el-option label="设置页" value="settings" />
+                              <el-option label="网络页" value="network" />
+                              <el-option label="关于页" value="about" />
+                            </el-select>
+                          </template>
+                        </div>
+                      </template>
+                    </el-table-column>
+                    <el-table-column label="失败继续" width="100">
+                      <template #default="scope"><el-switch v-model="scope.row.continueOnError" /></template>
+                    </el-table-column>
+                    <el-table-column label="操作" width="70">
+                      <template #default="scope"><el-button link type="danger" @click="removeTaskPlanStep(scope.$index)">删除</el-button></template>
+                    </el-table-column>
+                  </el-table>
+                  <div class="row-actions" style="margin-top:10px">
+                    <el-button type="primary" :loading="taskPlanSaving" @click="saveTaskPlan">保存任务</el-button>
+                    <el-button v-if="taskPlanDraft.id" :loading="taskPlanRunning" @click="runTaskPlanNow(taskPlanDraft)">手动执行</el-button>
+                  </div>
+                </el-card>
+              </el-col>
+            </el-row>
+            <el-card style="margin-top:12px">
+              <template #header>运行历史</template>
+              <el-table :data="taskPlanRuns" height="260" size="small">
+                <el-table-column prop="triggerType" label="触发" width="90" />
+                <el-table-column prop="status" label="状态" width="130" />
+                <el-table-column prop="reason" label="原因" min-width="160" />
+                <el-table-column prop="startedAt" label="开始" min-width="170" />
+                <el-table-column prop="finishedAt" label="结束" min-width="170" />
+              </el-table>
+            </el-card>
+          </section>
+
           <section v-if="activePanel === 'homepage'" class="section-wrap">
             <h3>主页</h3>
             <div class="row-actions">
@@ -936,12 +1444,14 @@
                 <el-form label-width="118px" size="small">
                   <el-form-item label="目标设备">
                     <el-select v-model="homepageDeviceId" filterable style="width:100%" @change="loadHomepageConfig">
-                      <el-option v-for="d in deviceStore.devices" :key="d.id" :label="deviceOptionLabel(d)" :value="d.id" />
+                      <el-option-group v-for="group in homepageDeviceGroups" :key="group.type" :label="group.label">
+                        <el-option v-for="d in group.devices" :key="d.id" :label="deviceOptionLabel(d)" :value="d.id" />
+                      </el-option-group>
                     </el-select>
                   </el-form-item>
                   <el-form-item label="模板 ID">
                     <el-select v-model="homepageConfigModel.template.template_id" filterable style="width:100%">
-                      <el-option v-for="tpl in homepageTemplates" :key="tpl.id" :label="tpl.name" :value="tpl.id" />
+                      <el-option v-for="tpl in homepageTemplatesForDevice" :key="tpl.id" :label="homepageTemplateOptionLabel(tpl)" :value="tpl.id" />
                     </el-select>
                   </el-form-item>
                   <el-form-item label="时间覆盖启用"><el-switch v-model="homepageConfigModel.time_overlay.enabled" /></el-form-item>
@@ -1049,6 +1559,8 @@
                       </div>
                       <div>下次执行时间：{{ formatDateTimeText(homepageConfigModel.auto_render_push.next_run_at) }}</div>
                       <div>上次执行时间：{{ formatDateTimeText(homepageConfigModel.auto_render_push.last_run_at) }}</div>
+                      <div>调度判定：{{ homepageConfigModel.auto_render_push.scheduler_decision || "-" }}</div>
+                      <div>调度心跳：{{ formatDateTimeText(homepageConfigModel.auto_render_push.scheduler?.last_tick_at || "") }}</div>
                       <div>
                         上次执行结果：
                         <el-tag size="small" :type="homepageAutoLastResultTagType">{{ homepageAutoLastResultText }}</el-tag>
@@ -1071,6 +1583,19 @@
                     </el-select>
                   </el-form-item>
                   <el-form-item label="名称"><el-input v-model="homepageTemplateDraft.name" /></el-form-item>
+                  <el-form-item label="设备类型">
+                    <el-select
+                      v-model="homepageTemplateDraft.targetDeviceTypes"
+                      multiple
+                      clearable
+                      collapse-tags
+                      collapse-tags-tooltip
+                      style="width:100%"
+                      placeholder="通用型，或选择一个/多个设备类型"
+                    >
+                      <el-option v-for="item in homepageDeviceTypeOptions" :key="item.value" :label="item.label" :value="item.value" />
+                    </el-select>
+                  </el-form-item>
                   <el-form-item label="HTML">
                     <el-input ref="homepageTemplateHtmlInputRef" v-model="homepageTemplateDraft.html" type="textarea" :rows="13" />
                   </el-form-item>
@@ -1203,7 +1728,7 @@
       :loading="homepageInsertVarLoading"
       :is-mobile="isMobile"
       title="主页变量"
-      subtitle="基础变量 / API模板变量"
+      subtitle="基础变量 / 设备变量 / API模板变量"
       @refresh="loadHomepageTemplateVariables"
       @insert="insertHomepageTemplateVariable"
     />
@@ -1294,6 +1819,99 @@
       </el-table>
     </el-dialog>
 
+    <el-dialog v-model="deviceVariableBatchDialogOpen" title="批量设备变量设置（表格）" width="88%" append-to-body>
+      <div class="row-actions" style="margin-bottom:8px">
+        <el-button @click="addDeviceVariableBatchRow">新增一行</el-button>
+        <el-button type="primary" @click="executeDeviceVariableBatch">批量保存</el-button>
+      </div>
+      <el-alert type="info" :closable="false" show-icon>
+        <template #default>
+          每行对应一个变量名/变量；变量名和变量都可以从现有值中选择，也可以直接输入。
+        </template>
+      </el-alert>
+      <el-table :data="deviceVariableBatchRows" height="420" size="small" style="margin-top:8px">
+        <el-table-column label="#" width="52">
+          <template #default="scope">{{ scope.$index + 1 }}</template>
+        </el-table-column>
+        <el-table-column label="变量名" min-width="160">
+          <template #default="scope">
+            <el-select
+              v-model="scope.row.name"
+              filterable
+              allow-create
+              default-first-option
+              clearable
+              style="width:100%"
+              placeholder="选择或输入变量名"
+            >
+              <el-option v-for="name in deviceVariableBaseNameOptions" :key="name" :label="name" :value="name" />
+            </el-select>
+          </template>
+        </el-table-column>
+        <el-table-column label="变量" min-width="180">
+          <template #default="scope">
+            <el-select
+              v-model="scope.row.value"
+              filterable
+              allow-create
+              default-first-option
+              clearable
+              style="width:100%"
+              placeholder="选择或输入变量"
+            >
+              <el-option v-for="value in deviceVariableBaseValueOptions" :key="value" :label="value" :value="value" />
+            </el-select>
+          </template>
+        </el-table-column>
+        <el-table-column label="模式" width="120">
+          <template #default="scope">
+            <el-select v-model="scope.row.mode">
+              <el-option label="指定设备" value="specified" />
+              <el-option label="随机设备池" value="random" />
+            </el-select>
+          </template>
+        </el-table-column>
+        <el-table-column label="指定设备" min-width="260">
+          <template #default="scope">
+            <el-select
+              v-model="scope.row.deviceIds"
+              multiple
+              collapse-tags
+              collapse-tags-tooltip
+              filterable
+              style="width:100%"
+              placeholder="选择设备"
+              :disabled="scope.row.mode !== 'specified'"
+            >
+              <el-option v-for="d in deviceStore.devices" :key="d.id" :label="deviceOptionLabel(d)" :value="d.id" />
+            </el-select>
+          </template>
+        </el-table-column>
+        <el-table-column label="随机设备池" min-width="240">
+          <template #default="scope">
+            <el-select
+              v-model="scope.row.clusterIds"
+              multiple
+              collapse-tags
+              collapse-tags-tooltip
+              filterable
+              style="width:100%"
+              placeholder="选择设备池"
+              :disabled="scope.row.mode !== 'random'"
+            >
+              <el-option v-for="cluster in clusters" :key="cluster.id" :label="cluster.name" :value="cluster.id" />
+            </el-select>
+          </template>
+        </el-table-column>
+        <el-table-column label="随机N" width="110">
+          <template #default="scope"><el-input-number v-model="scope.row.randomCount" :min="1" :max="999" :disabled="scope.row.mode !== 'random'" /></template>
+        </el-table-column>
+        <el-table-column label="操作" width="80">
+          <template #default="scope"><el-button link type="danger" @click="removeDeviceVariableBatchRow(scope.$index)">删除</el-button></template>
+        </el-table-column>
+      </el-table>
+    </el-dialog>
+
     <el-dialog v-model="clusterEditDialogOpen" :title="clusterForm.name ? `编辑设备池：${clusterForm.name}` : '编辑设备池'" width="92%" append-to-body>
       <div class="cluster-edit-shell">
         <el-card class="cluster-edit-meta" shadow="never">
@@ -1368,16 +1986,88 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { ElMessage } from "element-plus";
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { ElMessage } from "element-plus/es/components/message/index.mjs";
+import { ElMessageBox } from "element-plus/es/components/message-box/index.mjs";
 import { useAuthStore, type AppRole } from "../stores/auth";
 import { useDeviceStore } from "../stores/devices";
 import { apiRequest } from "../services/api";
+import {
+  fetchDeviceTypes,
+  createDeviceType,
+  updateDeviceType,
+  deleteDeviceType,
+  type DeviceTypeRow,
+} from "../services/deviceTypes";
+import {
+  fetchNvsBackups,
+  fetchNvsShadow,
+  fetchNvsSchema,
+  restoreNvsBackup,
+  writeNvsValue,
+  type NvsBackup,
+  type NvsItem,
+} from "../services/nvs";
+import {
+  assignAdminAiConfig,
+  createAdminAiConfig,
+  fetchAdminAiConfigs,
+  fetchMyAiConfig,
+  saveMyAiConfig,
+  type AiConfigRow,
+} from "../services/aiConfig";
 import DeviceLassoPicker from "../components/DeviceLassoPicker.vue";
-import ScheduleXiquePanel from "../components/ScheduleXiquePanel.vue";
 import TemplateVariablePanel from "../components/TemplateVariablePanel.vue";
 import TemplateAdvancedEditorDialog from "../components/TemplateAdvancedEditorDialog.vue";
-import SegmentTimePreview from "../components/SegmentTimePreview.vue";
+
+const ScheduleXiquePanel = defineAsyncComponent(() => import("../components/ScheduleXiquePanel.vue"));
+const SegmentTimePreview = defineAsyncComponent(() => import("../components/SegmentTimePreview.vue"));
+const SystemUpgradePanel = defineAsyncComponent(() => import("../components/SystemUpgradePanel.vue"));
+const E6AlbumPanel = defineAsyncComponent(() => import("../components/E6AlbumPanel.vue"));
+const E6DeviceDetailCard = defineAsyncComponent(() => import("../components/E6DeviceDetailCard.vue"));
+const AiChatPanel = defineAsyncComponent(() => import("../components/AiChatPanel.vue"));
+
+type DispatchTargetKey = "todo" | "schedule" | "templates" | "tf" | "remote" | "homepage" | "backendUrl" | "firmware";
+type TaskPlanStepRow = {
+  id?: string;
+  actionType: "device.variable.upsert" | "api_template.refresh" | "remote.update_backend_url" | "remote.switch_view";
+  title?: string;
+  enabled?: boolean;
+  orderIndex?: number;
+  continueOnError: boolean;
+  name?: string;
+  value?: string;
+  slug?: string;
+  backendBaseUrl?: string;
+  view?: string;
+};
+type TaskPlanRow = {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  priority: number;
+  targetDeviceIds: string[];
+  targetClusterIds: string[];
+  scheduleMode: "once" | "weekly" | "calendar";
+  scheduleSpec: Record<string, any>;
+  repeatSpec?: Record<string, any>;
+  retrySpec?: Record<string, any>;
+  steps: Array<Record<string, any>>;
+  lastRunAt?: string;
+  nextRunAt?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+type TaskRunRow = {
+  id: string;
+  planId: string;
+  triggerType: string;
+  status: string;
+  reason: string;
+  startedAt: string;
+  finishedAt: string;
+};
 
 const props = defineProps<{ role: AppRole }>();
 const title = props.role === "admin" ? "管理端" : "用户端";
@@ -1399,7 +2089,7 @@ const dispatchPickerRef = ref<any>(null);
 const dispatchPickerDialogOpen = ref(false);
 const dispatchPickerSelection = ref<string[]>([]);
 const dispatchFilteredIds = ref<string[]>([]);
-const dispatchTargetKey = ref<"todo" | "schedule" | "templates" | "tf" | "remote" | "homepage">("remote");
+const dispatchTargetKey = ref<DispatchTargetKey>("remote");
 
 const loginForm = reactive({ username: auth.lastUsername || auth.username || "", password: "" });
 const loginLoading = ref(false);
@@ -1443,11 +2133,167 @@ const adminResourceForm = reactive({
   action: "detach" as "detach" | "transfer" | "purge",
   targetUserId: "",
 });
+const aiConfigLoading = ref(false);
+const aiSettingsDrawerOpen = ref(false);
+const aiEffective = ref<Record<string, any> | null>(null);
+const aiConfigForm = reactive({
+  name: "我的 DeepSeek",
+  provider: "deepseek",
+  baseUrl: "https://api.deepseek.com",
+  model: "deepseek-chat",
+  apiKey: "",
+  enabled: true,
+  thinkingEnabled: false,
+});
+const adminAiConfigs = ref<AiConfigRow[]>([]);
+const adminAiConfigForm = reactive({
+  name: "团队 DeepSeek",
+  provider: "deepseek",
+  baseUrl: "https://api.deepseek.com",
+  model: "deepseek-chat",
+  apiKey: "",
+  enabled: true,
+});
+const adminAiAssignForm = reactive({
+  configId: "",
+  userIds: [] as string[],
+});
+const aiEffectiveText = computed(() => {
+  const value = aiEffective.value || {};
+  if (!value.provider) return "未加载";
+  const source = value.source === "user" ? "个人配置" : value.source === "assignment" ? "管理员分配" : "环境变量";
+  return `${source} · ${value.provider} · ${value.model || "-"} · ${value.apiKeyMask || "未设Key"}`;
+});
+
+function currentBackendBaseUrl() {
+  if (typeof window === "undefined" || !window.location?.origin) return "";
+  return window.location.origin.replace(/\/+$/g, "");
+}
 
 const deviceFilters = reactive({ bound: "", online: "", status: "", keyword: "" });
 const singleDeviceId = ref("");
 const deviceEditForm = reactive({ displayName: "", remark: "", status: "enabled", ownerId: "" });
 const quickEditRows = computed(() => deviceStore.devices.filter((item) => deviceStore.selectedIds.includes(item.id)));
+const selectedE6DetailDevice = computed(
+  () =>
+    quickEditRows.value.find((item) => String(item.type || "") === "e6-color-frame") ||
+    deviceStore.devices.find((item) => String(item.type || "") === "e6-color-frame") ||
+    null
+);
+const backendUrlForm = reactive({ backendBaseUrl: currentBackendBaseUrl() });
+const backendUrlClusterIds = ref<string[]>([]);
+const backendUrlDispatchLoading = ref(false);
+const usbNvsEntries = ref<NvsItem[]>([]);
+const usbNvsBackups = ref<NvsBackup[]>([]);
+const selectedNvsBackupId = ref("");
+const usbNvsState = reactive({
+  mode: "usb" as "usb" | "online",
+  supported: typeof navigator !== "undefined" && Boolean((navigator as any).serial),
+  connecting: false,
+  connected: false,
+  adapterReady: true,
+  status: typeof navigator !== "undefined" && Boolean((navigator as any).serial) ? "待连接" : "当前浏览器不支持 Web Serial",
+  offset: "0x9000",
+  size: "0x6000",
+  namespace: "net",
+  key: "server_url",
+  value: currentBackendBaseUrl(),
+  port: null as any,
+  selectedDeviceId: "",
+  loading: false,
+  reboot: false,
+});
+const usbNvsSupportTagType = computed(() => {
+  if (!usbNvsState.supported) return "danger";
+  if (usbNvsState.connected) return "success";
+  return "warning";
+});
+const taskPlanLoading = ref(false);
+const taskPlanSaving = ref(false);
+const taskPlanRunning = ref(false);
+const taskPlans = ref<TaskPlanRow[]>([]);
+const taskPlanRuns = ref<TaskRunRow[]>([]);
+const taskPlanDraft = reactive<Omit<TaskPlanRow, "steps">>({
+  id: "",
+  name: "",
+  description: "",
+  enabled: true,
+  priority: 10,
+  targetDeviceIds: [],
+  targetClusterIds: [],
+  scheduleMode: "once",
+  scheduleSpec: {},
+  repeatSpec: {},
+  retrySpec: {},
+  lastRunAt: "",
+  nextRunAt: "",
+  createdAt: "",
+  updatedAt: "",
+});
+const taskPlanSteps = ref<TaskPlanStepRow[]>([]);
+const taskPlanOnceAt = ref<Date | string>("");
+const taskPlanWeekdays = ref<number[]>([1, 2, 3, 4, 5]);
+const taskPlanCalendarDatesText = ref("");
+const taskPlanTimesText = ref("09:00");
+type DeviceBaseVariableRow = {
+  name: string;
+  value: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+type DeviceApiVariableRow = {
+  source: "api";
+  name: string;
+  path: string;
+  value: string;
+  type: string;
+  slug: string;
+  templateName: string;
+  updatedAt?: string;
+};
+type DeviceVariableBatchRow = {
+  name: string;
+  value: string;
+  mode: "specified" | "random";
+  deviceIds: string[];
+  clusterIds: string[];
+  randomCount: number;
+};
+const deviceVariableDeviceId = ref("");
+const deviceVariableLoading = ref(false);
+const deviceVariableBaseRows = ref<DeviceBaseVariableRow[]>([]);
+const deviceVariableApiRows = ref<DeviceApiVariableRow[]>([]);
+const deviceVariableSuggestions = reactive<{ names: string[]; values: string[] }>({ names: [], values: [] });
+const deviceVariableApiSuggestions = reactive<{ names: string[]; values: string[] }>({ names: [], values: [] });
+const deviceVariableApiKeyword = ref("");
+const deviceVariableDraft = reactive({ name: "", value: "" });
+const deviceVariableEditingName = ref("");
+const deviceVariableBatchDialogOpen = ref(false);
+const deviceVariableBatchRows = ref<DeviceVariableBatchRow[]>([]);
+function compactUniqueOptions(values: Array<string | undefined | null>) {
+  return [...new Set(values.map((item) => String(item || "").trim()).filter(Boolean))].slice(0, 500);
+}
+const deviceVariableBaseNameOptions = computed(() =>
+  compactUniqueOptions([
+    ...deviceVariableSuggestions.names,
+    ...deviceVariableBaseRows.value.map((item) => item.name),
+  ])
+);
+const deviceVariableBaseValueOptions = computed(() =>
+  compactUniqueOptions([
+    ...deviceVariableSuggestions.values,
+    ...deviceVariableBaseRows.value.map((item) => item.value),
+  ])
+);
+const filteredDeviceVariableApiRows = computed(() => {
+  const keyword = String(deviceVariableApiKeyword.value || "").trim().toLowerCase();
+  if (!keyword) return deviceVariableApiRows.value;
+  return deviceVariableApiRows.value.filter((row) => {
+    return [row.templateName, row.slug, row.name, row.path, row.value, row.type, row.updatedAt]
+      .filter(Boolean)
+      .some((part) => String(part).toLowerCase().includes(keyword));
+  });
+});
 const bindForm = reactive({ pin: "", ownerId: "" });
 const ownerSelectOptions = computed(() => adminUsers.value.filter((user) => user.status !== "blocked"));
 const todoDeviceId = ref("");
@@ -1495,6 +2341,19 @@ type TemplateRow = {
   deviceKeyRequired: boolean;
   enabled: boolean;
   advancedConfig?: TemplateAdvancedConfig;
+  refreshConfig?: TemplateRefreshConfig;
+};
+
+type TemplateRefreshMode = "manual" | "interval" | "on_request" | "stale_while_revalidate";
+type TemplateRefreshConfig = {
+  mode: TemplateRefreshMode;
+  enabled: boolean;
+  intervalMinutes: number;
+  ttlSeconds: number;
+  minRequestGapSeconds: number;
+  timeoutMs: number;
+  fallbackToStale: boolean;
+  jitterSeconds: number;
 };
 
 type TemplateAdvancedExtract = {
@@ -1537,6 +2396,16 @@ const templateDraft = reactive<TemplateRow>({
   deviceKeyRequired: true,
   enabled: true,
   advancedConfig: { output: "", timeoutMs: 8000, steps: [] },
+  refreshConfig: {
+    mode: "interval",
+    enabled: true,
+    intervalMinutes: 10,
+    ttlSeconds: 300,
+    minRequestGapSeconds: 30,
+    timeoutMs: 8000,
+    fallbackToStale: true,
+    jitterSeconds: 15,
+  },
 });
 const templateAdvancedDialogVisible = ref(false);
 const templateAdvancedEditorTitle = computed(() => {
@@ -1611,6 +2480,8 @@ type FirmwareRow = {
 const firmwareRows = ref<FirmwareRow[]>([]);
 const firmwareForm = reactive({ version: "", deviceType: "ink-screen", releaseNote: "" });
 const firmwareFile = ref<File | null>(null);
+const fullFirmwareBundles = ref<Array<Record<string, any>>>([]);
+const fullFirmwareFile = ref<File | null>(null);
 const upgradeRows = ref<Array<Record<string, any>>>([]);
 
 const tfQuery = reactive({ category: "", deviceId: "" });
@@ -1657,13 +2528,14 @@ type HomepageTemplateRow = {
   type: string;
   html: string;
   builtin?: boolean;
+  targetDeviceTypes?: string[];
 };
 type HomepageTemplateVariableRow = {
   path: string;
   placeholder: string;
   type: string;
   example: string;
-  source?: "base" | "api";
+  source?: "base" | "api" | "device";
   slug?: string;
   sourceLabel?: string;
   categoryKey?: string;
@@ -1677,7 +2549,9 @@ const homepageTemplateDraft = reactive<HomepageTemplateRow>({
   type: "custom_html",
   html: "",
   builtin: false,
+  targetDeviceTypes: [],
 });
+const deviceTypeRows = ref<DeviceTypeRow[]>([]);
 const homepageTemplateVariables = ref<HomepageTemplateVariableRow[]>([]);
 const homepageInsertVarVisible = ref(false);
 const homepageInsertVarLoading = ref(false);
@@ -1795,6 +2669,49 @@ const homepageTimeOverlayPreviewStyle = computed(() => {
 });
 
 const homepageAutoRenderPushModel = computed(() => homepageConfigModel?.auto_render_push || {});
+const homepageDeviceTypeOptions = computed(() => {
+  const map = new Map<string, string>();
+  deviceTypeRows.value.forEach((item: any) => {
+    const value = String(item.type || item.id || "").trim();
+    if (!value) return;
+    map.set(value, String(item.label || item.name || value));
+  });
+  deviceStore.devices.forEach((item: any) => {
+    const value = homepageDeviceTypeOf(item);
+    if (value && !map.has(value)) map.set(value, value);
+  });
+  return [...map.entries()].map(([value, label]) => ({ value, label }));
+});
+const homepageDeviceTypeLabelMap = computed(() => new Map(homepageDeviceTypeOptions.value.map((item) => [item.value, item.label])));
+const homepageDeviceGroups = computed(() => {
+  const groups = new Map<string, any[]>();
+  deviceStore.devices.forEach((item: any) => {
+    const type = homepageDeviceTypeOf(item) || "unknown";
+    if (!groups.has(type)) groups.set(type, []);
+    groups.get(type)?.push(item);
+  });
+  return [...groups.entries()]
+    .sort((a, b) => homepageDeviceTypeLabel(a[0]).localeCompare(homepageDeviceTypeLabel(b[0])))
+    .map(([type, devices]) => ({
+      type,
+      label: `${homepageDeviceTypeLabel(type)} · ${devices.length} 台`,
+      devices,
+    }));
+});
+const selectedHomepageDeviceType = computed(() => {
+  const row = deviceStore.devices.find((item: any) => item.id === homepageDeviceId.value);
+  return homepageDeviceTypeOf(row || {});
+});
+const homepageTemplatesForDevice = computed(() => {
+  const type = selectedHomepageDeviceType.value;
+  const rows = homepageTemplates.value.filter((item) => {
+    const targets = normalizeHomepageTargetDeviceTypes(item.targetDeviceTypes);
+    return !targets.length || !type || targets.includes(type);
+  });
+  if (rows.some((item) => item.id === homepageConfigModel?.template?.template_id)) return rows;
+  const selected = homepageTemplates.value.find((item) => item.id === homepageConfigModel?.template?.template_id);
+  return selected ? [selected, ...rows] : rows;
+});
 const homepageAutoFixedTimeOptions = computed(() => {
   const base = ["07:30", "08:00", "09:00", "12:00", "14:00", "18:00", "20:00", "22:00"];
   const dynamic = Array.isArray(homepageAutoRenderPushModel.value?.fixed_times)
@@ -1820,17 +2737,31 @@ const homepageAutoLastResultTagType = computed(() => {
 
 function ensureHomepageAutoRenderPushShape(target: any) {
   const safe = target && typeof target === "object" ? target : {};
+  const toLooseBoolean = (value: unknown, fallback: boolean) => {
+    if (value === undefined || value === null || value === "") return fallback;
+    if (typeof value === "boolean") return value;
+    if (typeof value === "number") return value !== 0;
+    const raw = String(value).trim().toLowerCase();
+    if (!raw) return fallback;
+    if (["1", "true", "yes", "on"].includes(raw)) return true;
+    if (["0", "false", "no", "off"].includes(raw)) return false;
+    return fallback;
+  };
   const fixedTimesRaw = Array.isArray(safe.fixed_times)
     ? safe.fixed_times
     : typeof safe.fixed_times === "string"
       ? safe.fixed_times.split(/[,\n;\s]+/g)
       : [];
   const fixedTimes = [...new Set(fixedTimesRaw.map((item: unknown) => String(item || "").trim()).filter(Boolean))].sort();
-  const intervalEnabled = safe.interval_enabled === undefined ? true : Boolean(safe.interval_enabled);
+  const intervalEnabled = toLooseBoolean(safe.interval_enabled ?? safe.intervalEnabled, true);
+  const enabled = toLooseBoolean(safe.enabled, false);
   const windowStart = String(safe.window_start_time || safe.daily_start_time || "07:30");
   const windowEnd = String(safe.window_end_time || "23:59");
-  const intervalMinutes = Number(safe.interval_minutes || 60);
+  const intervalMinutesRaw = Number(safe.interval_minutes || 60);
+  const intervalMinutesAllowed = [10, 30, 60, 120, 360];
+  const intervalMinutes = intervalMinutesAllowed.includes(Math.floor(intervalMinutesRaw)) ? Math.floor(intervalMinutesRaw) : 60;
 
+  safe.enabled = enabled;
   safe.interval_enabled = intervalEnabled;
   safe.window_start_time = windowStart;
   safe.window_end_time = windowEnd;
@@ -1845,13 +2776,15 @@ function ensureHomepageAutoRenderPushShape(target: any) {
   safe.last_reason = String(safe.last_reason || "");
   return safe;
 }
-const batchTargetDeviceIds = reactive<Record<"todo" | "schedule" | "templates" | "tf" | "remote" | "homepage", string[]>>({
+const batchTargetDeviceIds = reactive<Record<DispatchTargetKey, string[]>>({
   todo: [],
   schedule: [],
   templates: [],
   tf: [],
   remote: [],
   homepage: [],
+  backendUrl: [],
+  firmware: [],
 });
 
 type LayoutRow = {
@@ -1941,25 +2874,53 @@ const batchPlans = ref<Array<Record<string, any>>>([]);
 const batchPlanId = ref("");
 const batchPlanName = ref("");
 const batchRows = ref<Array<{ name: string; title: string; mode: "specified" | "random"; deviceIds: string[]; poolDeviceIds: string[]; randomCount: number }>>([]);
+const iconPaths: Record<string, string> = {
+  overview: "M4 13h6V4H4v9Zm0 7h6v-5H4v5Zm10 0h6v-9h-6v9Zm0-16v5h6V4h-6Z",
+  account: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 8a7 7 0 0 1 14 0H5Z",
+  ai: "M12 3a6 6 0 0 0-6 6v2.2A3 3 0 0 0 7 17h1v3h8v-3h1a3 3 0 0 0 1-5.8V9a6 6 0 0 0-6-6Zm-2 7h1.8v1.8H10V10Zm4.2 0H16v1.8h-1.8V10ZM9.5 15h5v1.4h-5V15Z",
+  pin: "M7 10V8a5 5 0 0 1 10 0v2h1.2A1.8 1.8 0 0 1 20 11.8v7.4a1.8 1.8 0 0 1-1.8 1.8H5.8A1.8 1.8 0 0 1 4 19.2v-7.4A1.8 1.8 0 0 1 5.8 10H7Zm2 0h6V8a3 3 0 0 0-6 0v2Z",
+  device: "M5 4h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-5v2h3v2H7v-2h3v-2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm0 2v9h14V6H5Z",
+  variable: "M5 5h14v4H5V5Zm0 6h8v4H5v-4Zm10 0h4v8h-4v-8ZM5 17h8v2H5v-2Z",
+  task: "M6 4h12v2H6V4Zm0 5h12v2H6V9Zm0 5h8v2H6v-2Zm10.5 1.2 1.4 1.4 3.6-3.6 1.4 1.4-5 5-2.8-2.8 1.4-1.4Z",
+  todo: "M5 4h14v16H5V4Zm3 4v2h8V8H8Zm0 4v2h8v-2H8Zm0 4v2h5v-2H8Z",
+  schedule: "M7 2h2v3h6V2h2v3h3v17H4V5h3V2Zm11 8H6v10h12V10Z",
+  file: "M6 2h8l4 4v16H6V2Zm7 1.5V7h3.5L13 3.5ZM8 11h8v2H8v-2Zm0 4h8v2H8v-2Z",
+  album: "M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm0 2v9l3.5-3.5 2.5 2.5 4-5L19 14V6H5Zm3 4a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z",
+  remote: "M8 3h8a3 3 0 0 1 3 3v12a3 3 0 0 1-3 3H8a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3Zm1 4h6V5H9v2Zm3 12a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z",
+  home: "M3 11 12 3l9 8h-3v9h-5v-6h-2v6H6v-9H3Z",
+  layout: "M4 4h16v16H4V4Zm2 2v5h12V6H6Zm0 7v5h5v-5H6Zm7 0v5h5v-5h-5Z",
+  history: "M12 4a8 8 0 1 1-7.5 5.3H2l3.3-4L8.7 9H6.6A6 6 0 1 0 12 6V4Zm-1 4h2v5l4 2-1 1.7-5-2.7V8Z",
+  template: "M5 3h14v18H5V3Zm3 4h8V5H8v2Zm0 4h8V9H8v2Zm0 4h5v-2H8v2Z",
+  firmware: "M8 3h8v4h3v8h-3v6H8v-6H5V7h3V3Zm2 2v2h4V5h-4Zm0 12v2h4v-2h-4Z",
+  pool: "M7 7a4 4 0 1 1 8 0 4 4 0 0 1-8 0Zm-3 13a7 7 0 0 1 14 0H4Zm13-8a3 3 0 0 0 0-6v6Zm1 8h3a5 5 0 0 0-4-4.9V20Z",
+  log: "M5 3h14v18H5V3Zm3 5h8V6H8v2Zm0 4h8v-2H8v2Zm0 4h5v-2H8v2Z",
+  upgrade: "M12 3 7 8h3v6h4V8h3l-5-5ZM5 18h14v3H5v-3Z",
+  default: "M5 5h14v14H5V5Z",
+};
 const sidebarMenuItems = computed(() => {
   const items = [
-    { index: "overview", label: "主页概览" },
-    { index: "account", label: "账号管理" },
-    { index: "devicePin", label: "设备与PIN" },
-    { index: "devices", label: "设备管理" },
-    { index: "todo", label: "TODO" },
-    { index: "schedule", label: "日程安排" },
-    { index: "tf", label: "文件管理" },
-    { index: "remote", label: "远程控制" },
-    { index: "homepage", label: "主页" },
-    { index: "layout", label: "桌牌设置" },
-    { index: "history", label: "桌牌历史" },
-    { index: "templates", label: "API模板" },
-    { index: "firmware", label: "固件管理" },
+    { index: "overview", label: "主页概览", icon: "overview" },
+    { index: "account", label: "账号管理", icon: "account" },
+    { index: "ai", label: "AI", icon: "ai" },
+    { index: "devicePin", label: "设备与PIN", icon: "pin" },
+    { index: "devices", label: "设备管理", icon: "device" },
+    { index: "deviceVariables", label: "设备变量", icon: "variable" },
+    { index: "taskPlans", label: "计划任务", icon: "task" },
+    { index: "todo", label: "TODO", icon: "todo" },
+    { index: "schedule", label: "日程安排", icon: "schedule" },
+    { index: "tf", label: "文件管理", icon: "file" },
+    { index: "albumCollections", label: "相册与集合", icon: "album" },
+    { index: "remote", label: "远程控制", icon: "remote" },
+    { index: "homepage", label: "主页", icon: "home" },
+    { index: "layout", label: "桌牌设置", icon: "layout" },
+    { index: "history", label: "桌牌历史", icon: "history" },
+    { index: "templates", label: "API模板", icon: "template" },
+    { index: "firmware", label: "固件管理", icon: "firmware" },
   ];
   if (isAdmin.value) {
-    items.splice(4, 0, { index: "pools", label: "设备池管理" });
-    items.push({ index: "logs", label: "日志中心" });
+    items.splice(4, 0, { index: "pools", label: "设备池管理", icon: "pool" });
+    items.push({ index: "logs", label: "日志中心", icon: "log" });
+    items.push({ index: "systemUpgrade", label: "系统升级", icon: "upgrade" });
   }
   return items;
 });
@@ -2023,6 +2984,8 @@ const dispatchTargetKeyLabel = computed(() => {
     tf: "文件管理",
     remote: "远程控制",
     homepage: "主页",
+    backendUrl: "连接地址",
+    firmware: "固件升级",
   } as const;
   return map[dispatchTargetKey.value];
 });
@@ -2068,41 +3031,60 @@ function toggleDarkMode(value: string | number | boolean) {
 function onSelectPanel(index: string) {
   activePanel.value = index;
   mobileNavOpen.value = false;
-  if (["todo", "schedule", "templates", "tf", "remote", "homepage"].includes(index)) {
-    loadClusters();
+  const loaders = new Set<() => Promise<unknown>>();
+  if (["todo", "schedule", "templates", "tf", "remote", "homepage", "deviceVariables", "taskPlans"].includes(index)) {
+    loaders.add(loadClusters);
   }
   if (index === "overview") {
-    refreshOverview();
+    loaders.add(refreshOverview);
   } else if (index === "account" && isAdmin.value) {
-    loadAdminUsers();
+    loaders.add(loadAdminUsers);
+  } else if (index === "ai") {
+    loaders.add(loadAiConfig);
+    if (isAdmin.value) {
+      loaders.add(loadAdminUsers);
+      loaders.add(loadAdminAiConfigs);
+    }
   } else if (index === "devicePin" && isAdmin.value) {
-    loadAdminUsers();
+    loaders.add(loadAdminUsers);
   } else if (index === "todo") {
-    loadTodoRows();
+    loaders.add(loadTodoRows);
   } else if (index === "schedule") {
-    loadScheduleRows();
+    loaders.add(loadScheduleRows);
   } else if (index === "templates") {
-    loadTemplateRows();
+    loaders.add(loadTemplateRows);
   } else if (index === "homepage") {
-    loadHomepageAll();
+    loaders.add(loadHomepageAll);
   } else if (index === "firmware") {
-    loadFirmwareRows();
-    loadUpgradeJobs();
+    loaders.add(loadFirmwareRows);
+    loaders.add(loadFullFirmwareBundles);
+    loaders.add(loadUpgradeJobs);
   } else if (index === "tf") {
-    loadTfRows();
-    loadTfLocalRows();
+    loaders.add(loadTfRows);
+    loaders.add(loadTfLocalRows);
+  } else if (index === "albumCollections") {
+    loaders.add(refreshDevices);
   } else if (index === "logs" && isAdmin.value) {
-    loadOperationLogs();
-    loadApiLogs();
+    loaders.add(loadOperationLogs);
+    loaders.add(loadApiLogs);
+  } else if (index === "systemUpgrade" && isAdmin.value) {
+    // system-upgrade panel handles its own data loading
   } else if (index === "layout") {
-    loadLayouts();
+    loaders.add(loadLayouts);
   } else if (index === "pools" && isAdmin.value) {
-    loadClusters();
+    loaders.add(loadClusters);
   } else if (index === "devices") {
-    loadClusters();
+    loaders.add(loadClusters);
+  } else if (index === "deviceVariables") {
+    loaders.add(loadDeviceVariables);
+  } else if (index === "taskPlans") {
+    loaders.add(loadTaskPlans);
+    loaders.add(loadTemplateRows);
   } else if (index === "history") {
-    loadHistory();
+    loaders.add(loadHistory);
   }
+
+  void Promise.allSettled([...loaders].map((load) => load()));
 }
 
 function onFilteredChange(ids: string[]) { filteredDeviceIds.value = ids; }
@@ -2114,9 +3096,10 @@ function selectAllFiltered() { pickerRef.value?.selectAllFiltered(); }
 function clearSelection() { deviceStore.clearSelection(); }
 function clearPoolPickerSelection() { poolPickerSelection.value = []; }
 function clearDispatchPickerSelection() { dispatchPickerSelection.value = []; }
-function openDispatchPicker(key: "todo" | "schedule" | "templates" | "tf" | "remote" | "homepage") {
+function openDispatchPicker(key: DispatchTargetKey) {
   dispatchTargetKey.value = key;
-  dispatchPickerSelection.value = [...(batchTargetDeviceIds[key] || [])];
+  const current = batchTargetDeviceIds[key] || [];
+  dispatchPickerSelection.value = current.length ? [...current] : [...deviceStore.selectedIds];
   dispatchPickerDialogOpen.value = true;
 }
 function confirmDispatchPicker() {
@@ -2130,20 +3113,7 @@ async function doLogin() {
     await auth.login(props.role, loginForm.username, loginForm.password);
     loginForm.username = auth.lastUsername || auth.username || loginForm.username;
     loginForm.password = "";
-    await refreshDevices();
-    await refreshOverview();
-    await loadClusters();
-    if (isAdmin.value) {
-      await loadAdminUsers();
-    }
-    await loadTemplateRows();
-    await loadHomepageAll();
-    scheduleHomepageEditPreview();
-    await loadFirmwareRows();
-    await loadUpgradeJobs();
-    await loadTfRows();
-    await loadLayouts();
-    await loadHistory();
+    await loadInitialDashboardData();
     ElMessage.success("登录成功");
   } catch (error) {
     ElMessage.error((error as Error).message || "登录失败");
@@ -2177,6 +3147,9 @@ async function refreshDevices() {
   if (!homepageDeviceId.value && deviceStore.devices.length) {
     homepageDeviceId.value = deviceStore.devices[0].id;
   }
+  if (!deviceVariableDeviceId.value && deviceStore.devices.length) {
+    deviceVariableDeviceId.value = deviceStore.devices[0].id;
+  }
   if (!singleForm.deviceId && deviceStore.devices.length) singleForm.deviceId = deviceStore.devices[0].id;
   const valid = new Set(deviceStore.devices.map((item) => item.id));
   (Object.keys(batchTargetDeviceIds) as Array<keyof typeof batchTargetDeviceIds>).forEach((key) => {
@@ -2185,22 +3158,72 @@ async function refreshDevices() {
   onSingleDeviceChanged();
 }
 
+async function loadDeviceTypeRows() {
+  if (!auth.token) return;
+  try {
+    deviceTypeRows.value = await fetchDeviceTypes(auth.token);
+  } catch (_) {
+    deviceTypeRows.value = [];
+  }
+}
+
+type DashboardOverviewPayload = Partial<{
+  deviceTotal: number;
+  deviceBound: number;
+  deviceUnbound: number;
+  deviceOnline: number;
+  deviceOffline: number;
+  todoCount: number;
+  scheduleCount: number;
+  firmwareCount: number;
+}>;
+
+function applyOverview(payload: DashboardOverviewPayload) {
+  const numberOr = (value: unknown, fallback: number) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  };
+  const deviceTotal = numberOr(payload.deviceTotal, deviceStore.devices.length);
+  const deviceBoundFallback = deviceStore.devices.filter((device) => device.bindState === "bound").length;
+  const deviceOnlineFallback = deviceStore.devices.filter((device) => device.online).length;
+  overview.deviceTotal = deviceTotal;
+  overview.deviceBound = numberOr(payload.deviceBound, deviceBoundFallback);
+  overview.deviceUnbound = numberOr(payload.deviceUnbound, deviceTotal - overview.deviceBound);
+  overview.deviceOnline = numberOr(payload.deviceOnline, deviceOnlineFallback);
+  overview.deviceOffline = numberOr(payload.deviceOffline, deviceTotal - overview.deviceOnline);
+  overview.todoCount = numberOr(payload.todoCount, 0);
+  overview.scheduleCount = numberOr(payload.scheduleCount, 0);
+  overview.firmwareCount = numberOr(payload.firmwareCount, 0);
+}
+
 async function refreshOverview() {
   if (!auth.token) return;
-  const [devices, todos, schedules, firmwares] = await Promise.all([
-    apiRequest<any[]>("/api/devices", { token: auth.token }),
-    apiRequest<any[]>("/api/todos", { token: auth.token }),
-    apiRequest<any[]>("/api/schedules", { token: auth.token }),
-    apiRequest<any[]>("/api/firmware", { token: auth.token }),
-  ]);
-  overview.deviceTotal = devices.length;
-  overview.deviceBound = devices.filter((d) => d.bindState === "bound").length;
-  overview.deviceUnbound = devices.length - overview.deviceBound;
-  overview.deviceOnline = devices.filter((d) => d.online).length;
-  overview.deviceOffline = devices.length - overview.deviceOnline;
-  overview.todoCount = todos.length;
-  overview.scheduleCount = schedules.length;
-  overview.firmwareCount = firmwares.length;
+  try {
+    const payload = await apiRequest<DashboardOverviewPayload>("/api/dashboard/overview", { token: auth.token });
+    applyOverview(payload);
+  } catch (_) {
+    // Compatibility fallback for servers that do not expose the aggregate endpoint yet.
+    // Device counts come from the already-loaded store to avoid fetching /api/devices twice.
+    const [todos, schedules, firmwares] = await Promise.all([
+      apiRequest<any[]>("/api/todos", { token: auth.token }),
+      apiRequest<any[]>("/api/schedules", { token: auth.token }),
+      apiRequest<any[]>("/api/firmware", { token: auth.token }),
+    ]);
+    applyOverview({
+      todoCount: todos.length,
+      scheduleCount: schedules.length,
+      firmwareCount: firmwares.length,
+    });
+  }
+}
+
+async function loadInitialDashboardData() {
+  await refreshDevices();
+  const [, overviewResult] = await Promise.allSettled([loadDeviceTypeRows(), refreshOverview()]);
+  if (overviewResult.status === "rejected") {
+    applyOverview({});
+    console.warn("[dashboard] overview load failed", overviewResult.reason);
+  }
 }
 
 function selectedDevice() {
@@ -2235,13 +3258,17 @@ async function updateCurrentDevice() {
 
 async function saveDeviceQuickEdit(row: any) {
   if (!row?.id) return;
+  const body: Record<string, any> = {
+    displayName: String(row.displayName || "").trim(),
+    remark: String(row.remark || "").trim(),
+  };
+  if (isAdmin.value) {
+    body.ownerId = String(row.ownerId || "").trim();
+  }
   await apiRequest(`/api/devices/${row.id}`, {
     method: "POST",
     token: auth.token,
-    body: JSON.stringify({
-      displayName: String(row.displayName || "").trim(),
-      remark: String(row.remark || "").trim(),
-    }),
+    body: JSON.stringify(body),
   });
   ElMessage.success(`设备 ${row.id} 已更新`);
   await refreshDevices();
@@ -2297,6 +3324,697 @@ async function batchDeleteAllFiltered() {
   await refreshOverview();
 }
 
+function fillCurrentBackendBaseUrl() {
+  const current = currentBackendBaseUrl();
+  if (!current) return ElMessage.error("无法读取当前访问地址");
+  backendUrlForm.backendBaseUrl = current;
+}
+
+async function dispatchBackendUrl() {
+  const backendBaseUrl = String(backendUrlForm.backendBaseUrl || "").trim().replace(/\/+$/g, "");
+  const deviceIds = resolveBatchTargetDevices("backendUrl");
+  const clusterIds = [...backendUrlClusterIds.value];
+  if (!backendBaseUrl) return ElMessage.error("请填写后端地址");
+  if (!deviceIds.length && !clusterIds.length) return ElMessage.error("请先选择设备或设备池");
+
+  backendUrlDispatchLoading.value = true;
+  try {
+    const data = await apiRequest<{ successCount: number; failedCount: number; ackedSuccessCount?: number; ackedPendingCount?: number }>("/api/remote/update-backend-url", {
+      method: "POST",
+      token: auth.token,
+      body: JSON.stringify({
+        backendBaseUrl,
+        deviceIds,
+        clusterIds,
+        ackTimeoutMs: 8000,
+      }),
+    });
+    backendUrlForm.backendBaseUrl = backendBaseUrl;
+    ElMessage.success(`连接地址下发：成功 ${data.successCount}，失败 ${data.failedCount}`);
+  } catch (error) {
+    ElMessage.error((error as Error).message || "连接地址下发失败");
+  } finally {
+    backendUrlDispatchLoading.value = false;
+  }
+}
+
+async function connectUsbNvsDevice() {
+  const serial = typeof navigator !== "undefined" ? (navigator as any).serial : null;
+  if (!serial) {
+    usbNvsState.status = "当前浏览器不支持 Web Serial";
+    return ElMessage.error("当前浏览器不支持 Web Serial，请使用 Chromium/Edge 并通过 HTTPS/localhost 访问");
+  }
+  usbNvsState.connecting = true;
+  try {
+    const port = await serial.requestPort({});
+    await port.open({ baudRate: 115200 });
+    usbNvsState.port = port;
+    usbNvsState.connected = true;
+    usbNvsState.status = "USB设备已连接，等待读取硬件 NVS";
+    usbNvsEntries.value = [];
+    ElMessage.success("USB设备已连接");
+  } catch (error) {
+    usbNvsState.connected = false;
+    usbNvsState.port = null;
+    usbNvsState.status = (error as Error).message || "连接失败";
+    ElMessage.error((error as Error).message || "连接USB设备失败");
+  } finally {
+    usbNvsState.connecting = false;
+  }
+}
+
+async function disconnectUsbNvsDevice() {
+  try {
+    if (usbNvsState.port?.readable || usbNvsState.port?.writable) {
+      await usbNvsState.port.close();
+    }
+  } catch (_) {
+    // ignore close errors
+  }
+  usbNvsState.port = null;
+  usbNvsState.connected = false;
+  usbNvsState.status = usbNvsState.supported ? "待连接" : "当前浏览器不支持 Web Serial";
+}
+
+function selectedNvsDeviceId() {
+  return usbNvsState.selectedDeviceId || "";
+}
+
+async function writeUsbSerialLine(line: string) {
+  if (!usbNvsState.port?.writable) throw new Error("USB 串口不可写，请重新连接硬件");
+  const writer = usbNvsState.port.writable.getWriter();
+  try {
+    await writer.write(new TextEncoder().encode(`${line}\n`));
+  } finally {
+    writer.releaseLock();
+  }
+}
+
+async function readUsbSerialLine(timeoutMs = 45000) {
+  if (!usbNvsState.port?.readable) throw new Error("USB 串口不可读，请重新连接硬件");
+  const reader = usbNvsState.port.readable.getReader();
+  const decoder = new TextDecoder();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      try {
+        void reader.cancel();
+      } catch (_) {
+        // ignore cancel errors
+      }
+      reject(new Error("当前固件未返回 USB NVS 数据，请确认已刷入支持 nvs.read 的 E6 固件"));
+    }, timeoutMs);
+  });
+  const readLoop = (async () => {
+    let buffer = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      const resultLine = [...lines].reverse().find((line) => line.includes("nvs.read") || line.startsWith("{") || line.startsWith("["));
+      if (resultLine) return resultLine;
+      if (buffer.length > 8192) return buffer.trim();
+    }
+    return buffer.trim();
+  })();
+  try {
+    const line = await Promise.race([readLoop, timeout]);
+    if (!line) throw new Error("当前固件未返回 USB NVS 数据");
+    return line;
+  } finally {
+    if (timer) clearTimeout(timer);
+    reader.releaseLock();
+  }
+}
+
+function tryParseUsbNvsJson(raw: string) {
+  const candidates = [
+    raw.trim(),
+    ...raw
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .reverse(),
+  ];
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate);
+    } catch (_) {
+      const jsonLike = candidate.match(/(\{[\s\S]*\}|\[[\s\S]*\])/);
+      if (!jsonLike) continue;
+      try {
+        return JSON.parse(jsonLike[1]);
+      } catch (_) {
+        // keep scanning
+      }
+    }
+  }
+  return null;
+}
+
+function normalizeUsbNvsEntries(payload: unknown, raw: string): NvsItem[] {
+  const fallbackNamespace = usbNvsState.namespace.trim() || "nvs";
+  const fallbackKey = usbNvsState.key.trim() || "raw";
+  const normalizeEntry = (entry: any, index: number): NvsItem => ({
+    namespace: String(entry?.namespace || fallbackNamespace),
+    key: String(entry?.key || entry?.name || (index === 0 ? fallbackKey : `item_${index + 1}`)),
+    type: String(entry?.type || typeof entry?.value || "string"),
+    value: typeof entry?.value === "string" ? entry.value : JSON.stringify(entry?.value ?? entry ?? ""),
+    description: entry?.description ? String(entry.description) : undefined,
+    secret: Boolean(entry?.secret),
+    readonly: entry?.readonly === undefined ? true : Boolean(entry.readonly),
+  });
+
+  if (Array.isArray(payload)) {
+    return payload.map(normalizeEntry);
+  }
+  if (payload && typeof payload === "object") {
+    const data = payload as Record<string, any>;
+    if (data.ok === false || data.success === false) {
+      throw new Error(String(data.error || data.message || "USB NVS 读取失败"));
+    }
+    const rows = data.items || data.rows || data.nvs;
+    if (Array.isArray(rows)) {
+      return rows.map(normalizeEntry);
+    }
+    const values = data.values && typeof data.values === "object" ? data.values : null;
+    if (values) {
+      return Object.entries(values).map(([key, value]) =>
+        normalizeEntry({ namespace: data.namespace || fallbackNamespace, key, value }, 0)
+      );
+    }
+    if (data.key || data.value !== undefined) {
+      return [normalizeEntry(data, 0)];
+    }
+  }
+  return [
+    {
+      namespace: fallbackNamespace,
+      key: fallbackKey,
+      type: "raw",
+      value: raw,
+      readonly: true,
+    },
+  ];
+}
+
+async function readUsbHardwareNvs() {
+  if (!usbNvsState.connected || !usbNvsState.port) {
+    return ElMessage.error("请先连接电脑当前 USB 设备");
+  }
+  usbNvsState.loading = true;
+  try {
+    const request = {
+      type: "nvs.read",
+      namespace: usbNvsState.namespace.trim() || "net",
+      key: usbNvsState.key.trim(),
+      offset: usbNvsState.offset.trim(),
+      size: usbNvsState.size.trim(),
+    };
+    await writeUsbSerialLine(JSON.stringify(request));
+    const raw = await readUsbSerialLine();
+    const payload = tryParseUsbNvsJson(raw);
+    usbNvsEntries.value = normalizeUsbNvsEntries(payload, raw);
+    const current = usbNvsEntries.value.find((item) => item.key === usbNvsState.key) || usbNvsEntries.value[0];
+    if (current) {
+      usbNvsState.namespace = current.namespace;
+      usbNvsState.key = current.key;
+      usbNvsState.value = String(current.value || "");
+    }
+    usbNvsState.status = `USB NVS 已读取：${usbNvsEntries.value.length} 项`;
+    ElMessage.success("USB 硬件 NVS 已读取");
+  } catch (error) {
+    usbNvsState.status = (error as Error).message || "USB NVS 读取失败";
+    ElMessage.error((error as Error).message || "USB NVS 读取失败");
+  } finally {
+    usbNvsState.loading = false;
+  }
+}
+
+async function readUsbNvsPartition() {
+  const deviceId = selectedNvsDeviceId();
+  if (!deviceId) return ElMessage.error("请先选择一个设备");
+  usbNvsState.loading = true;
+  try {
+    usbNvsState.selectedDeviceId = deviceId;
+    const [schema, shadow] = await Promise.all([
+      fetchNvsSchema(auth.token, deviceId),
+      fetchNvsShadow(auth.token, deviceId),
+    ]);
+    const shadowMap = new Map((shadow.items || []).map((item) => [item.key, item]));
+    usbNvsEntries.value = (schema.items || []).map((item) => ({
+      ...item,
+      value: String(shadowMap.get(item.key)?.value ?? item.value ?? ""),
+      hasValue: Boolean(shadowMap.get(item.key)?.hasValue),
+      updatedAt: shadowMap.get(item.key)?.updatedAt || "",
+      pendingCommandId: shadowMap.get(item.key)?.pendingCommandId || "",
+    }));
+    const current = usbNvsEntries.value.find((item) => item.key === usbNvsState.key) || usbNvsEntries.value[0];
+    if (current) {
+      usbNvsState.namespace = current.namespace;
+      usbNvsState.key = current.key;
+      usbNvsState.value = String(current.value || "");
+    }
+    usbNvsState.status = `NVS已读取：${schema.deviceType}`;
+    await loadUsbNvsBackups(false);
+    ElMessage.success("NVS配置已读取");
+  } catch (error) {
+    ElMessage.error((error as Error).message || "NVS读取失败");
+  } finally {
+    usbNvsState.loading = false;
+  }
+}
+
+async function writeUsbNvsPartition() {
+  const deviceId = selectedNvsDeviceId();
+  if (!deviceId) return ElMessage.error("请先选择一个设备");
+  if (!usbNvsState.key.trim()) return ElMessage.error("请填写 NVS key");
+  usbNvsState.loading = true;
+  try {
+    const result = await writeNvsValue(auth.token, deviceId, usbNvsState.key.trim(), usbNvsState.value, usbNvsState.reboot);
+    usbNvsState.selectedDeviceId = deviceId;
+    usbNvsState.namespace = result.namespace || usbNvsState.namespace;
+    usbNvsState.status = result.commandId ? `NVS写入已排队：${result.commandId}` : "NVS写入已排队";
+    ElMessage.success("NVS写入指令已下发");
+    await readUsbNvsPartition();
+    await loadUsbNvsBackups(false);
+  } catch (error) {
+    ElMessage.error((error as Error).message || "NVS写回失败");
+  } finally {
+    usbNvsState.loading = false;
+  }
+}
+
+function pickUsbNvsBackup(row: NvsBackup) {
+  selectedNvsBackupId.value = row.id;
+}
+
+async function loadUsbNvsBackups(showToast = true) {
+  const deviceId = selectedNvsDeviceId();
+  if (!deviceId) {
+    if (showToast) ElMessage.error("请先选择一个设备");
+    return;
+  }
+  usbNvsState.loading = true;
+  try {
+    usbNvsState.selectedDeviceId = deviceId;
+    const rows = await fetchNvsBackups(auth.token, deviceId);
+    usbNvsBackups.value = rows || [];
+    if (selectedNvsBackupId.value && !usbNvsBackups.value.some((item) => item.id === selectedNvsBackupId.value)) {
+      selectedNvsBackupId.value = "";
+    }
+    if (showToast) ElMessage.success("NVS备份已刷新");
+  } catch (error) {
+    if (showToast) ElMessage.error((error as Error).message || "NVS备份读取失败");
+  } finally {
+    usbNvsState.loading = false;
+  }
+}
+
+async function restoreSelectedUsbNvsBackup() {
+  const deviceId = selectedNvsDeviceId();
+  if (!deviceId) return ElMessage.error("请先选择一个设备");
+  if (!selectedNvsBackupId.value) return ElMessage.error("请先选择一个备份");
+  try {
+    await ElMessageBox.confirm("恢复备份会覆盖当前后端 NVS shadow，并向设备下发 nvs.write 指令。继续吗？", "恢复 NVS 备份", {
+      type: "warning",
+      confirmButtonText: "恢复",
+      cancelButtonText: "取消",
+    });
+  } catch (_) {
+    return;
+  }
+  usbNvsState.loading = true;
+  try {
+    const result = await restoreNvsBackup(auth.token, deviceId, selectedNvsBackupId.value, usbNvsState.reboot);
+    usbNvsState.status = result.commandId ? `NVS恢复已排队：${result.commandId}` : "NVS恢复已排队";
+    ElMessage.success("NVS备份恢复指令已下发");
+    await readUsbNvsPartition();
+    await loadUsbNvsBackups(false);
+  } catch (error) {
+    ElMessage.error((error as Error).message || "NVS恢复失败");
+  } finally {
+    usbNvsState.loading = false;
+  }
+}
+
+function resetTaskPlanDraft() {
+  taskPlanDraft.id = "";
+  taskPlanDraft.name = "";
+  taskPlanDraft.description = "";
+  taskPlanDraft.enabled = true;
+  taskPlanDraft.priority = 10;
+  taskPlanDraft.targetDeviceIds = [];
+  taskPlanDraft.targetClusterIds = [];
+  taskPlanDraft.scheduleMode = "once";
+  taskPlanDraft.scheduleSpec = {};
+  taskPlanDraft.repeatSpec = {};
+  taskPlanDraft.retrySpec = {};
+  taskPlanDraft.lastRunAt = "";
+  taskPlanDraft.nextRunAt = "";
+  taskPlanDraft.createdAt = "";
+  taskPlanDraft.updatedAt = "";
+  taskPlanOnceAt.value = "";
+  taskPlanWeekdays.value = [1, 2, 3, 4, 5];
+  taskPlanCalendarDatesText.value = "";
+  taskPlanTimesText.value = "09:00";
+  taskPlanSteps.value = [];
+  taskPlanRuns.value = [];
+}
+
+function taskPlanStepToRow(step: Record<string, any>, index: number): TaskPlanStepRow {
+  const params = step?.params && typeof step.params === "object" ? step.params : {};
+  return {
+    id: String(step?.id || ""),
+    actionType: String(step?.actionType || "device.variable.upsert") as TaskPlanStepRow["actionType"],
+    title: String(step?.title || ""),
+    enabled: step?.enabled !== false,
+    orderIndex: Number(step?.orderIndex || index + 1),
+    continueOnError: Boolean(step?.continueOnError),
+    name: String(params.name || ""),
+    value: String(params.value || ""),
+    slug: String(params.slug || ""),
+    backendBaseUrl: String(params.backendBaseUrl || ""),
+    view: String(params.view || "home"),
+  };
+}
+
+function taskPlanStepPayload(row: TaskPlanStepRow, index: number) {
+  const params: Record<string, any> = {};
+  if (row.actionType === "device.variable.upsert") {
+    params.name = String(row.name || "").trim();
+    params.value = String(row.value || "");
+  } else if (row.actionType === "api_template.refresh") {
+    params.slug = String(row.slug || "").trim();
+  } else if (row.actionType === "remote.update_backend_url") {
+    params.backendBaseUrl = String(row.backendBaseUrl || "").trim();
+  } else {
+    params.view = String(row.view || "home");
+  }
+  return {
+    id: row.id || undefined,
+    actionType: row.actionType,
+    title: row.title || "",
+    enabled: row.enabled !== false,
+    orderIndex: index + 1,
+    params,
+    continueOnError: Boolean(row.continueOnError),
+  };
+}
+
+function taskPlanScheduleSpecPayload() {
+  if (taskPlanDraft.scheduleMode === "once") {
+    const value = taskPlanOnceAt.value instanceof Date ? taskPlanOnceAt.value.toISOString() : String(taskPlanOnceAt.value || "");
+    return { runAt: value };
+  }
+  if (taskPlanDraft.scheduleMode === "calendar") {
+    return {
+      dates: taskPlanCalendarDatesText.value.split(/[,\n;\s]+/g).map((item) => item.trim()).filter(Boolean),
+      times: taskPlanTimesText.value.split(/[,\n;\s]+/g).map((item) => item.trim()).filter(Boolean),
+    };
+  }
+  return {
+    weekdays: [...taskPlanWeekdays.value],
+    times: taskPlanTimesText.value.split(/[,\n;\s]+/g).map((item) => item.trim()).filter(Boolean),
+  };
+}
+
+function addTaskPlanStep() {
+  taskPlanSteps.value.push({
+    actionType: "device.variable.upsert",
+    continueOnError: false,
+    view: "home",
+  });
+}
+
+function removeTaskPlanStep(index: number) {
+  taskPlanSteps.value.splice(index, 1);
+}
+
+async function loadTaskPlans() {
+  if (!auth.token) return;
+  taskPlanLoading.value = true;
+  try {
+    taskPlans.value = await apiRequest<TaskPlanRow[]>("/api/task-plans", { token: auth.token });
+  } catch (error) {
+    ElMessage.error((error as Error).message || "加载计划任务失败");
+  } finally {
+    taskPlanLoading.value = false;
+  }
+}
+
+async function loadTaskPlanRuns(planId: string) {
+  if (!auth.token || !planId) {
+    taskPlanRuns.value = [];
+    return;
+  }
+  try {
+    taskPlanRuns.value = await apiRequest<TaskRunRow[]>(`/api/task-plans/${encodeURIComponent(planId)}/runs`, { token: auth.token });
+  } catch (error) {
+    taskPlanRuns.value = [];
+    ElMessage.error((error as Error).message || "加载运行历史失败");
+  }
+}
+
+function pickTaskPlan(row: TaskPlanRow) {
+  taskPlanDraft.id = row.id || "";
+  taskPlanDraft.name = row.name || "";
+  taskPlanDraft.description = row.description || "";
+  taskPlanDraft.enabled = row.enabled !== false;
+  taskPlanDraft.priority = Number(row.priority || 10);
+  taskPlanDraft.targetDeviceIds = Array.isArray(row.targetDeviceIds) ? [...row.targetDeviceIds] : [];
+  taskPlanDraft.targetClusterIds = Array.isArray(row.targetClusterIds) ? [...row.targetClusterIds] : [];
+  taskPlanDraft.scheduleMode = row.scheduleMode || "once";
+  taskPlanDraft.scheduleSpec = row.scheduleSpec || {};
+  taskPlanDraft.repeatSpec = row.repeatSpec || {};
+  taskPlanDraft.retrySpec = row.retrySpec || {};
+  taskPlanDraft.lastRunAt = row.lastRunAt || "";
+  taskPlanDraft.nextRunAt = row.nextRunAt || "";
+  taskPlanDraft.createdAt = row.createdAt || "";
+  taskPlanDraft.updatedAt = row.updatedAt || "";
+  taskPlanOnceAt.value = row.scheduleMode === "once" ? String(row.scheduleSpec?.runAt || "") : "";
+  taskPlanWeekdays.value = Array.isArray(row.scheduleSpec?.weekdays) ? [...row.scheduleSpec.weekdays] : [1, 2, 3, 4, 5];
+  taskPlanCalendarDatesText.value = Array.isArray(row.scheduleSpec?.dates) ? row.scheduleSpec.dates.join(",") : "";
+  taskPlanTimesText.value = Array.isArray(row.scheduleSpec?.times) ? row.scheduleSpec.times.join(",") : "09:00";
+  taskPlanSteps.value = Array.isArray(row.steps) ? row.steps.map(taskPlanStepToRow) : [];
+  loadTaskPlanRuns(row.id);
+}
+
+async function saveTaskPlan() {
+  if (!taskPlanDraft.name.trim()) return ElMessage.error("请填写任务名称");
+  if (!taskPlanDraft.targetDeviceIds.length && !taskPlanDraft.targetClusterIds.length) return ElMessage.error("请选择目标设备或设备池");
+  const steps = taskPlanSteps.value.map(taskPlanStepPayload);
+  if (!steps.length) return ElMessage.error("请至少新增一个动作步骤");
+  const payload = {
+    name: taskPlanDraft.name.trim(),
+    description: taskPlanDraft.description,
+    enabled: taskPlanDraft.enabled,
+    priority: taskPlanDraft.priority,
+    targetDeviceIds: taskPlanDraft.targetDeviceIds,
+    targetClusterIds: taskPlanDraft.targetClusterIds,
+    scheduleMode: taskPlanDraft.scheduleMode,
+    scheduleSpec: taskPlanScheduleSpecPayload(),
+    repeatSpec: taskPlanDraft.repeatSpec || {},
+    retrySpec: taskPlanDraft.retrySpec || {},
+    steps,
+  };
+  taskPlanSaving.value = true;
+  try {
+    const endpoint = taskPlanDraft.id ? `/api/task-plans/${encodeURIComponent(taskPlanDraft.id)}` : "/api/task-plans";
+    const saved = await apiRequest<TaskPlanRow>(endpoint, {
+      method: "POST",
+      token: auth.token,
+      body: JSON.stringify(payload),
+    });
+    ElMessage.success("计划任务已保存");
+    await loadTaskPlans();
+    pickTaskPlan(saved);
+  } catch (error) {
+    ElMessage.error((error as Error).message || "保存计划任务失败");
+  } finally {
+    taskPlanSaving.value = false;
+  }
+}
+
+async function runTaskPlanNow(row: Pick<TaskPlanRow, "id">) {
+  if (!row?.id) return ElMessage.error("请先保存计划任务");
+  taskPlanRunning.value = true;
+  try {
+    const run = await apiRequest<TaskRunRow>(`/api/task-plans/${encodeURIComponent(row.id)}/run`, {
+      method: "POST",
+      token: auth.token,
+      body: JSON.stringify({}),
+      timeoutMs: 120000,
+    });
+    ElMessage.success(`计划任务执行完成：${run.status}`);
+    await loadTaskPlans();
+    await loadTaskPlanRuns(row.id);
+  } catch (error) {
+    ElMessage.error((error as Error).message || "执行计划任务失败");
+  } finally {
+    taskPlanRunning.value = false;
+  }
+}
+
+async function deleteTaskPlan(row: TaskPlanRow) {
+  if (!row?.id) return;
+  if (!window.confirm(`确认删除计划任务「${row.name}」？`)) return;
+  await apiRequest(`/api/task-plans/${encodeURIComponent(row.id)}/delete`, {
+    method: "POST",
+    token: auth.token,
+    body: JSON.stringify({}),
+  });
+  ElMessage.success("计划任务已删除");
+  if (taskPlanDraft.id === row.id) resetTaskPlanDraft();
+  await loadTaskPlans();
+}
+
+async function loadDeviceVariables() {
+  if (!auth.token) return;
+  if (!deviceVariableDeviceId.value && deviceStore.devices.length) {
+    deviceVariableDeviceId.value = deviceStore.devices[0].id;
+  }
+  if (!deviceVariableDeviceId.value) {
+    deviceVariableBaseRows.value = [];
+    deviceVariableApiRows.value = [];
+    deviceVariableSuggestions.names = [];
+    deviceVariableSuggestions.values = [];
+    deviceVariableApiSuggestions.names = [];
+    deviceVariableApiSuggestions.values = [];
+    deviceVariableApiKeyword.value = "";
+    return;
+  }
+  deviceVariableLoading.value = true;
+  try {
+    const data = await apiRequest<{
+      baseVariables?: DeviceBaseVariableRow[];
+      apiVariables?: DeviceApiVariableRow[];
+      suggestions?: { names?: string[]; values?: string[] };
+      baseSuggestions?: { names?: string[]; values?: string[] };
+      apiSuggestions?: { names?: string[]; values?: string[] };
+    }>(`/api/device-variables/${encodeURIComponent(deviceVariableDeviceId.value)}`, { token: auth.token });
+    deviceVariableBaseRows.value = Array.isArray(data.baseVariables) ? data.baseVariables : [];
+    deviceVariableApiRows.value = Array.isArray(data.apiVariables) ? data.apiVariables : [];
+    const baseSuggestions = data.baseSuggestions || data.suggestions || {};
+    deviceVariableSuggestions.names = Array.isArray(baseSuggestions.names) ? baseSuggestions.names : [];
+    deviceVariableSuggestions.values = Array.isArray(baseSuggestions.values) ? baseSuggestions.values : [];
+    deviceVariableApiSuggestions.names = Array.isArray(data.apiSuggestions?.names) ? data.apiSuggestions.names : [];
+    deviceVariableApiSuggestions.values = Array.isArray(data.apiSuggestions?.values) ? data.apiSuggestions.values : [];
+  } catch (error) {
+    deviceVariableBaseRows.value = [];
+    deviceVariableApiRows.value = [];
+    deviceVariableSuggestions.names = [];
+    deviceVariableSuggestions.values = [];
+    deviceVariableApiSuggestions.names = [];
+    deviceVariableApiSuggestions.values = [];
+    ElMessage.error((error as Error).message || "加载设备变量失败");
+  } finally {
+    deviceVariableLoading.value = false;
+  }
+}
+
+function resetDeviceVariableDraft() {
+  deviceVariableDraft.name = "";
+  deviceVariableDraft.value = "";
+  deviceVariableEditingName.value = "";
+}
+
+function deviceVariablePlaceholder(name: string) {
+  return `{{deviceVariables.${String(name || "").trim()}}}`;
+}
+
+function editDeviceVariable(row: DeviceBaseVariableRow) {
+  deviceVariableDraft.name = row.name || "";
+  deviceVariableDraft.value = row.value || "";
+  deviceVariableEditingName.value = row.name || "";
+}
+
+async function saveDeviceVariable() {
+  if (!deviceVariableDeviceId.value) return ElMessage.error("请先选择设备");
+  if (!deviceVariableDraft.name.trim()) return ElMessage.error("请填写变量名");
+  await apiRequest(`/api/device-variables/${encodeURIComponent(deviceVariableDeviceId.value)}/base`, {
+    method: "POST",
+    token: auth.token,
+    body: JSON.stringify({
+      name: deviceVariableDraft.name.trim(),
+      value: deviceVariableDraft.value,
+    }),
+  });
+  ElMessage.success("设备变量已保存");
+  resetDeviceVariableDraft();
+  await loadDeviceVariables();
+  await loadHomepageTemplateVariables();
+}
+
+async function deleteDeviceVariable(row: DeviceBaseVariableRow) {
+  const name = String(row?.name || "").trim();
+  if (!name || !deviceVariableDeviceId.value) return;
+  if (!window.confirm(`确认删除设备变量「${name}」？`)) return;
+  await apiRequest(`/api/device-variables/${encodeURIComponent(deviceVariableDeviceId.value)}/base/delete`, {
+    method: "POST",
+    token: auth.token,
+    body: JSON.stringify({ name }),
+  });
+  ElMessage.success("设备变量已删除");
+  if (deviceVariableEditingName.value === name) resetDeviceVariableDraft();
+  await loadDeviceVariables();
+  await loadHomepageTemplateVariables();
+}
+
+function copyApiVariableToBase(row: DeviceApiVariableRow) {
+  const fallbackName = String(row.path || "").split(".").slice(3).join(".");
+  deviceVariableDraft.name = String(fallbackName || row.name || "").trim();
+  deviceVariableDraft.value = String(row.value || "");
+  deviceVariableEditingName.value = "";
+}
+
+function addDeviceVariableBatchRow() {
+  deviceVariableBatchRows.value.push({
+    name: "",
+    value: "",
+    mode: "specified",
+    deviceIds: [],
+    clusterIds: [],
+    randomCount: 1,
+  });
+}
+
+function removeDeviceVariableBatchRow(index: number) {
+  deviceVariableBatchRows.value.splice(index, 1);
+}
+
+function openDeviceVariableBatchDialog() {
+  deviceVariableBatchDialogOpen.value = true;
+  if (!deviceVariableBatchRows.value.length) addDeviceVariableBatchRow();
+  loadClusters();
+}
+
+async function executeDeviceVariableBatch() {
+  const entries = deviceVariableBatchRows.value
+    .map((row) => ({
+      name: row.name.trim(),
+      value: row.value,
+      deviceIds: row.mode === "specified" ? [...row.deviceIds] : [],
+      clusterIds: row.mode === "random" ? [...row.clusterIds] : [],
+      randomCount: row.mode === "random" ? Math.max(1, Number(row.randomCount || 1)) : 0,
+    }))
+    .filter((row) => row.name);
+  if (!entries.length) return ElMessage.error("请至少填写一条变量记录");
+  const data = await apiRequest<{ successCount: number; failedCount: number }>("/api/device-variables/batch/base-upsert", {
+    method: "POST",
+    token: auth.token,
+    body: JSON.stringify({
+      entries,
+      defaultDeviceIds: deviceStore.selectedIds,
+    }),
+  });
+  ElMessage.success(`批量变量保存完成：成功 ${data.successCount}，失败 ${data.failedCount}`);
+  await loadDeviceVariables();
+  await loadHomepageTemplateVariables();
+}
+
 async function bindByPin() {
   if (!bindForm.pin.trim()) return ElMessage.error("请输入PIN");
   const body: Record<string, any> = { pin: bindForm.pin.trim() };
@@ -2343,6 +4061,116 @@ async function loadAdminUsers() {
   }));
   if (!adminResourceForm.userId && adminUsers.value.length) {
     adminResourceForm.userId = adminUsers.value[0].id;
+  }
+}
+
+async function loadAiConfig() {
+  if (!auth.token) return;
+  aiConfigLoading.value = true;
+  try {
+    const result = await fetchMyAiConfig(auth.token);
+    aiEffective.value = result.effective || null;
+    if (result.config) {
+      aiConfigForm.name = result.config.name || "我的 DeepSeek";
+      aiConfigForm.provider = result.config.provider || "deepseek";
+      aiConfigForm.baseUrl = result.config.baseUrl || "https://api.deepseek.com";
+      aiConfigForm.model = result.config.model || "deepseek-chat";
+      aiConfigForm.enabled = result.config.enabled !== false;
+      aiConfigForm.thinkingEnabled = result.config.thinkingEnabled === true;
+    } else if (result.effective) {
+      aiConfigForm.provider = result.effective.provider || "deepseek";
+      aiConfigForm.baseUrl = result.effective.baseUrl || "https://api.deepseek.com";
+      aiConfigForm.model = result.effective.model || "deepseek-chat";
+      aiConfigForm.enabled = result.effective.enabled !== false;
+      aiConfigForm.thinkingEnabled = result.effective.thinkingEnabled === true;
+    }
+    aiConfigForm.apiKey = "";
+  } catch (error) {
+    ElMessage.error((error as Error).message || "加载AI配置失败");
+  } finally {
+    aiConfigLoading.value = false;
+  }
+}
+
+async function openAiSettingsDrawer() {
+  aiSettingsDrawerOpen.value = true;
+  await loadAiConfig();
+  if (isAdmin.value) {
+    await Promise.all([loadAdminUsers(), loadAdminAiConfigs()]);
+  }
+}
+
+async function saveAiConfig() {
+  if (!auth.token) return;
+  aiConfigLoading.value = true;
+  try {
+    const payload: Record<string, any> = {
+      name: aiConfigForm.name,
+      provider: aiConfigForm.provider,
+      baseUrl: aiConfigForm.baseUrl,
+      model: aiConfigForm.model,
+      enabled: aiConfigForm.enabled,
+      thinkingEnabled: aiConfigForm.thinkingEnabled,
+    };
+    if (aiConfigForm.apiKey.trim()) payload.apiKey = aiConfigForm.apiKey.trim();
+    const result = await saveMyAiConfig(auth.token, payload);
+    aiEffective.value = result.effective || null;
+    aiConfigForm.apiKey = "";
+    ElMessage.success("AI配置已保存");
+  } catch (error) {
+    ElMessage.error((error as Error).message || "保存AI配置失败");
+  } finally {
+    aiConfigLoading.value = false;
+  }
+}
+
+async function loadAdminAiConfigs() {
+  if (!isAdmin.value || !auth.token) return;
+  try {
+    adminAiConfigs.value = await fetchAdminAiConfigs(auth.token);
+    if (!adminAiAssignForm.configId && adminAiConfigs.value[0]) {
+      adminAiAssignForm.configId = adminAiConfigs.value[0].id;
+    }
+  } catch (error) {
+    ElMessage.error((error as Error).message || "加载管理员AI配置失败");
+  }
+}
+
+async function createAdminAiProvider() {
+  if (!isAdmin.value) return;
+  if (!adminAiConfigForm.name.trim()) return ElMessage.error("请填写配置名");
+  if (!adminAiConfigForm.apiKey.trim()) return ElMessage.error("请填写 API Key");
+  try {
+    const row = await createAdminAiConfig(auth.token, {
+      name: adminAiConfigForm.name,
+      provider: adminAiConfigForm.provider,
+      baseUrl: adminAiConfigForm.baseUrl,
+      model: adminAiConfigForm.model,
+      apiKey: adminAiConfigForm.apiKey,
+      enabled: adminAiConfigForm.enabled,
+    });
+    adminAiConfigForm.apiKey = "";
+    await loadAdminAiConfigs();
+    adminAiAssignForm.configId = row.id;
+    ElMessage.success("管理员AI配置已创建");
+  } catch (error) {
+    ElMessage.error((error as Error).message || "创建AI配置失败");
+  }
+}
+
+async function assignAdminAiProvider() {
+  if (!isAdmin.value) return;
+  if (!adminAiAssignForm.configId) return ElMessage.error("请选择AI配置");
+  if (!adminAiAssignForm.userIds.length) return ElMessage.error("请选择要分配的用户");
+  try {
+    const result = await assignAdminAiConfig(auth.token, {
+      configId: adminAiAssignForm.configId,
+      userIds: adminAiAssignForm.userIds,
+      enabled: true,
+    });
+    ElMessage.success(`已分配 ${result.assigned} 个用户`);
+  } catch (error) {
+    ElMessage.error((error as Error).message || "批量分配失败");
   }
 }
 
@@ -2455,7 +4283,7 @@ async function saveTodoRows() {
   await loadTodoRows();
 }
 
-function resolveBatchTargetDevices(key: "todo" | "schedule" | "templates" | "tf" | "remote" | "homepage") {
+function resolveBatchTargetDevices(key: DispatchTargetKey) {
   const ids = [...(batchTargetDeviceIds[key] || [])];
   if (ids.length) return ids;
   return [...deviceStore.selectedIds];
@@ -2536,6 +4364,11 @@ function buildHomepageConfigPatch() {
   patch.auto_render_push = patch.auto_render_push || {};
   const srcAuto = homepageConfigModel?.auto_render_push || {};
   ensureHomepageAutoRenderPushShape(srcAuto);
+  if (srcAuto.enabled && !srcAuto.interval_enabled && (!Array.isArray(srcAuto.fixed_times) || srcAuto.fixed_times.length === 0)) {
+    srcAuto.interval_enabled = true;
+    srcAuto.window_start_time = String(srcAuto.window_start_time || srcAuto.daily_start_time || "07:30");
+    srcAuto.window_end_time = String(srcAuto.window_end_time || "23:59");
+  }
   Object.keys(srcAuto).forEach((k) => {
     patch.auto_render_push[k] = srcAuto[k];
   });
@@ -2563,6 +4396,7 @@ function syncHomepageTemplateDraftFromConfig() {
     homepageTemplateDraft.type = row.type;
     homepageTemplateDraft.html = row.html;
     homepageTemplateDraft.builtin = Boolean(row.builtin);
+    homepageTemplateDraft.targetDeviceTypes = normalizeHomepageTargetDeviceTypes(row.targetDeviceTypes);
   }
 }
 
@@ -2580,6 +4414,7 @@ function buildHomepageRenderTemplatePatch() {
       name: String(homepageTemplateDraft.name || configTemplate?.name || "Homepage Template").trim() || "Homepage Template",
       type: String(homepageTemplateDraft.type || configTemplate?.type || "custom_html"),
       html,
+      targetDeviceTypes: normalizeHomepageTargetDeviceTypes(homepageTemplateDraft.targetDeviceTypes),
     };
   }
 
@@ -2589,6 +4424,7 @@ function buildHomepageRenderTemplatePatch() {
       name: String(configTemplate.name || "Homepage Template"),
       type: String(configTemplate.type || "custom_html"),
       html: String(configTemplate.html || ""),
+      targetDeviceTypes: normalizeHomepageTargetDeviceTypes(configTemplate.targetDeviceTypes),
     };
   }
 
@@ -2597,6 +4433,7 @@ function buildHomepageRenderTemplatePatch() {
     name: "Homepage Template",
     type: "custom_html",
     html: "",
+    targetDeviceTypes: [],
   };
 }
 
@@ -2677,7 +4514,7 @@ function normalizeHomepageTemplateVariables(rows: Array<Record<string, any>>) {
         placeholder: String(item?.placeholder || ""),
         type: String(item?.type || ""),
         example: String(item?.example || ""),
-        source: String(item?.source || "") as "base" | "api" | undefined,
+        source: String(item?.source || "") as "base" | "api" | "device" | undefined,
         slug: String(item?.slug || ""),
         sourceLabel: String(item?.sourceLabel || ""),
       }))
@@ -2708,10 +4545,19 @@ function normalizeHomepageTemplateVariables(rows: Array<Record<string, any>>) {
         .map((pattern) => path.match(pattern))
         .find((match) => Boolean(match?.[1]));
       const slug = String(item?.slug || apiMatch?.[1] || "").trim();
+      const isDeviceVariable =
+        first === "deviceVariables" ||
+        first === "device_variables" ||
+        first === "deviceVariableList" ||
+        first === "device_variable_list";
       const isBase = homepageBaseVariableRoots.has(first) || ["formatted", "raw", "third_latest"].includes(first) || path === "formatted" || path === "raw";
-      const inferredSource: "base" | "api" =
-        isBase || (!slug && !knownApiSlugs.has(first) && !knownApiSlugs.has(path)) ? "base" : "api";
-      const source = String(item?.source || inferredSource) as "base" | "api";
+      const inferredSource: "base" | "api" | "device" =
+        isDeviceVariable
+          ? "device"
+          : isBase || (!slug && !knownApiSlugs.has(first) && !knownApiSlugs.has(path))
+            ? "base"
+            : "api";
+      const source = String(item?.source || inferredSource) as "base" | "api" | "device";
       const resolvedSlug =
         source === "api" ? (slug || (knownApiSlugs.has(first) ? first : "latest")) : "";
       const category = source === "api" ? classifyHomepageApiVariable(path) : { categoryKey: "base", categoryLabel: "基础属性" };
@@ -2722,14 +4568,14 @@ function normalizeHomepageTemplateVariables(rows: Array<Record<string, any>>) {
         example,
         source,
         slug: resolvedSlug,
-        sourceLabel: source === "api" ? "API模板变量" : "基础变量",
+        sourceLabel: source === "api" ? "API模板变量" : source === "device" ? "设备变量" : "基础变量",
         categoryKey: category.categoryKey,
         categoryLabel: category.categoryLabel,
       };
     })
     .filter((item) => Boolean(item.path))
     .sort((a, b) => {
-      const sourceRank = (value: string) => (value === "api" ? 1 : 0);
+      const sourceRank = (value: string) => (value === "api" ? 2 : value === "device" ? 1 : 0);
       const sourceDelta = sourceRank(a.source || "base") - sourceRank(b.source || "base");
       if (sourceDelta !== 0) return sourceDelta;
       const slugDelta = String(a.slug || "").localeCompare(String(b.slug || ""));
@@ -2903,6 +4749,7 @@ async function loadHomepageTemplates() {
     homepageTemplateDraft.type = first.type;
     homepageTemplateDraft.html = first.html;
     homepageTemplateDraft.builtin = Boolean(first.builtin);
+    homepageTemplateDraft.targetDeviceTypes = normalizeHomepageTargetDeviceTypes(first.targetDeviceTypes);
   }
 }
 
@@ -2914,6 +4761,7 @@ function onSelectHomepageTemplate(id: string) {
   homepageTemplateDraft.type = row.type;
   homepageTemplateDraft.html = row.html;
   homepageTemplateDraft.builtin = Boolean(row.builtin);
+  homepageTemplateDraft.targetDeviceTypes = normalizeHomepageTargetDeviceTypes(row.targetDeviceTypes);
 }
 
 function defaultHomepageTemplateHtml() {
@@ -2930,6 +4778,7 @@ function newHomepageTemplate() {
   homepageTemplateDraft.type = "custom_html";
   homepageTemplateDraft.builtin = false;
   homepageTemplateDraft.html = defaultHomepageTemplateHtml();
+  homepageTemplateDraft.targetDeviceTypes = [];
   scheduleHomepageEditPreview();
 }
 
@@ -2952,21 +4801,26 @@ async function refreshHomepageAutoRenderStatusOnly() {
       `/api/homepages/auto-render/status?deviceId=${encodeURIComponent(homepageDeviceId.value)}`,
       { token: auth.token }
     );
-    const picked = {
-      enabled: status?.enabled,
-      interval_enabled: status?.interval_enabled,
-      window_start_time: status?.window_start_time,
-      window_end_time: status?.window_end_time,
-      fixed_times: status?.fixed_times,
-      // legacy fields
-      daily_start_time: status?.daily_start_time,
-      interval_minutes: status?.interval_minutes,
-      next_run_at: status?.next_run_at,
-      last_run_at: status?.last_run_at,
-      last_result: status?.last_result,
-      last_error: status?.last_error,
-      last_reason: status?.last_reason,
+    const picked: Record<string, any> = {};
+    const setIfPresent = (key: string, value: any) => {
+      if (value === undefined || value === null) return;
+      picked[key] = value;
     };
+    setIfPresent("enabled", status?.enabled);
+    setIfPresent("interval_enabled", status?.interval_enabled);
+    setIfPresent("window_start_time", status?.window_start_time);
+    setIfPresent("window_end_time", status?.window_end_time);
+    setIfPresent("fixed_times", status?.fixed_times);
+    // legacy fields
+    setIfPresent("daily_start_time", status?.daily_start_time);
+    setIfPresent("interval_minutes", status?.interval_minutes);
+    setIfPresent("next_run_at", status?.next_run_at);
+    setIfPresent("last_run_at", status?.last_run_at);
+    setIfPresent("last_result", status?.last_result);
+    setIfPresent("last_error", status?.last_error);
+    setIfPresent("last_reason", status?.last_reason);
+    setIfPresent("scheduler_decision", status?.scheduler_decision);
+    setIfPresent("scheduler", status?.scheduler);
     homepageConfigModel.auto_render_push = {
       ...(homepageConfigModel.auto_render_push || {}),
       ...picked,
@@ -3104,10 +4958,12 @@ async function saveHomepageTemplate() {
         name: homepageTemplateDraft.name.trim(),
         type: homepageTemplateDraft.builtin ? "default_html" : "custom_html",
         html: homepageTemplateDraft.html,
+        targetDeviceTypes: normalizeHomepageTargetDeviceTypes(homepageTemplateDraft.targetDeviceTypes),
       }),
     });
     homepageTemplateDraft.id = row.id;
     homepageTemplateDraft.builtin = Boolean(row.builtin);
+    homepageTemplateDraft.targetDeviceTypes = normalizeHomepageTargetDeviceTypes(row.targetDeviceTypes);
     ElMessage.success("主页模板已保存");
     await loadHomepageTemplates();
     scheduleHomepageEditPreview();
@@ -3130,6 +4986,7 @@ async function deleteHomepageTemplate() {
     homepageTemplateDraft.type = "custom_html";
     homepageTemplateDraft.html = "";
     homepageTemplateDraft.builtin = false;
+    homepageTemplateDraft.targetDeviceTypes = [];
     await loadHomepageTemplates();
     scheduleHomepageEditPreview();
   } catch (error) {
@@ -3253,6 +5110,30 @@ function deviceOptionLabel(device: { id: string; mac: string; displayName?: stri
   return tail ? `${left} (${device.mac})｜${tail}` : `${left} (${device.mac})`;
 }
 
+function homepageDeviceTypeOf(device: any) {
+  return String(device?.type || device?.deviceType || "").trim();
+}
+
+function homepageDeviceTypeLabel(type: string) {
+  const value = String(type || "").trim();
+  if (!value || value === "unknown") return "未标记类型";
+  return homepageDeviceTypeLabelMap.value.get(value) || value;
+}
+
+function normalizeHomepageTargetDeviceTypes(input: unknown) {
+  if (Array.isArray(input)) return [...new Set(input.map((item) => String(item || "").trim()).filter(Boolean))];
+  if (typeof input === "string") {
+    return [...new Set(input.split(",").map((item) => item.trim()).filter(Boolean))];
+  }
+  return [];
+}
+
+function homepageTemplateOptionLabel(tpl: HomepageTemplateRow) {
+  const targets = normalizeHomepageTargetDeviceTypes(tpl.targetDeviceTypes);
+  if (!targets.length) return `${tpl.name} · 通用型`;
+  return `${tpl.name} · ${targets.map(homepageDeviceTypeLabel).join("、")}`;
+}
+
 function clusterDevicePreview(ids: string[]) {
   if (!Array.isArray(ids) || ids.length === 0) return "-";
   const map = new Map(deviceStore.devices.map((d) => [d.id, d]));
@@ -3266,9 +5147,20 @@ function clusterDevicePreview(ids: string[]) {
   return list.join("，");
 }
 
+let clustersLoadPromise: Promise<void> | null = null;
+
 async function loadClusters() {
   if (!auth.token) return;
-  clusters.value = await apiRequest<ClusterRow[]>("/api/clusters", { token: auth.token });
+  if (clustersLoadPromise) return clustersLoadPromise;
+  const token = auth.token;
+  clustersLoadPromise = (async () => {
+    clusters.value = await apiRequest<ClusterRow[]>("/api/clusters", { token });
+  })();
+  try {
+    await clustersLoadPromise;
+  } finally {
+    clustersLoadPromise = null;
+  }
 }
 
 function openClusterEditor(row: ClusterRow) {
@@ -3438,6 +5330,7 @@ function resetTemplateDraft() {
   templateDraft.enabled = true;
   templateDraft.userInputFields = [];
   templateDraft.advancedConfig = { output: "", timeoutMs: 8000, steps: [] };
+  templateDraft.refreshConfig = buildDefaultTemplateRefreshConfig("");
   Object.keys(templateParamValues).forEach((k) => delete templateParamValues[k]);
   templateDeviceKey.value = "";
   templateResultText.value = "";
@@ -3476,6 +5369,48 @@ function normalizeTemplateAdvancedConfig(input?: any): TemplateAdvancedConfig {
           }))
         : [],
     })),
+  };
+}
+
+function defaultTemplateRefreshModeForSlug(slug: string): TemplateRefreshMode {
+  return String(slug || "").trim() === "xique_schedule" ? "manual" : "interval";
+}
+
+function buildDefaultTemplateRefreshConfig(slug = ""): TemplateRefreshConfig {
+  return {
+    mode: defaultTemplateRefreshModeForSlug(slug),
+    enabled: true,
+    intervalMinutes: 10,
+    ttlSeconds: 300,
+    minRequestGapSeconds: 30,
+    timeoutMs: 8000,
+    fallbackToStale: true,
+    jitterSeconds: 15,
+  };
+}
+
+function normalizeTemplateRefreshConfig(input?: any, slug = ""): TemplateRefreshConfig {
+  const defaults = buildDefaultTemplateRefreshConfig(slug);
+  const safe = input && typeof input === "object" ? input : {};
+  const modeRaw = String(safe.mode || defaults.mode || "interval").trim() as TemplateRefreshMode;
+  const mode: TemplateRefreshMode = ["manual", "interval", "on_request", "stale_while_revalidate"].includes(modeRaw)
+    ? modeRaw
+    : defaults.mode;
+  const intVal = (value: any, fallback: number, min: number, max: number) => {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return fallback;
+    const v = Math.floor(n);
+    return Math.max(min, Math.min(max, v));
+  };
+  return {
+    mode,
+    enabled: safe.enabled === undefined ? defaults.enabled : Boolean(safe.enabled),
+    intervalMinutes: intVal(safe.intervalMinutes, defaults.intervalMinutes, 1, 1440),
+    ttlSeconds: intVal(safe.ttlSeconds, defaults.ttlSeconds, 30, 86400),
+    minRequestGapSeconds: intVal(safe.minRequestGapSeconds, defaults.minRequestGapSeconds, 0, 86400),
+    timeoutMs: intVal(safe.timeoutMs, defaults.timeoutMs, 500, 120000),
+    fallbackToStale: safe.fallbackToStale === undefined ? defaults.fallbackToStale : Boolean(safe.fallbackToStale),
+    jitterSeconds: intVal(safe.jitterSeconds, defaults.jitterSeconds, 0, 3600),
   };
 }
 
@@ -3680,6 +5615,7 @@ function pickTemplateRow(row: TemplateRow) {
   templateDraft.enabled = Boolean(row.enabled);
   templateDraft.userInputFields = Array.isArray(row.userInputFields) ? row.userInputFields.map((f) => ({ name: String(f.name || ""), placeholder: String(f.placeholder || "") })) : [];
   templateDraft.advancedConfig = normalizeTemplateAdvancedConfig(row.advancedConfig);
+  templateDraft.refreshConfig = normalizeTemplateRefreshConfig(row.refreshConfig, row.slug);
   Object.keys(templateParamValues).forEach((k) => delete templateParamValues[k]);
   templateDraft.userInputFields.forEach((f) => {
     if (!templateParamValues[f.name]) templateParamValues[f.name] = "";
@@ -3720,6 +5656,7 @@ async function saveTemplateDraft() {
     deviceKeyRequired: templateDraft.deviceKeyRequired,
     enabled: templateDraft.enabled,
     advancedConfig: normalizeTemplateAdvancedConfig(templateDraft.advancedConfig),
+    refreshConfig: normalizeTemplateRefreshConfig(templateDraft.refreshConfig, templateDraft.slug),
   };
   if (templateDraft.id) {
     await apiRequest(`/api/templates/${templateDraft.id}`, {
@@ -3896,8 +5833,17 @@ function onFirmwareFileChange(event: Event) {
   firmwareFile.value = input.files?.[0] || null;
 }
 
+function onFullFirmwareFileChange(event: Event) {
+  const input = event.target as HTMLInputElement;
+  fullFirmwareFile.value = input.files?.[0] || null;
+}
+
 async function loadFirmwareRows() {
   firmwareRows.value = await apiRequest<FirmwareRow[]>("/api/firmware", { token: auth.token });
+}
+
+async function loadFullFirmwareBundles() {
+  fullFirmwareBundles.value = await apiRequest<any[]>("/api/firmware/full-bundles", { token: auth.token });
 }
 
 async function uploadFirmware() {
@@ -3920,6 +5866,38 @@ async function uploadFirmware() {
   await loadFirmwareRows();
 }
 
+async function uploadFullFirmwareBundle() {
+  if (!isAdmin.value) return ElMessage.error("仅管理员可上传完整固件包");
+  if (!fullFirmwareFile.value) return ElMessage.error("请先选择完整固件ZIP包");
+  const fd = new FormData();
+  fd.append("file", fullFirmwareFile.value);
+  const row = await apiRequest<any>("/api/firmware/full/upload", {
+    method: "POST",
+    token: auth.token,
+    body: fd,
+    timeoutMs: 120000,
+  });
+  ElMessage.success(`完整固件包已校验：${row.version}`);
+  fullFirmwareFile.value = null;
+  await loadFullFirmwareBundles();
+}
+
+async function openFullFirmwareManifest(row: Record<string, any>) {
+  const manifest = row?.id
+    ? await apiRequest<any>(`/api/firmware/full/${encodeURIComponent(row.id)}/manifest`, { token: auth.token })
+    : row?.manifest || {};
+  ElMessage({
+    type: "success",
+    message: `manifest 已加载：${manifest.version || row.version || "-"}`,
+  });
+  console.info("[full-firmware-manifest]", manifest);
+}
+
+function downloadFullFirmwareBundle(row: Record<string, any>) {
+  if (!row?.id) return;
+  window.open(`/api/firmware/full/${encodeURIComponent(row.id)}/download?token=${encodeURIComponent(auth.token)}`, "_blank");
+}
+
 async function deleteFirmwareRow(id: string) {
   if (!isAdmin.value) return;
   await apiRequest(`/api/firmware/${id}/delete`, {
@@ -3936,11 +5914,12 @@ async function loadUpgradeJobs() {
 }
 
 async function batchUpgradeLatest() {
-  if (!deviceStore.selectedIds.length) return ElMessage.error("请先框选目标设备");
+  const deviceIds = resolveBatchTargetDevices("firmware");
+  if (!deviceIds.length) return ElMessage.error("请先选择目标设备");
   const data = await apiRequest<{ success: any[]; failed: any[] }>("/api/firmware/batch-upgrade", {
     method: "POST",
     token: auth.token,
-    body: JSON.stringify({ deviceIds: deviceStore.selectedIds }),
+    body: JSON.stringify({ deviceIds }),
   });
   ElMessage.success(`批量升级下发完成：成功 ${(data.success || []).length}，失败 ${(data.failed || []).length}`);
   await loadUpgradeJobs();
@@ -4371,20 +6350,7 @@ onMounted(async () => {
   window.addEventListener("resize", handleResize);
   applyTheme((localStorage.getItem("ink-screen-theme") || "light") === "dark");
   if (auth.token) {
-    await refreshDevices();
-    await refreshOverview();
-    await loadClusters();
-    if (isAdmin.value) {
-      await loadAdminUsers();
-    }
-    await loadTemplateRows();
-    await loadHomepageAll();
-    await loadFirmwareRows();
-    await loadUpgradeJobs();
-    await loadTfRows();
-    await loadTfLocalRows();
-    await loadLayouts();
-    await loadHistory();
+    await loadInitialDashboardData();
   }
   handleResize();
 });
@@ -4438,6 +6404,7 @@ watch(
     homepageTemplateDraft.id,
     homepageTemplateDraft.name,
     homepageTemplateDraft.html,
+    JSON.stringify(homepageTemplateDraft.targetDeviceTypes || []),
   ],
   () => {
     scheduleHomepageEditPreview();
@@ -4461,6 +6428,9 @@ watch(
 .workbench-shell :deep(.el-aside) { overflow:hidden; }
 .aside-nav { border-right: 1px solid #e5e7eb; background: linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(248,250,252,0.92) 100%); display:flex; min-height:0; }
 .side-menu { width:100%; min-height:0; flex:1; overflow-y:auto; border-right:none; }
+.menu-item-content { display:flex; align-items:center; gap:10px; min-width:0; width:100%; }
+.menu-svg { width:18px; height:18px; flex:0 0 18px; fill:currentColor; opacity:0.82; }
+.menu-item-content span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .sidebar-rail { flex:0 0 48px; width:48px; border-right:1px solid #e5e7eb; background:linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(248,250,252,0.92) 100%); display:flex; align-items:stretch; justify-content:center; }
 .sidebar-rail-button { width:100%; height:100%; border:none; border-radius:0; font-size:20px; font-weight:700; color:#334155; background:transparent; }
 .sidebar-rail-button:hover { background:rgba(59,130,246,0.08); color:#2563eb; }
@@ -4471,9 +6441,14 @@ watch(
 .drawer-hint { font-size:12px; color:#64748b; }
 .drawer-menu { flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:touch; border-right:none; }
 .section-wrap { display:grid; gap:10px; }
+.ai-page-wrap { min-height:0; }
+.ai-settings-drawer { display:grid; gap:12px; padding-bottom:18px; }
 .stack-vertical { display:grid; gap:12px; }
 .row-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
 .row-between { display:flex; justify-content:space-between; align-items:center; }
+.usb-nvs-mode-tabs { margin-bottom:12px; }
+.usb-nvs-page { display:grid; gap:10px; padding-top:2px; }
+.usb-nvs-page :deep(.el-alert__content) { min-width:0; }
 .pool-vertical :deep(.el-col) { max-width: 100%; flex: 0 0 100%; }
 .overview-hero { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; padding:24px 28px; border-radius:24px; background:linear-gradient(135deg, #0f172a 0%, #1d4ed8 58%, #38bdf8 100%); color:#fff; box-shadow:0 22px 50px rgba(37, 99, 235, 0.18); }
 .overview-eyebrow { font-size:12px; letter-spacing:0.16em; text-transform:uppercase; opacity:0.72; margin-bottom:10px; }

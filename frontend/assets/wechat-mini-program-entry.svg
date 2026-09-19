@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="420" height="420" viewBox="0 0 420 420" role="img" aria-label="微信小程序二维码占位图">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#f4f7ff"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="420" height="420" fill="url(#bg)"/>
+  <rect x="14" y="14" width="392" height="392" rx="20" fill="#ffffff" stroke="#d8e1f0" stroke-width="2"/>
+  <circle cx="210" cy="194" r="76" fill="#f6f9ff" stroke="#cfd9eb" stroke-width="2"/>
+  <circle cx="210" cy="194" r="52" fill="#e9f0ff"/>
+  <g fill="#0f172a">
+    <circle cx="86" cy="82" r="8"/>
+    <circle cx="334" cy="82" r="8"/>
+    <circle cx="86" cy="306" r="8"/>
+    <circle cx="334" cy="306" r="8"/>
+    <rect x="74" y="114" width="8" height="22" rx="4"/>
+    <rect x="338" y="114" width="8" height="22" rx="4"/>
+    <rect x="114" y="74" width="22" height="8" rx="4"/>
+    <rect x="284" y="74" width="22" height="8" rx="4"/>
+    <rect x="74" y="262" width="8" height="22" rx="4"/>
+    <rect x="338" y="262" width="8" height="22" rx="4"/>
+    <rect x="114" y="338" width="22" height="8" rx="4"/>
+    <rect x="284" y="338" width="22" height="8" rx="4"/>
+  </g>
+  <circle cx="305" cy="292" r="34" fill="#0abf53"/>
+  <path d="M293 292c0-6 4-11 10-11 4 0 8 2 10 6 2-4 6-6 10-6 6 0 10 5 10 11 0 7-5 11-11 11-4 0-7-2-9-5-2 3-5 5-9 5-6 0-11-4-11-11z" fill="#fff"/>
+  <text x="210" y="360" text-anchor="middle" font-size="16" font-family="Segoe UI, Microsoft YaHei, sans-serif" fill="#475569">请替换为真实小程序码图片</text>
+</svg>

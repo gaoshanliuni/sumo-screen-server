@@ -7,6 +7,7 @@ const { readDB, updateDB } = require("../db/store");
 const { ensureDeviceAccess, getVisibleDeviceIds, resolveTargetDeviceIds } = require("../utils/access");
 const { logOperation } = require("../utils/logging");
 const { publishDeviceEvent } = require("../utils/realtime.hub");
+const { paginateRows } = require("../repositories/pagination");
 const {
   saveXiqueSyncConfig,
   getXiqueStatus,
@@ -405,7 +406,10 @@ router.get(
       return a.orderIndex - b.orderIndex;
     });
 
-    res.success(list, "ok");
+    if (req.query?.page !== undefined || req.query?.pageSize !== undefined || String(req.query?.paged || "") === "true") {
+      return res.success(paginateRows(list, { page: req.query?.page || 1, pageSize: req.query?.pageSize || 20 }), "ok");
+    }
+    return res.success(list, "ok");
   })
 );
 

@@ -7,6 +7,11 @@ const {
   imageKeyForPage,
   uploadTfBlob,
 } = require("./page_profile.service");
+const {
+  cleanupUnusedPageCacheFilesInDraft,
+  prunePageImageHistoryInDraft,
+  scheduleGridFileDeletion,
+} = require("./tf_file_cleanup.service");
 
 function resolveTemplateOverride(input, fallbackTemplateId) {
   if (!input || typeof input !== "object" || Array.isArray(input)) return null;
@@ -58,7 +63,11 @@ async function renderAndPersistForDevice({
   service.ensureDefaultTemplate(db);
 
   const resolved = service.resolveConfig(db, device.ownerId, device.id);
-  const mergedConfig = configPatch ? service.normalizeConfig(service.deepMerge(resolved.config, configPatch)) : resolved.config;
+  const baseConfig = configPatch ? service.normalizeConfig(service.deepMerge(resolved.config, configPatch)) : resolved.config;
+  const mergedConfig =
+    typeof service.applyDeviceProfileToConfig === "function"
+      ? service.normalizeConfig(service.applyDeviceProfileToConfig(baseConfig, device))
+      : baseConfig;
   const template = resolveTemplateForRender({ db, mergedConfig, auth, templatePatch, service });
   const model = service.buildDataModel(db, device, dataPatch);
   const rendered = await service.renderBuffers({
@@ -82,9 +91,9 @@ async function renderAndPersistForDevice({
   const imageRecord = await uploadTfBlob({
     ownerId: device.ownerId,
     category: "background",
-    fileName: `${pageType}_${device.id}_${version}.epd4`,
-    mime: "application/x-epd4",
-    buffer: rendered.epd4Buffer,
+    fileName: `${pageType}_${device.id}_${version}.${rendered.binaryFormat || "epd4"}`,
+    mime: rendered.binaryMime || "application/x-epd4",
+    buffer: rendered.binaryBuffer || rendered.epd4Buffer,
     source: pageType,
   });
 
@@ -94,7 +103,7 @@ async function renderAndPersistForDevice({
     ownerId: device.ownerId,
     configVersion: Number(mergedConfig.version || 1),
     version,
-    format: "epd4",
+    format: rendered.binaryFormat || "epd4",
     width: rendered.width,
     height: rendered.height,
     etag: rendered.etag,
@@ -106,6 +115,7 @@ async function renderAndPersistForDevice({
   };
 
   const imageKey = imageKeyForPage(pageType);
+  let pageCacheDeleteJobs = [];
   await updateDB((draft) => {
     draft.tfFiles = Array.isArray(draft.tfFiles) ? draft.tfFiles : [];
     draft.tfFiles.unshift(previewRecord);
@@ -115,15 +125,18 @@ async function renderAndPersistForDevice({
     draft[imageKey].unshift(imageRow);
 
     const maxVersions = Number(mergedConfig.cache_policy?.max_versions || 3);
-    const rows = draft[imageKey].filter((item) => String(item.deviceId || "") === String(device.id || ""));
-    if (rows.length > maxVersions) {
-      const keep = new Set(rows.slice(0, maxVersions).map((item) => String(item.id || "")));
-      draft[imageKey] = draft[imageKey].filter((item) => {
-        if (String(item.deviceId || "") !== String(device.id || "")) return true;
-        return keep.has(String(item.id || ""));
-      });
-    }
+    const prune = prunePageImageHistoryInDraft({
+      draft,
+      imageKey,
+      deviceId: device.id,
+      maxVersions,
+    });
+    const cleanup = cleanupUnusedPageCacheFilesInDraft(draft, {
+      candidateFileIds: prune.candidateFileIds,
+    });
+    pageCacheDeleteJobs = cleanup.deleteJobs;
   });
+  scheduleGridFileDeletion(pageCacheDeleteJobs);
 
   const payload = service.buildDevicePayload({
     deviceId: device.id,
@@ -181,4 +194,3 @@ module.exports = {
   renderAndPersistForDevice,
   publishPagePushEvents,
 };
-

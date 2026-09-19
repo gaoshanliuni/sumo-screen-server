@@ -17,6 +17,10 @@
         <el-option label="在线" value="online" />
         <el-option label="离线" value="offline" />
       </el-select>
+      <el-select v-model="deviceTypeFilter" filterable style="width: 190px">
+        <el-option label="全部设备类型" value="all" />
+        <el-option v-for="item in deviceTypeOptions" :key="item.value" :label="item.label" :value="item.value" />
+      </el-select>
       <el-button @click="selectAllFiltered">全选筛选结果</el-button>
       <el-button @click="invertFilteredSelection">反选筛选结果</el-button>
       <el-button @click="emitSelection([])">清空选择</el-button>
@@ -74,6 +78,7 @@ const keyword = ref("");
 const status = ref<"all" | "enabled" | "blocked">("all");
 const bindFilter = ref<"all" | "bound" | "unbound">("all");
 const onlineFilter = ref<"all" | "online" | "offline">("all");
+const deviceTypeFilter = ref("all");
 const canvasRef = ref<HTMLDivElement | null>(null);
 const cardRefMap = new Map<string, HTMLDivElement>();
 
@@ -89,17 +94,31 @@ watch(
 const filteredDevices = computed(() => {
   const key = keyword.value.trim().toLowerCase();
   return props.devices.filter((item) => {
+    const type = String(item.type || item.deviceType || "").trim();
     if (status.value !== "all" && String(item.status || "") !== status.value) return false;
     if (bindFilter.value === "bound" && item.bindState !== "bound") return false;
     if (bindFilter.value === "unbound" && item.bindState === "bound") return false;
     if (onlineFilter.value === "online" && !item.online) return false;
     if (onlineFilter.value === "offline" && item.online) return false;
+    if (deviceTypeFilter.value !== "all" && type !== deviceTypeFilter.value) return false;
     if (!key) return true;
     const merged = `${item.id} ${item.displayName || ""} ${item.mac} ${item.remark || ""} ${(item.clusterNames || []).join(" ")} ${
       item.ownerId || ""
-    } ${item.ownerUsername || ""} ${item.ownerNickname || ""}`.toLowerCase();
+    } ${item.ownerUsername || ""} ${item.ownerNickname || ""} ${type}`.toLowerCase();
     return merged.includes(key);
   });
+});
+
+const deviceTypeOptions = computed(() => {
+  const map = new Map<string, number>();
+  props.devices.forEach((item) => {
+    const type = String(item.type || item.deviceType || "").trim();
+    if (!type) return;
+    map.set(type, Number(map.get(type) || 0) + 1);
+  });
+  return [...map.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([value, count]) => ({ value, label: `${value} · ${count} 台` }));
 });
 
 watch(
@@ -172,6 +191,7 @@ function getFilters() {
     status: status.value,
     bound: bindFilter.value,
     online: onlineFilter.value,
+    deviceType: deviceTypeFilter.value,
   };
 }
 

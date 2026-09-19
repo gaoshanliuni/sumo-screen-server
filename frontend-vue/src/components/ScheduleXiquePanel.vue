@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <el-card class="xique-panel" shadow="never">
     <template #header>
       <div class="xique-header">
@@ -170,7 +170,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
-import { ElMessage } from "element-plus";
+import { ElMessage } from "element-plus/es/components/message/index.mjs";
 import {
   fetchXiqueStatus,
   initXiqueLogin,

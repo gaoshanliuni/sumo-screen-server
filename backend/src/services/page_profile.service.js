@@ -8,7 +8,10 @@ const config = require("../config");
 const createId = require("../utils/id");
 const HttpError = require("../utils/httpError");
 const { getGridBucket } = require("../utils/mongo");
+const { createConcurrencyLimiter } = require("../utils/concurrency");
 const { normalizeAutoRenderPushConfig } = require("./homepage_auto_push_time.service");
+const { convertImageBufferToE6P4, E6_WIDTH, E6_HEIGHT } = require("./e6/e6_converter.service");
+const { buildDeviceVariableContext } = require("./device_variable.service");
 const {
   WEEKDAY_LABEL_MAP,
   normalizeWeeksArray,
@@ -32,6 +35,11 @@ let qweatherFontDataUrl = "";
 let playwrightModule = null;
 let browserLaunchPromise = null;
 let browserCleanupHooked = false;
+let browserIdleCloseTimer = null;
+let browserActiveRenderCount = 0;
+const browserRenderLimit = createConcurrencyLimiter(
+  Math.max(1, Number(process.env.PAGE_RENDER_BROWSER_MAX_CONCURRENT || 2))
+);
 let qweatherFontWarned = false;
 let systemFontsLoaded = false;
 
@@ -162,6 +170,15 @@ function normalizePageType(pageType) {
   if (["badge", "badgepage", "nameplate"].includes(v)) return "badgepage";
   if (["weather", "weatherpage"].includes(v)) return "weatherpage";
   throw new HttpError(400, `unsupported page type: ${pageType}`);
+}
+
+function normalizeTargetDeviceTypes(input) {
+  const values = Array.isArray(input)
+    ? input
+    : typeof input === "string"
+      ? input.split(",")
+      : [];
+  return [...new Set(values.map((item) => String(item || "").trim()).filter(Boolean))];
 }
 
 function configKeyForPage(pageType) {
@@ -297,6 +314,28 @@ function normalizePageConfig(input, fallback, pageType) {
   return merged;
 }
 
+function isE6Device(device = {}) {
+  return String(device.type || device.deviceType || device.deviceTypeId || "").trim() === "e6-color-frame";
+}
+
+function applyDeviceProfileToConfig(config, device = {}) {
+  const next = deepClone(config || {});
+  if (!isE6Device(device)) return next;
+  next.screen = next.screen || {};
+  next.screen.width = E6_WIDTH;
+  next.screen.height = E6_HEIGHT;
+  next.image = next.image || {};
+  next.image.format = "e6p4";
+  next.image.preview_format = "png";
+  next.time_overlay = next.time_overlay || {};
+  next.time_overlay.x = clamp(next.time_overlay.x, 0, E6_WIDTH, Math.max(0, E6_WIDTH - 240));
+  next.time_overlay.y = clamp(next.time_overlay.y, 0, E6_HEIGHT, 20);
+  next.time_overlay.width = clamp(next.time_overlay.width, 80, E6_WIDTH, 220);
+  next.time_overlay.height = clamp(next.time_overlay.height, 40, E6_HEIGHT, 90);
+  next.time_overlay.font_size = clamp(next.time_overlay.font_size, 12, 120, 42);
+  return next;
+}
+
 function stripTags(html) {
   return String(html || "")
     .replace(/<[^>]+>/g, " ")
@@ -346,12 +385,14 @@ function getPathValue(source, dottedPath) {
 }
 
 function interpolate(text, dataModel) {
-  return String(text || "").replace(/\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g, (_, key) => getPathValue(dataModel, key));
+  return String(text || "").replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (_, key) => getPathValue(dataModel, String(key || "").trim()));
 }
 
 function interpolateHtml(text, dataModel) {
-  return String(text || "").replace(/\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g, (_, key) => escapeHtml(getPathValue(dataModel, key)));
+  return String(text || "").replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (_, key) => escapeHtml(getPathValue(dataModel, String(key || "").trim())));
 }
+
+const interpolateForTemplate = interpolate;
 
 function parseTemplateBlocks(templateHtml, dataModel, width, height) {
   const blocks = [];
@@ -411,31 +452,21 @@ function getBrowserExecutableCandidates() {
     .map((item) => String(item || "").trim())
     .filter(Boolean);
 
-  const defaults = [
+  if (process.platform !== "win32") {
+    return [...new Set(envPaths)].filter((item) => fs.existsSync(item));
+  }
+
+  const edgeDefaults = [
     "C:/Program Files/Microsoft/Edge/Application/msedge.exe",
     "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
-    "C:/Program Files/Google/Chrome/Application/chrome.exe",
-    "C:/Program Files (x86)/Google/Chrome/Application/chrome.exe",
-    "/usr/bin/google-chrome",
-    "/usr/bin/google-chrome-stable",
-    "/usr/bin/chromium",
-    "/usr/bin/chromium-browser",
-    "/snap/bin/chromium",
-    "/opt/google/chrome/chrome",
-    "/usr/lib/chromium/chromium",
   ];
 
   const fromPath = resolveExecutableFromPath([
-    "google-chrome",
-    "google-chrome-stable",
-    "chromium",
-    "chromium-browser",
-    "chrome",
     "msedge",
     "microsoft-edge",
   ]);
 
-  return [...new Set([...envPaths, ...defaults, ...fromPath])].filter((item) => fs.existsSync(item));
+  return [...new Set([...envPaths, ...edgeDefaults, ...fromPath])].filter((item) => fs.existsSync(item));
 }
 
 function shouldUseBrowserRender(templateHtml, config) {
@@ -451,7 +482,7 @@ function collectPlaceholderDebug(templateHtml, dataModel) {
   const missing = [];
   const seenAll = new Set();
   const seenMissing = new Set();
-  String(templateHtml || "").replace(/\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g, (_m, keyRaw) => {
+  String(templateHtml || "").replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (_m, keyRaw) => {
     const key = String(keyRaw || "").trim();
     if (!key) return "";
     if (!seenAll.has(key)) {
@@ -670,7 +701,7 @@ function buildRuntimeModelScript(dataModel, width, height, waitConfig, runtimeOp
     return String(cur);
   };
   const interpolate = (text) =>
-    String(text || "").replace(/\\{\\{\\s*([a-zA-Z0-9_.-]+)\\s*\\}\\}/g, (_m, key) => resolve(model, key));
+    String(text || "").replace(/\\{\\{\\s*([^{}]+?)\\s*\\}\\}/g, (_m, key) => resolve(model, String(key || "").trim()));
 
   window.__PAGE_INTERPOLATE__ = interpolate;
   window.__PAGE_RESOLVE__ = (key) => resolve(model, key);
@@ -988,7 +1019,44 @@ async function getPlaywrightModule() {
   }
 }
 
+function getBrowserIdleCloseMs() {
+  return Math.max(1000, parsePositiveInt(process.env.PAGE_RENDER_BROWSER_IDLE_CLOSE_MS, process.platform === "win32" ? 5000 : 15000));
+}
+
+async function closeBrowserInstance() {
+  const promise = browserLaunchPromise;
+  browserLaunchPromise = null;
+  if (browserIdleCloseTimer) {
+    clearTimeout(browserIdleCloseTimer);
+    browserIdleCloseTimer = null;
+  }
+  if (!promise) return;
+  try {
+    const instance = await promise;
+    await instance.close();
+  } catch (_) {
+    // ignore cleanup failures
+  }
+}
+
+function scheduleBrowserIdleClose() {
+  if (browserActiveRenderCount > 0 || !browserLaunchPromise) return;
+  if (browserIdleCloseTimer) clearTimeout(browserIdleCloseTimer);
+  browserIdleCloseTimer = setTimeout(() => {
+    if (browserActiveRenderCount <= 0) {
+      closeBrowserInstance().catch(() => {});
+    }
+  }, getBrowserIdleCloseMs());
+  if (typeof browserIdleCloseTimer.unref === "function") {
+    browserIdleCloseTimer.unref();
+  }
+}
+
 async function getBrowserInstance() {
+  if (browserIdleCloseTimer) {
+    clearTimeout(browserIdleCloseTimer);
+    browserIdleCloseTimer = null;
+  }
   if (browserLaunchPromise) return browserLaunchPromise;
   const launchTimeoutMs = Math.max(
     2500,
@@ -1051,7 +1119,8 @@ async function getBrowserInstance() {
       lastError = error;
     }
 
-    // 2) Fallback to explicit executable candidates from env/system paths.
+    // 2) On Windows, fall back to installed Edge. On Linux/macOS, use the
+    // Playwright-downloaded Chromium unless an executable path is explicitly set.
     const executables = getBrowserExecutableCandidates().slice(0, maxCandidateAttempts);
     for (const executablePath of executables) {
       try {
@@ -1082,17 +1151,7 @@ async function getBrowserInstance() {
     const browser = await browserLaunchPromise;
     if (!browserCleanupHooked) {
       browserCleanupHooked = true;
-      const cleanup = async () => {
-        if (!browserLaunchPromise) return;
-        try {
-          const instance = await browserLaunchPromise;
-          await instance.close();
-        } catch (_) {
-          // ignore
-        } finally {
-          browserLaunchPromise = null;
-        }
-      };
+      const cleanup = async () => closeBrowserInstance();
       process.once("beforeExit", cleanup);
       process.once("SIGINT", async () => {
         await cleanup();
@@ -1110,17 +1169,19 @@ async function getBrowserInstance() {
   }
 }
 
-async function renderWithBrowserEngine({ templateHtml, dataModel, width, height, config }) {
+async function renderWithBrowserEngineUnbounded({ templateHtml, dataModel, width, height, config }) {
   const waitConfig = getBrowserRenderWaitConfig(config);
   const waitForReadyTimeoutMs = Math.max(waitConfig.readyTimeoutMs + waitConfig.idleSettleMs + 1500, 6000);
   const browser = await getBrowserInstance();
-  const context = await browser.newContext({
-    viewport: { width, height },
-    deviceScaleFactor: 1,
-    colorScheme: "light",
-  });
+  browserActiveRenderCount += 1;
+  let context = null;
 
   try {
+    context = await browser.newContext({
+      viewport: { width, height },
+      deviceScaleFactor: 1,
+      colorScheme: "light",
+    });
     const page = await context.newPage();
     const doc = buildBrowserPreviewDocument(templateHtml, dataModel, width, height, waitConfig, config);
     await page.setContent(doc, { waitUntil: "domcontentloaded" });
@@ -1191,8 +1252,16 @@ async function renderWithBrowserEngine({ templateHtml, dataModel, width, height,
       readyMeta,
     };
   } finally {
-    await context.close();
+    if (context) {
+      await context.close().catch(() => {});
+    }
+    browserActiveRenderCount = Math.max(0, browserActiveRenderCount - 1);
+    scheduleBrowserIdleClose();
   }
+}
+
+function renderWithBrowserEngine(options) {
+  return browserRenderLimit(() => renderWithBrowserEngineUnbounded(options));
 }
 
 function ensureQWeatherAssets() {
@@ -1480,16 +1549,19 @@ async function uploadTfBlob({ ownerId, category, fileName, mime, buffer, source 
   const filename = `${recordId}_${fileName}`;
   const bucket = await getGridBucket("tf_files");
   const sha256 = sha256Hex(buffer);
+  const metadata = {
+    ownerId,
+    category,
+    source: source || "page",
+    pageType: source || "page",
+    generatedBy: "page-render",
+    originalName: fileName,
+    sha256,
+  };
 
   const uploadStream = bucket.openUploadStream(filename, {
     contentType: mime || "application/octet-stream",
-    metadata: {
-      ownerId,
-      category,
-      source: source || "page",
-      originalName: fileName,
-      sha256,
-    },
+    metadata,
   });
 
   const gridId = await new Promise((resolve, reject) => {
@@ -1510,6 +1582,9 @@ async function uploadTfBlob({ ownerId, category, fileName, mime, buffer, source 
     gridId: String(gridId),
     url: `/api/tf/${recordId}/download`,
     sha256,
+    source: source || "page",
+    generatedBy: "page-render",
+    meta: metadata,
     createdAt: now,
     updatedAt: now,
   };
@@ -1530,6 +1605,7 @@ function ensureDefaultTemplate(db, options) {
     type: "default_html",
     html: options.defaultTemplateHtml,
     builtin: true,
+    targetDeviceTypes: [],
     createdAt: now,
     updatedAt: now,
   };
@@ -1556,6 +1632,7 @@ function listTemplates(db, auth, options) {
       type: String(item.type || "custom_html"),
       html: String(item.html || ""),
       builtin: Boolean(item.builtin),
+      targetDeviceTypes: normalizeTargetDeviceTypes(item.targetDeviceTypes || item.targetDeviceType || item.deviceTypes),
       updatedAt: String(item.updatedAt || item.createdAt || ""),
       createdAt: String(item.createdAt || ""),
     }))
@@ -1580,6 +1657,7 @@ function resolveTemplateHtml(db, config, auth, options) {
       type: "default_html",
       html: options.defaultTemplateHtml,
       builtin: true,
+      targetDeviceTypes: [],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -1594,6 +1672,7 @@ function resolveTemplateHtml(db, config, auth, options) {
     type: row.type,
     html: String(row.html || options.defaultTemplateHtml),
     builtin: Boolean(row.builtin),
+    targetDeviceTypes: normalizeTargetDeviceTypes(row.targetDeviceTypes || row.targetDeviceType || row.deviceTypes),
   };
 }
 
@@ -1619,6 +1698,7 @@ function buildCommonDataModel(db, device, extraData) {
     employee_no: String(device.id || "").slice(-8),
     status: device.online ? "online" : "offline",
   };
+  const deviceVariableContext = buildDeviceVariableContext(db, device);
 
   const thirdCacheRaw =
     device?.thirdApiCache && typeof device.thirdApiCache === "object" && !Array.isArray(device.thirdApiCache)
@@ -1627,6 +1707,7 @@ function buildCommonDataModel(db, device, extraData) {
   const third = {};
   const thirdFormatted = {};
   const thirdRaw = {};
+  const apiMetaBySlug = {};
 
   const normalizeWeekday = (value, slotKey = "") => {
     const num = Number(value);
@@ -1944,9 +2025,30 @@ function buildCommonDataModel(db, device, extraData) {
       formatted: formatted === undefined ? null : formatted,
       raw,
       updated_at: String(row.updatedAt || row.updated_at || ""),
+      expire_at: String(row.expireAt || row.expire_at || ""),
+      next_refresh_at: String(row.nextRefreshAt || row.next_refresh_at || ""),
+      refresh_mode: String(row.refreshMode || row.refresh_mode || ""),
+      refresh_status: String(row.refreshStatus || row.refresh_status || ""),
+      last_error: String(row.lastError || row.last_error || ""),
+      last_latency_ms: Number(row.lastLatencyMs || row.last_latency_ms || 0) || 0,
+      last_refresh_source: String(row.lastRefreshSource || row.last_refresh_source || ""),
+      last_request_at: String(row.lastRequestAt || row.last_request_at || ""),
+      stale: Boolean(row.stale),
     };
     thirdFormatted[slug] = formatted === undefined ? null : formatted;
     thirdRaw[slug] = raw;
+    apiMetaBySlug[slug] = {
+      updated_at: String(row.updatedAt || row.updated_at || ""),
+      expire_at: String(row.expireAt || row.expire_at || ""),
+      next_refresh_at: String(row.nextRefreshAt || row.next_refresh_at || ""),
+      refresh_mode: String(row.refreshMode || row.refresh_mode || ""),
+      refresh_status: String(row.refreshStatus || row.refresh_status || ""),
+      last_error: String(row.lastError || row.last_error || ""),
+      last_latency_ms: Number(row.lastLatencyMs || row.last_latency_ms || 0) || 0,
+      last_refresh_source: String(row.lastRefreshSource || row.last_refresh_source || ""),
+      last_request_at: String(row.lastRequestAt || row.last_request_at || ""),
+      stale: Boolean(row.stale),
+    };
   });
 
   // Keep Weather API variables visible in template-variable panel even before
@@ -2031,9 +2133,30 @@ function buildCommonDataModel(db, device, extraData) {
           formatted: fallbackFormatted,
           raw: { output: fallbackFormatted },
           updated_at: "",
+          expire_at: "",
+          next_refresh_at: "",
+          refresh_mode: "",
+          refresh_status: "idle",
+          last_error: "",
+          last_latency_ms: 0,
+          last_refresh_source: "",
+          last_request_at: "",
+          stale: true,
         };
         thirdFormatted[slug] = fallbackFormatted;
         thirdRaw[slug] = { output: fallbackFormatted };
+        apiMetaBySlug[slug] = {
+          updated_at: "",
+          expire_at: "",
+          next_refresh_at: "",
+          refresh_mode: "",
+          refresh_status: "idle",
+          last_error: "",
+          last_latency_ms: 0,
+          last_refresh_source: "",
+          last_request_at: "",
+          stale: true,
+        };
         return;
       }
 
@@ -2088,6 +2211,10 @@ function buildCommonDataModel(db, device, extraData) {
       city: "Shanghai",
       updated_at: new Date().toISOString(),
     },
+    deviceVariables: deviceVariableContext.deviceVariables,
+    device_variables: deviceVariableContext.device_variables,
+    deviceVariableList: deviceVariableContext.deviceVariableList,
+    device_variable_list: deviceVariableContext.device_variable_list,
     third,
     third_formatted: thirdFormatted,
     third_raw: thirdRaw,
@@ -2096,6 +2223,7 @@ function buildCommonDataModel(db, device, extraData) {
       third,
       formatted_by_slug: apiFormattedBySlug,
       raw_by_slug: thirdRaw,
+      meta_by_slug: apiMetaBySlug,
     },
     custom_fields: isObject(extraData?.custom_fields) ? extraData.custom_fields : {},
     meta: {
@@ -2211,16 +2339,27 @@ async function renderPageBuffers({ config, templateHtml, dataModel, pageType }) 
   const pngBuffer = await canvas.encode("png");
   const imageData = ctx.getImageData(0, 0, width, height);
   const epd4Buffer = rgbaToEpd4(imageData.data, width, height);
-  const etag = sha256Hex(epd4Buffer);
+  const wantsE6P4 = String(config?.image?.format || "").toLowerCase() === "e6p4";
+  const e6 = wantsE6P4 ? await convertImageBufferToE6P4(pngBuffer, { fit: "contain" }) : null;
+  const binaryBuffer = e6?.buffer || epd4Buffer;
+  const binaryFormat = e6 ? "e6p4" : "epd4";
+  const binaryMime = e6 ? "application/x-e6p4" : "application/x-epd4";
+  const etag = sha256Hex(binaryBuffer);
 
   return {
     width,
     height,
     pngBuffer,
     epd4Buffer,
+    e6p4Buffer: e6?.buffer || null,
+    e6PreviewBuffer: e6?.previewBuffer || null,
+    binaryBuffer,
+    binaryFormat,
+    binaryMime,
     etag,
     debug: {
       pageType: normalizePageType(pageType),
+      binary_format: binaryFormat,
       render_engine: String(config?.template?.render_engine || "auto"),
       render_mode: renderMode,
       browserRendered,
@@ -2340,13 +2479,16 @@ module.exports = {
   deepClone,
   deepMerge,
   normalizePageType,
+  normalizeTargetDeviceTypes,
   normalizeRenderMode,
   normalizePageConfig,
+  applyDeviceProfileToConfig,
   uploadTfBlob,
   ensureDefaultTemplate,
   listTemplates,
   resolveTemplateHtml,
   buildCommonDataModel,
+  interpolateForTemplate,
   renderPageBuffers,
   resolvePageConfig,
   getLatestPageImage,

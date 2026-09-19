@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div class="page">
     <el-card class="panel">
       <template #header>
@@ -69,7 +69,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { useRouter } from "vue-router";
-import { ElMessage } from "element-plus";
+import { ElMessage } from "element-plus/es/components/message/index.mjs";
 
 type AppRole = "user" | "admin";
 

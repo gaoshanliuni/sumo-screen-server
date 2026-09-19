@@ -230,6 +230,31 @@ button.ghost {
   padding: 0 14px;
 }
 
+.miniapp-entry {
+  margin: 12px 0 0;
+  border: 1px solid #d8dfef;
+  border-radius: 12px;
+  padding: 10px;
+  background: #ffffff;
+}
+
+.miniapp-qr {
+  display: block;
+  width: min(100%, 260px);
+  margin: 0 auto;
+  border-radius: 10px;
+  border: 1px solid #e2e8f4;
+  object-fit: contain;
+  background: #fff;
+}
+
+.miniapp-caption {
+  margin-top: 8px;
+  text-align: center;
+  color: var(--sub-ink);
+  font-size: 0.82rem;
+}
+
 .actions {
   display: flex;
   gap: 7px;

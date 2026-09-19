@@ -1,5 +1,5 @@
 const createId = require("./id");
-const { updateDB } = require("../db/store");
+const { updateDBOptimistic } = require("../db/store");
 
 function enqueueLogWrite(task) {
   setImmediate(() => {
@@ -7,6 +7,7 @@ function enqueueLogWrite(task) {
       // Ignore logging failures to avoid breaking main flow.
     });
   });
+  return Promise.resolve();
 }
 
 function logOperation({
@@ -18,9 +19,9 @@ function logOperation({
   detail = {},
   status = "success",
 }) {
-  if (!action) return;
-  enqueueLogWrite(async () => {
-    await updateDB((db) => {
+  if (!action) return Promise.resolve();
+  return enqueueLogWrite(async () => {
+    await updateDBOptimistic((db) => {
       db.operationLogs.unshift({
         id: createId("oplog"),
         actorId,
@@ -47,8 +48,8 @@ function logApi({
   latencyMs = 0,
   error = "",
 }) {
-  enqueueLogWrite(async () => {
-    await updateDB((db) => {
+  return enqueueLogWrite(async () => {
+    await updateDBOptimistic((db) => {
       db.apiLogs.unshift({
         id: createId("apilog"),
         callerRole,

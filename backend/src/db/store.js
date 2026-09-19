@@ -2,16 +2,87 @@
 const mysql = require("mysql2/promise");
 const config = require("../config");
 const createId = require("../utils/id");
+const { normalizeTemplateRefreshConfig } = require("../services/api_template_refresh_config.service");
+const { ensureDeviceVariableContainer } = require("../services/device_variable.service");
 
 let cache = null;
 let initialized = false;
 let writeQueue = Promise.resolve();
+const thirdCacheWriteQueues = new Map();
 let warnedReadFallback = false;
 let warnedWriteFallback = false;
 let forceCacheReads = false;
 let dbRetryAfterTs = 0;
 let initializedFromDB = false;
+let mysqlPool = null;
+let cacheGeneration = 0;
+let pendingOptimisticSnapshot = null;
+let pendingOptimisticLabel = "optimistic update";
+let pendingOptimisticVersion = 0;
+let pendingOptimisticDirtyKeys = new Set();
+let optimisticPersistScheduled = false;
+let optimisticPersistTimer = null;
+let optimisticLatestVersion = 0;
+let optimisticPersistedVersion = 0;
+let optimisticInFlightVersion = 0;
+let optimisticLastAttemptAt = "";
+let optimisticLastSuccessAt = "";
+let optimisticLastFailureAt = "";
+let optimisticLastError = null;
+let optimisticLastOutcome = "idle";
 const dbOpTimeoutMs = Math.max(1000, Number(config.mysql.opTimeoutMs || config.mysql.connectTimeoutMs || 6000));
+const optimisticPersistDelayMs = Math.max(0, Number(config.mysql.optimisticPersistDelayMs || 50));
+const thirdCacheDbOpTimeoutMs = Math.max(
+  1000,
+  Math.min(
+    dbOpTimeoutMs,
+    Number(config.defaultApiTemplateRefreshTimeoutMs || config.requestTimeoutMs || config.mysql.connectTimeoutMs || 8000)
+  )
+);
+const BUILTIN_TEMPLATE_NAME_BY_SLUG = {
+  weather: "和风天气",
+  zaoan: "早安心语",
+  wanan: "晚安心语",
+  bulletin: "每日日报",
+  addressparse: "物流地址解析",
+  amap_geocode: "高德地理编码",
+  todo: "TODO列表",
+  xique_schedule: "喜鹊课程表",
+};
+const MIGRATION_WEATHER_TEMPLATE_REFRESH_60M = "2026-06-25-weather-template-refresh-60m";
+const MIGRATION_PLAY_COLLECTION_2M_TO_10M = "2026-06-25-play-collection-2m-to-10m";
+const REQUIRED_STORE_MIGRATIONS = [
+  MIGRATION_WEATHER_TEMPLATE_REFRESH_60M,
+  MIGRATION_PLAY_COLLECTION_2M_TO_10M,
+];
+const DEFAULT_PLAY_COLLECTION_SLIDE_INTERVAL_SEC = 10 * 60;
+const LEGACY_PLAY_COLLECTION_SLIDE_INTERVAL_SEC = 2 * 60;
+const BUILTIN_TEMPLATE_MOJIBAKE_NAME_SET = new Set([
+  "鍜岄澶╂皵",
+  "鏃╁畨蹇冭",
+  "鏅氬畨蹇冭",
+  "鐗╂祦鍦板潃瑙ｆ瀽",
+  "楂樺痉鍦扮悊缂栫爜",
+]);
+
+class StoreInfrastructureError extends Error {
+  constructor(operation, cause) {
+    const message = cause && cause.message ? cause.message : String(cause || "unknown infrastructure error");
+    super(`${operation}: ${message}`, { cause });
+    this.name = "StoreInfrastructureError";
+    this.code = "STORE_INFRASTRUCTURE_ERROR";
+    this.operation = String(operation || "store operation");
+  }
+}
+
+async function runStoreInfrastructureOperation(operation, runner) {
+  try {
+    return await runner();
+  } catch (error) {
+    if (error instanceof StoreInfrastructureError) throw error;
+    throw new StoreInfrastructureError(operation, error);
+  }
+}
 
 function withTimeout(promise, timeoutMs, label) {
   return new Promise((resolve, reject) => {
@@ -31,7 +102,38 @@ function withTimeout(promise, timeoutMs, label) {
 }
 
 function clone(data) {
+  if (data === undefined) return undefined;
   return JSON.parse(JSON.stringify(data));
+}
+
+function enqueueThirdCacheWrite(queueKey, runner) {
+  const safeKey = String(queueKey || "default");
+  const previous = thirdCacheWriteQueues.get(safeKey) || Promise.resolve();
+  const task = previous.catch(() => undefined).then(runner);
+  const tracked = task
+    .catch(() => undefined)
+    .finally(() => {
+      if (thirdCacheWriteQueues.get(safeKey) === tracked) {
+        thirdCacheWriteQueues.delete(safeKey);
+      }
+    });
+  thirdCacheWriteQueues.set(safeKey, tracked);
+  return task;
+}
+
+function resolveThirdCacheQueueKey(deviceId) {
+  const safeDeviceId = String(deviceId || "").trim();
+  if (cache && typeof cache === "object" && Array.isArray(cache.devices)) {
+    const target = cache.devices.find((item) => {
+      const id = String(item?.id || "").trim();
+      const did = String(item?.deviceId || "").trim();
+      return id === safeDeviceId || did === safeDeviceId;
+    });
+    if (target) {
+      return String(target.id || target.deviceId || safeDeviceId);
+    }
+  }
+  return safeDeviceId;
 }
 
 function buildLegacyAdvancedConfig(method, url) {
@@ -70,6 +172,39 @@ function normalizeIntervalMinutes(value) {
 
 function normalizeObjectField(input) {
   return input && typeof input === "object" && !Array.isArray(input) ? input : {};
+}
+
+function normalizeSecondsField(value, fallback = DEFAULT_PLAY_COLLECTION_SLIDE_INTERVAL_SEC) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(5, Math.min(86400, Math.floor(n)));
+}
+
+function ensureMigrationMap(state) {
+  state.meta = state.meta && typeof state.meta === "object" && !Array.isArray(state.meta) ? state.meta : {};
+  state.meta.migrations =
+    state.meta.migrations && typeof state.meta.migrations === "object" && !Array.isArray(state.meta.migrations)
+      ? state.meta.migrations
+      : {};
+  return state.meta.migrations;
+}
+
+function hasMigration(state, migrationId) {
+  const migrations = ensureMigrationMap(state);
+  return Boolean(migrations[String(migrationId || "")]);
+}
+
+function markMigration(state, migrationId, now = new Date().toISOString()) {
+  const migrations = ensureMigrationMap(state);
+  migrations[String(migrationId || "")] = String(now);
+}
+
+function missingRequiredStoreMigrations(state = {}) {
+  const migrations =
+    state.meta?.migrations && typeof state.meta.migrations === "object" && !Array.isArray(state.meta.migrations)
+      ? state.meta.migrations
+      : {};
+  return REQUIRED_STORE_MIGRATIONS.filter((migrationId) => !migrations[migrationId]);
 }
 
 function normalizeStringField(input, fallback = "") {
@@ -219,6 +354,61 @@ function normalizeScheduleRow(row = {}) {
   };
 }
 
+function normalizeThirdCacheEntry(row = {}, refreshConfig = {}) {
+  const nowIso = new Date().toISOString();
+  const safeRow = row && typeof row === "object" && !Array.isArray(row) ? row : {};
+  const ttlSeconds = Math.max(30, Number(refreshConfig?.ttlSeconds || 300));
+  const updatedAt = normalizeStringField(safeRow.updatedAt || safeRow.updated_at || "", nowIso);
+  const updatedTs = Date.parse(updatedAt);
+  const expireFallback = Number.isFinite(updatedTs)
+    ? new Date(updatedTs + ttlSeconds * 1000).toISOString()
+    : new Date(Date.now() + ttlSeconds * 1000).toISOString();
+  const expireAt = normalizeStringField(safeRow.expireAt || safeRow.expire_at || "", expireFallback);
+  return {
+    template:
+      safeRow.template && typeof safeRow.template === "object" && !Array.isArray(safeRow.template)
+        ? safeRow.template
+        : {},
+    formatted:
+      safeRow.formatted !== undefined
+        ? safeRow.formatted
+        : safeRow.raw && typeof safeRow.raw === "object" && !Array.isArray(safeRow.raw)
+          ? safeRow.raw.output
+          : null,
+    raw:
+      safeRow.raw && typeof safeRow.raw === "object" && !Array.isArray(safeRow.raw)
+        ? safeRow.raw
+        : { output: safeRow.formatted !== undefined ? safeRow.formatted : null, vars: {}, steps: [] },
+    updatedAt,
+    expireAt,
+    nextRefreshAt: normalizeStringField(safeRow.nextRefreshAt || safeRow.next_refresh_at || "", ""),
+    refreshMode: normalizeStringField(
+      safeRow.refreshMode || safeRow.refresh_mode || refreshConfig.mode || "interval",
+      "interval"
+    ),
+    refreshStatus: normalizeStringField(safeRow.refreshStatus || safeRow.refresh_status || "idle", "idle"),
+    lastError: normalizeStringField(safeRow.lastError || safeRow.last_error || "", ""),
+    lastLatencyMs: Number(safeRow.lastLatencyMs || safeRow.last_latency_ms || 0) || 0,
+    lastRefreshSource: normalizeStringField(
+      safeRow.lastRefreshSource || safeRow.last_refresh_source || "",
+      ""
+    ),
+    lastRequestAt: normalizeStringField(safeRow.lastRequestAt || safeRow.last_request_at || "", ""),
+    stale: Date.parse(expireAt) <= Date.now(),
+  };
+}
+
+function fixBuiltinTemplateName(tpl = {}) {
+  const slug = String(tpl.slug || "").trim();
+  if (!slug) return;
+  const canonicalName = BUILTIN_TEMPLATE_NAME_BY_SLUG[slug];
+  if (!canonicalName) return;
+  const currentName = String(tpl.name || "").trim();
+  if (!currentName || BUILTIN_TEMPLATE_MOJIBAKE_NAME_SET.has(currentName)) {
+    tpl.name = canonicalName;
+  }
+}
+
 function tableName() {
   return `\`${String(config.mysql.stateTable).replace(/`/g, "")}\``;
 }
@@ -238,6 +428,14 @@ function warnFallback(kind, error) {
     : "";
   // eslint-disable-next-line no-console
   console.warn(`[store] ${kind} fallback to in-memory cache: ${msg}${extra}`);
+  if (error && (error.stack || error.cause)) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[store] ${kind} fallback detail: ${
+        error.stack || String(error.cause?.message || error.cause || "")
+      }`
+    );
+  }
 }
 
 function enableCacheReadMode() {
@@ -252,6 +450,7 @@ function disableCacheReadMode() {
 }
 
 function shouldBypassDB() {
+  if (process.env.NODE_ENV === "test" && process.env.STORE_TEST_MEMORY_ONLY === "1") return true;
   return forceCacheReads && Date.now() < dbRetryAfterTs;
 }
 
@@ -304,6 +503,7 @@ async function getDefaultData() {
     bindingPins: [],
     clusters: [],
     firmwares: [],
+    fullFirmwareBundles: [],
     upgradeJobs: [],
     todos: [],
     schedules: [],
@@ -312,7 +512,7 @@ async function getDefaultData() {
     apiTemplates: [
       {
         id: "tpl_weather",
-        name: "鍜岄澶╂皵",
+        name: "和风天气",
         slug: "weather",
         method: "GET",
         url: "https://devapi.qweather.com/v7/weather/now",
@@ -320,6 +520,16 @@ async function getDefaultData() {
         keyIn: ["query"],
         deviceKeyRequired: true,
         defaultParams: { location: "101010100" },
+        refreshConfig: normalizeTemplateRefreshConfig(
+          {
+            mode: "interval",
+            intervalMinutes: 60,
+            ttlSeconds: 3600,
+            minRequestGapSeconds: 600,
+            jitterSeconds: 60,
+          },
+          { slug: "weather" }
+        ),
         userInputFields: [
           { name: "cityId", placeholder: "天气城市ID（如 101010100）" },
           { name: "lang", placeholder: "语言（可选，zh/en）" },
@@ -332,7 +542,7 @@ async function getDefaultData() {
       },
       {
         id: "tpl_zaoan",
-        name: "鏃╁畨蹇冭",
+        name: "早安心语",
         slug: "zaoan",
         method: "GET",
         url: "https://apis.whyta.cn/tx-zaoan",
@@ -347,7 +557,7 @@ async function getDefaultData() {
       },
       {
         id: "tpl_wanan",
-        name: "鏅氬畨蹇冭",
+        name: "晚安心语",
         slug: "wanan",
         method: "GET",
         url: "https://apis.whyta.cn/tx-wanan",
@@ -377,7 +587,7 @@ async function getDefaultData() {
       },
       {
         id: "tpl_addressparse",
-        name: "鐗╂祦鍦板潃瑙ｆ瀽",
+        name: "物流地址解析",
         slug: "addressparse",
         method: "GET",
         url: "https://apis.whyta.cn/tx-addressparse",
@@ -392,7 +602,7 @@ async function getDefaultData() {
       },
       {
         id: "tpl_amap_geocode",
-        name: "楂樺痉鍦扮悊缂栫爜",
+        name: "高德地理编码",
         slug: "amap_geocode",
         method: "GET",
         url: "https://restapi.amap.com/v3/geocode/geo",
@@ -455,6 +665,20 @@ async function getDefaultData() {
     weatherpageConfigs: [],
     weatherpageImages: [],
     remoteCommandAcks: [],
+    taskPlans: [],
+    taskRuns: [],
+    aiSessions: [],
+    aiMessages: [],
+    aiToolCalls: [],
+    aiConfirmations: [],
+    aiProviderConfigs: [],
+    aiUserAssignments: [],
+    aiUsageLogs: [],
+    asrProviderConfigs: [],
+    asrUsageLogs: [],
+    nvsShadows: [],
+    nvsBackups: [],
+    tasks: [],
     scheduleSyncConfigs: [],
     xiqueSessionVault: [],
     syncLogs: [],
@@ -508,12 +732,14 @@ function normalizeStoreShape(state) {
   state.meta.createdAt = state.meta.createdAt || new Date().toISOString();
   state.meta.updatedAt = state.meta.updatedAt || state.meta.createdAt;
   state.meta.version = Number(state.meta.version || 1);
+  ensureMigrationMap(state);
 
   state.users = Array.isArray(state.users) ? state.users : [];
   state.devices = Array.isArray(state.devices) ? state.devices : [];
   state.bindingPins = Array.isArray(state.bindingPins) ? state.bindingPins : [];
   state.clusters = Array.isArray(state.clusters) ? state.clusters : [];
   state.firmwares = Array.isArray(state.firmwares) ? state.firmwares : [];
+  state.fullFirmwareBundles = Array.isArray(state.fullFirmwareBundles) ? state.fullFirmwareBundles : [];
   state.upgradeJobs = Array.isArray(state.upgradeJobs) ? state.upgradeJobs : [];
   state.todos = Array.isArray(state.todos) ? state.todos : [];
   state.schedules = Array.isArray(state.schedules) ? state.schedules : [];
@@ -535,9 +761,69 @@ function normalizeStoreShape(state) {
   state.weatherpageConfigs = Array.isArray(state.weatherpageConfigs) ? state.weatherpageConfigs : [];
   state.weatherpageImages = Array.isArray(state.weatherpageImages) ? state.weatherpageImages : [];
   state.remoteCommandAcks = Array.isArray(state.remoteCommandAcks) ? state.remoteCommandAcks : [];
+  state.taskPlans = Array.isArray(state.taskPlans) ? state.taskPlans : [];
+  state.taskRuns = Array.isArray(state.taskRuns) ? state.taskRuns : [];
+  state.aiSessions = Array.isArray(state.aiSessions) ? state.aiSessions : [];
+  state.aiMessages = Array.isArray(state.aiMessages) ? state.aiMessages : [];
+  state.aiToolCalls = Array.isArray(state.aiToolCalls) ? state.aiToolCalls : [];
+  state.aiConfirmations = Array.isArray(state.aiConfirmations) ? state.aiConfirmations : [];
+  state.aiProviderConfigs = Array.isArray(state.aiProviderConfigs) ? state.aiProviderConfigs : [];
+  state.aiUserAssignments = Array.isArray(state.aiUserAssignments) ? state.aiUserAssignments : [];
+  state.aiUsageLogs = Array.isArray(state.aiUsageLogs) ? state.aiUsageLogs : [];
+  state.asrProviderConfigs = Array.isArray(state.asrProviderConfigs) ? state.asrProviderConfigs : [];
+  state.asrUsageLogs = Array.isArray(state.asrUsageLogs) ? state.asrUsageLogs : [];
+  state.nvsShadows = Array.isArray(state.nvsShadows) ? state.nvsShadows : [];
+  state.nvsBackups = Array.isArray(state.nvsBackups) ? state.nvsBackups : [];
+  state.tasks = Array.isArray(state.tasks) ? state.tasks : [];
   state.scheduleSyncConfigs = Array.isArray(state.scheduleSyncConfigs) ? state.scheduleSyncConfigs : [];
   state.xiqueSessionVault = Array.isArray(state.xiqueSessionVault) ? state.xiqueSessionVault : [];
   state.syncLogs = Array.isArray(state.syncLogs) ? state.syncLogs : [];
+  state.albumSources = Array.isArray(state.albumSources) ? state.albumSources : [];
+  state.albumSourceCredentials = Array.isArray(state.albumSourceCredentials) ? state.albumSourceCredentials : [];
+  state.albumExternalIndex = Array.isArray(state.albumExternalIndex) ? state.albumExternalIndex : [];
+  state.imageAssets = Array.isArray(state.imageAssets) ? state.imageAssets : [];
+  state.playCollections = Array.isArray(state.playCollections) ? state.playCollections : [];
+  state.playCollectionItems = Array.isArray(state.playCollectionItems) ? state.playCollectionItems : [];
+  state.imageImportJobs = Array.isArray(state.imageImportJobs) ? state.imageImportJobs : [];
+  state.imageImportJobItems = Array.isArray(state.imageImportJobItems) ? state.imageImportJobItems : [];
+  state.collectionSourceRules = Array.isArray(state.collectionSourceRules) ? state.collectionSourceRules : [];
+  state.sourceSyncLogs = Array.isArray(state.sourceSyncLogs) ? state.sourceSyncLogs : [];
+  state.e6RenderedAssets = Array.isArray(state.e6RenderedAssets) ? state.e6RenderedAssets : [];
+
+  state.taskPlans.forEach((row) => {
+    row.id = row.id || createId("task");
+    row.name = row.name || "未命名计划任务";
+    row.description = row.description || "";
+    row.enabled = row.enabled !== false;
+    row.priority = Number.isFinite(Number(row.priority)) ? Number(row.priority) : 10;
+    row.targetDeviceIds = Array.isArray(row.targetDeviceIds) ? row.targetDeviceIds.filter(Boolean) : [];
+    row.targetClusterIds = Array.isArray(row.targetClusterIds) ? row.targetClusterIds.filter(Boolean) : [];
+    row.scheduleMode = ["once", "weekly", "calendar"].includes(String(row.scheduleMode || "")) ? row.scheduleMode : "once";
+    row.scheduleSpec = row.scheduleSpec && typeof row.scheduleSpec === "object" && !Array.isArray(row.scheduleSpec) ? row.scheduleSpec : {};
+    row.repeatSpec = row.repeatSpec && typeof row.repeatSpec === "object" && !Array.isArray(row.repeatSpec) ? row.repeatSpec : {};
+    row.retrySpec = row.retrySpec && typeof row.retrySpec === "object" && !Array.isArray(row.retrySpec) ? row.retrySpec : {};
+    row.steps = Array.isArray(row.steps) ? row.steps : [];
+    row.lastRunAt = row.lastRunAt || "";
+    row.nextRunAt = row.nextRunAt || "";
+    row.createdAt = row.createdAt || new Date().toISOString();
+    row.updatedAt = row.updatedAt || row.createdAt;
+  });
+
+  state.taskRuns.forEach((row) => {
+    row.id = row.id || createId("trun");
+    row.planId = row.planId || "";
+    row.planName = row.planName || "";
+    row.triggerType = row.triggerType || "manual";
+    row.priority = Number.isFinite(Number(row.priority)) ? Number(row.priority) : 0;
+    row.status = row.status || "queued";
+    row.targetSnapshot = Array.isArray(row.targetSnapshot) ? row.targetSnapshot.filter(Boolean) : [];
+    row.reason = row.reason || "";
+    row.stepResults = Array.isArray(row.stepResults) ? row.stepResults : [];
+    row.startedAt = row.startedAt || "";
+    row.finishedAt = row.finishedAt || "";
+    row.createdAt = row.createdAt || new Date().toISOString();
+    row.updatedAt = row.updatedAt || row.createdAt;
+  });
 
   state.schedules.forEach((row) => {
     Object.assign(row, normalizeScheduleRow(row));
@@ -562,8 +848,32 @@ function normalizeStoreShape(state) {
       device.thirdApiCache && typeof device.thirdApiCache === "object" && !Array.isArray(device.thirdApiCache)
         ? device.thirdApiCache
         : {};
+    ensureDeviceVariableContainer(device);
     device.status = device.status || "enabled";
     device.type = device.type || "ink-screen";
+    if (device.type === "e6_color_frame") device.type = "e6-color-frame";
+    device.resolutionWidth = Number(device.resolutionWidth || (device.type === "e6-color-frame" ? 800 : 0)) || "";
+    device.resolutionHeight = Number(device.resolutionHeight || (device.type === "e6-color-frame" ? 480 : 0)) || "";
+    device.colorMode = device.colorMode || (device.type === "e6-color-frame" ? "e6_6color" : "");
+    device.capabilities =
+      device.capabilities && typeof device.capabilities === "object" && !Array.isArray(device.capabilities)
+        ? device.capabilities
+        : {};
+    device.currentCollectionId = device.currentCollectionId || "";
+    device.currentPlayMode = device.currentPlayMode || "";
+    device.lastDisplayImageId = device.lastDisplayImageId || "";
+    device.lastDisplayCollectionId = device.lastDisplayCollectionId || "";
+    device.lastDisplayItemIndex = Number.isFinite(Number(device.lastDisplayItemIndex))
+      ? Number(device.lastDisplayItemIndex)
+      : 0;
+    device.temperature = device.temperature ?? "";
+    device.humidity = device.humidity ?? "";
+    device.rssi = device.rssi ?? "";
+    device.batteryVoltage = device.batteryVoltage ?? "";
+    device.batteryPercent = device.batteryPercent ?? "";
+    device.sdCardStatus = device.sdCardStatus || "";
+    device.sdFreeBytes = device.sdFreeBytes ?? "";
+    device.lastScreenRefreshAt = device.lastScreenRefreshAt || "";
     device.remark = device.remark || "";
     device.displayName = String(device.displayName || "").trim();
     device.defaultView = String(device.defaultView || "home").trim() || "home";
@@ -609,6 +919,7 @@ function normalizeStoreShape(state) {
     tpl.enabled = tpl.enabled !== false;
     tpl.advancedEnabled = true;
     tpl.advancedConfig = ensureTemplateAdvancedConfig(tpl.advancedConfig, tpl.method, tpl.url);
+    tpl.refreshConfig = normalizeTemplateRefreshConfig(tpl.refreshConfig, { slug: tpl.slug });
     const firstStep = Array.isArray(tpl.advancedConfig?.steps) ? tpl.advancedConfig.steps[0] : null;
     if (firstStep && firstStep.legacyCompat) {
       firstStep.method = String(tpl.method || firstStep.method || "GET").toUpperCase();
@@ -623,8 +934,90 @@ function normalizeStoreShape(state) {
           .filter((item) => item.name)
       : [];
     tpl.builtin = Boolean(tpl.builtin);
+    fixBuiltinTemplateName(tpl);
     tpl.createdAt = tpl.createdAt || new Date().toISOString();
     tpl.updatedAt = tpl.updatedAt || tpl.createdAt;
+  });
+
+  if (!hasMigration(state, MIGRATION_WEATHER_TEMPLATE_REFRESH_60M)) {
+    const now = new Date().toISOString();
+    const weatherTemplate = state.apiTemplates.find((tpl) => String(tpl?.slug || "").trim() === "weather");
+    if (weatherTemplate) {
+      const current =
+        weatherTemplate.refreshConfig && typeof weatherTemplate.refreshConfig === "object" && !Array.isArray(weatherTemplate.refreshConfig)
+          ? weatherTemplate.refreshConfig
+          : {};
+      weatherTemplate.refreshConfig = normalizeTemplateRefreshConfig(
+        {
+          ...current,
+          mode: "interval",
+          enabled: current.enabled !== false,
+          intervalMinutes: 60,
+          ttlSeconds: 3600,
+          minRequestGapSeconds: Math.max(600, Number(current.minRequestGapSeconds || 0)),
+        },
+        { slug: "weather" }
+      );
+      weatherTemplate.updatedAt = now;
+    }
+    markMigration(state, MIGRATION_WEATHER_TEMPLATE_REFRESH_60M, now);
+  }
+
+  state.playCollections.forEach((row) => {
+    row.id = row.id || createId("col");
+    row.ownerId = row.ownerId || "";
+    row.name = row.name || "未命名集合";
+    row.description = row.description || "";
+    row.coverImageId = row.coverImageId || "";
+    row.playMode = String(row.playMode || "slideshow").trim() || "slideshow";
+    row.slideIntervalSec = normalizeSecondsField(row.slideIntervalSec, DEFAULT_PLAY_COLLECTION_SLIDE_INTERVAL_SEC);
+    row.loopEnabled = row.loopEnabled !== false;
+    row.shuffleEnabled = Boolean(row.shuffleEnabled);
+    row.offlineSyncEnabled = row.offlineSyncEnabled !== false;
+    row.targetDeviceType = row.targetDeviceType || "";
+    row.status = row.status || "enabled";
+    row.version = Number(row.version || 1);
+    row.createdAt = row.createdAt || new Date().toISOString();
+    row.updatedAt = row.updatedAt || row.createdAt;
+  });
+
+  if (!hasMigration(state, MIGRATION_PLAY_COLLECTION_2M_TO_10M)) {
+    const now = new Date().toISOString();
+    state.playCollections.forEach((row) => {
+      if (Number(row.slideIntervalSec) !== LEGACY_PLAY_COLLECTION_SLIDE_INTERVAL_SEC) return;
+      row.slideIntervalSec = DEFAULT_PLAY_COLLECTION_SLIDE_INTERVAL_SEC;
+      row.version = Number(row.version || 1) + 1;
+      row.updatedAt = now;
+    });
+    markMigration(state, MIGRATION_PLAY_COLLECTION_2M_TO_10M, now);
+  }
+
+  const refreshConfigBySlug = new Map(
+    state.apiTemplates
+      .filter((tpl) => tpl && typeof tpl === "object")
+      .map((tpl) => [String(tpl.slug || "").trim(), normalizeTemplateRefreshConfig(tpl.refreshConfig, { slug: tpl.slug })])
+  );
+
+  state.devices.forEach((device) => {
+    const cache = device.thirdApiCache && typeof device.thirdApiCache === "object" && !Array.isArray(device.thirdApiCache)
+      ? device.thirdApiCache
+      : {};
+    const normalizedCache = {};
+    Object.keys(cache).forEach((slug) => {
+      const refreshConfig = refreshConfigBySlug.get(String(slug || "").trim()) || normalizeTemplateRefreshConfig({}, { slug });
+      normalizedCache[slug] = normalizeThirdCacheEntry(cache[slug], refreshConfig);
+      if (!normalizedCache[slug].template || typeof normalizedCache[slug].template !== "object") {
+        normalizedCache[slug].template = { slug: String(slug || ""), name: String(slug || "") };
+      } else {
+        if (!String(normalizedCache[slug].template.slug || "").trim()) {
+          normalizedCache[slug].template.slug = String(slug || "");
+        }
+        if (!String(normalizedCache[slug].template.name || "").trim()) {
+          normalizedCache[slug].template.name = String(slug || "");
+        }
+      }
+    });
+    device.thirdApiCache = normalizedCache;
   });
 
   state.firmwares.forEach((fw) => {
@@ -646,7 +1039,7 @@ function normalizeStoreShape(state) {
     const now = new Date().toISOString();
     state.apiTemplates.push({
       id: createId("tpl"),
-      name: "楂樺痉鍦扮悊缂栫爜",
+      name: "高德地理编码",
       slug: "amap_geocode",
       method: "GET",
       url: "https://restapi.amap.com/v3/geocode/geo",
@@ -654,6 +1047,7 @@ function normalizeStoreShape(state) {
       keyIn: ["query"],
       deviceKeyRequired: true,
       defaultParams: {},
+      refreshConfig: normalizeTemplateRefreshConfig({}, { slug: "amap_geocode" }),
       enabled: true,
       builtin: true,
       createdAt: now,
@@ -673,6 +1067,7 @@ function normalizeStoreShape(state) {
       keyIn: ["query"],
       deviceKeyRequired: false,
       defaultParams: {},
+      refreshConfig: normalizeTemplateRefreshConfig({}, { slug: "xique_schedule" }),
       enabled: true,
       builtin: true,
       createdAt: now,
@@ -692,6 +1087,7 @@ function normalizeStoreShape(state) {
       keyIn: ["query"],
       deviceKeyRequired: false,
       defaultParams: {},
+      refreshConfig: normalizeTemplateRefreshConfig({}, { slug: "todo" }),
       userInputFields: [
         { name: "done", placeholder: "可选：true/false，按完成状态过滤" },
         { name: "limit", placeholder: "可选：限制返回条数（最大500）" },
@@ -817,6 +1213,12 @@ function normalizeStoreShape(state) {
       row.type = row.type || "custom_html";
       row.html = row.html || "";
       row.builtin = Boolean(row.builtin);
+      row.targetDeviceTypes = Array.isArray(row.targetDeviceTypes)
+        ? [...new Set(row.targetDeviceTypes.map((item) => String(item || "").trim()).filter(Boolean))]
+        : String(row.targetDeviceType || row.deviceTypes || "")
+          .split(",")
+          .map((item) => item.trim())
+          .filter(Boolean);
       row.createdAt = row.createdAt || new Date().toISOString();
       row.updatedAt = row.updatedAt || row.createdAt;
     });
@@ -950,12 +1352,14 @@ function createEmptyState() {
       createdAt: now,
       updatedAt: now,
       version: 2,
+      migrations: {},
     },
     users: [],
     devices: [],
     bindingPins: [],
     clusters: [],
     firmwares: [],
+    fullFirmwareBundles: [],
     upgradeJobs: [],
     todos: [],
     schedules: [],
@@ -980,6 +1384,29 @@ function createEmptyState() {
     scheduleSyncConfigs: [],
     xiqueSessionVault: [],
     syncLogs: [],
+    aiSessions: [],
+    aiMessages: [],
+    aiToolCalls: [],
+    aiConfirmations: [],
+    aiProviderConfigs: [],
+    aiUserAssignments: [],
+    aiUsageLogs: [],
+    asrProviderConfigs: [],
+    asrUsageLogs: [],
+    nvsShadows: [],
+    nvsBackups: [],
+    tasks: [],
+    albumSources: [],
+    albumSourceCredentials: [],
+    albumExternalIndex: [],
+    imageAssets: [],
+    playCollections: [],
+    playCollectionItems: [],
+    imageImportJobs: [],
+    imageImportJobItems: [],
+    collectionSourceRules: [],
+    sourceSyncLogs: [],
+    e6RenderedAssets: [],
   };
 }
 
@@ -1009,7 +1436,12 @@ function createPayloadOnlySpec(key, table, idPrefix = "row") {
     fromRecord: (record = {}) => {
       const payload = safeJSONParse(record.payload_json, {});
       if (payload && typeof payload === "object" && Object.keys(payload).length) {
-        return payload;
+        return {
+          ...payload,
+          id: normalizeStringField(payload.id || record.id || ""),
+          createdAt: payload.createdAt || fromDbDateTime(record.created_at),
+          updatedAt: payload.updatedAt || fromDbDateTime(record.updated_at),
+        };
       }
       return {
         id: normalizeStringField(record.id || ""),
@@ -1145,6 +1577,7 @@ const CORE_COLLECTION_SPECS = [
         apiKeys: normalizeObjectField(row.apiKeys),
         thirdApiParams: normalizeObjectField(row.thirdApiParams),
         thirdApiCache: normalizeObjectField(row.thirdApiCache),
+        deviceVariables: normalizeObjectField(row.deviceVariables),
       };
       return {
         id: normalizeStringField(row.id || createId("dev")),
@@ -1828,6 +2261,7 @@ const CORE_COLLECTION_SPECS = [
         keyConcatEnabled: Boolean(row.keyConcatEnabled),
         keyConcatFields: Array.isArray(row.keyConcatFields) ? row.keyConcatFields : [],
         keyConcatSeparator: normalizeStringField(row.keyConcatSeparator || "|"),
+        refreshConfig: normalizeTemplateRefreshConfig(row.refreshConfig, { slug: row.slug }),
       }),
       is_active: row.enabled === false ? 0 : 1,
       payload_json: safeJSONString(row),
@@ -1848,6 +2282,10 @@ const CORE_COLLECTION_SPECS = [
         method: normalizeStringField(payload.method || record.method || "GET").toUpperCase(),
         url: normalizeStringField(payload.url || record.url || ""),
         enabled: payload.enabled !== undefined ? Boolean(payload.enabled) : Boolean(Number(record.is_active || 1)),
+        refreshConfig: normalizeTemplateRefreshConfig(
+          payload.refreshConfig || tplJson.refreshConfig,
+          { slug: payload.slug || record.slug || "" }
+        ),
         createdAt: normalizeStringField(payload.createdAt || fromDbDateTime(record.created_at) || ""),
         updatedAt: normalizeStringField(payload.updatedAt || fromDbDateTime(record.updated_at) || ""),
       };
@@ -2001,6 +2439,7 @@ const CORE_COLLECTION_SPECS = [
 
 const AUX_COLLECTION_SPECS = [
   createPayloadOnlySpec("tfDeviceFiles", "tf_device_files", "tfdev"),
+  createPayloadOnlySpec("fullFirmwareBundles", "full_firmware_bundles", "fwfull"),
   createPayloadOnlySpec("operationLogs", "operation_logs", "oplog"),
   createPayloadOnlySpec("apiLogs", "api_logs", "apilog"),
   createPayloadOnlySpec("nameplateLayouts", "nameplate_layouts", "nlayout"),
@@ -2016,7 +2455,32 @@ const AUX_COLLECTION_SPECS = [
   createPayloadOnlySpec("weatherpageConfigs", "weatherpage_configs", "wtcfg"),
   createPayloadOnlySpec("weatherpageImages", "weatherpage_images", "wtimg"),
   createPayloadOnlySpec("remoteCommandAcks", "remote_command_acks", "rack"),
+  createPayloadOnlySpec("taskPlans", "task_plans", "task"),
+  createPayloadOnlySpec("taskRuns", "task_runs", "trun"),
   createPayloadOnlySpec("xiqueSessionVault", "xique_session_vault", "xvault"),
+  createPayloadOnlySpec("aiSessions", "ai_sessions", "aisess"),
+  createPayloadOnlySpec("aiMessages", "ai_messages", "aimsg"),
+  createPayloadOnlySpec("aiToolCalls", "ai_tool_calls", "aitool"),
+  createPayloadOnlySpec("aiConfirmations", "ai_confirmations", "aicfm"),
+  createPayloadOnlySpec("aiProviderConfigs", "ai_provider_configs", "aicfg"),
+  createPayloadOnlySpec("aiUserAssignments", "ai_user_assignments", "aiassign"),
+  createPayloadOnlySpec("aiUsageLogs", "ai_usage_logs", "aiusage"),
+  createPayloadOnlySpec("asrProviderConfigs", "asr_provider_configs", "asrcfg"),
+  createPayloadOnlySpec("asrUsageLogs", "asr_usage_logs", "asrusage"),
+  createPayloadOnlySpec("nvsShadows", "nvs_shadows", "nvs"),
+  createPayloadOnlySpec("nvsBackups", "nvs_backups", "nvsbak"),
+  createPayloadOnlySpec("tasks", "tasks", "task"),
+  createPayloadOnlySpec("albumSources", "album_sources", "src"),
+  createPayloadOnlySpec("albumSourceCredentials", "album_source_credentials", "cred"),
+  createPayloadOnlySpec("albumExternalIndex", "album_external_index", "aidx"),
+  createPayloadOnlySpec("imageAssets", "image_assets", "img"),
+  createPayloadOnlySpec("playCollections", "play_collections", "col"),
+  createPayloadOnlySpec("playCollectionItems", "play_collection_items", "coli"),
+  createPayloadOnlySpec("imageImportJobs", "image_import_jobs", "ijob"),
+  createPayloadOnlySpec("imageImportJobItems", "image_import_job_items", "ijobi"),
+  createPayloadOnlySpec("collectionSourceRules", "collection_source_rules", "crule"),
+  createPayloadOnlySpec("sourceSyncLogs", "source_sync_logs", "slog"),
+  createPayloadOnlySpec("e6RenderedAssets", "e6_rendered_assets", "e6asset"),
 ];
 
 const ALL_COLLECTION_SPECS = [...CORE_COLLECTION_SPECS, ...AUX_COLLECTION_SPECS];
@@ -2036,21 +2500,34 @@ async function execQuery(conn, sql, params = [], label = "db query") {
 }
 
 async function getPool() {
-  return mysql.createConnection({
-    host: config.mysql.host,
-    port: config.mysql.port,
-    user: config.mysql.user,
-    password: config.mysql.password,
-    database: config.mysql.database,
-    charset: config.mysql.charset,
-    connectTimeout: config.mysql.connectTimeoutMs,
-    enableKeepAlive: true,
-    keepAliveInitialDelay: 10000,
-  });
+  if (!mysqlPool) {
+    mysqlPool = mysql.createPool({
+      host: config.mysql.host,
+      port: config.mysql.port,
+      user: config.mysql.user,
+      password: config.mysql.password,
+      database: config.mysql.database,
+      charset: config.mysql.charset,
+      waitForConnections: true,
+      connectionLimit: Number(config.mysql.connectionLimit || 10),
+      queueLimit: 0,
+      connectTimeout: config.mysql.connectTimeoutMs,
+      enableKeepAlive: true,
+      keepAliveInitialDelay: 10000,
+    });
+  }
+  return mysqlPool.getConnection();
 }
 
 async function resetPool() {
-  // no-op for single connection mode
+  if (!mysqlPool) return;
+  const pool = mysqlPool;
+  mysqlPool = null;
+  try {
+    await pool.end();
+  } catch (_) {
+    // ignore
+  }
 }
 
 async function closeConn(conn) {
@@ -2073,6 +2550,30 @@ async function ensureSchema(conn) {
   await execQuery(conn, META_TABLE_SQL, [], "db create store_meta");
   for (const spec of ALL_COLLECTION_SPECS) {
     await execQuery(conn, spec.createSql, [], `db create ${spec.table}`);
+  }
+  await ensureMysqlIndexes(conn);
+}
+
+async function ensureMysqlIndexes(conn) {
+  const indexes = [
+    ["devices", "idx_devices_owner_status_updated", "CREATE INDEX idx_devices_owner_status_updated ON devices(owner_id, status, updated_at)"],
+    ["devices", "idx_devices_owner_updated", "CREATE INDEX idx_devices_owner_updated ON devices(owner_id, updated_at)"],
+    ["devices", "idx_devices_device_updated", "CREATE INDEX idx_devices_device_updated ON devices(device_id, updated_at)"],
+    ["operation_logs", "idx_operation_logs_created", "CREATE INDEX idx_operation_logs_created ON operation_logs(created_at)"],
+    ["api_logs", "idx_api_logs_created", "CREATE INDEX idx_api_logs_created ON api_logs(created_at)"],
+    ["nameplate_history", "idx_nameplate_history_created", "CREATE INDEX idx_nameplate_history_created ON nameplate_history(created_at)"],
+  ];
+  for (const [table, indexName, sql] of indexes) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      await execQuery(conn, sql, [], `db create index ${indexName}`);
+    } catch (error) {
+      const msg = String(error?.message || error || "");
+      if (!/Duplicate key name|already exists|1061/i.test(msg)) {
+        // eslint-disable-next-line no-console
+        console.warn(`[store] skip index ${table}.${indexName}: ${msg}`);
+      }
+    }
   }
 }
 
@@ -2148,6 +2649,10 @@ async function saveStoreMeta(conn, meta = {}) {
     createdAt: normalizeStringField(meta.createdAt || now),
     updatedAt: normalizeStringField(meta.updatedAt || now),
     version: Number(meta.version || 2),
+    migrations:
+      meta.migrations && typeof meta.migrations === "object" && !Array.isArray(meta.migrations)
+        ? meta.migrations
+        : {},
   };
   const sql = `
     REPLACE INTO store_meta (id, version, payload_json, created_at, updated_at)
@@ -2169,6 +2674,7 @@ async function loadStoreMeta(conn) {
       createdAt: now,
       updatedAt: now,
       version: 2,
+      migrations: {},
     };
   }
   const row = rows[0];
@@ -2177,6 +2683,10 @@ async function loadStoreMeta(conn) {
     createdAt: normalizeStringField(payload.createdAt || fromDbDateTime(row.created_at) || new Date().toISOString()),
     updatedAt: normalizeStringField(payload.updatedAt || fromDbDateTime(row.updated_at) || new Date().toISOString()),
     version: Number(payload.version || row.version || 2),
+    migrations:
+      payload.migrations && typeof payload.migrations === "object" && !Array.isArray(payload.migrations)
+        ? payload.migrations
+        : {},
   };
 }
 
@@ -2192,13 +2702,53 @@ async function saveStateToTables(conn, state) {
   }
 }
 
+function captureCollectionFingerprints(state = {}) {
+  const fingerprints = new Map();
+  for (const spec of ALL_COLLECTION_SPECS) {
+    const rows = Array.isArray(state[spec.key]) ? state[spec.key] : [];
+    fingerprints.set(spec.key, safeJSONString(rows));
+  }
+  return fingerprints;
+}
+
+function detectChangedCollectionKeys(beforeFingerprints, state = {}) {
+  const changed = [];
+  for (const spec of ALL_COLLECTION_SPECS) {
+    const rows = Array.isArray(state[spec.key]) ? state[spec.key] : [];
+    if (beforeFingerprints?.get(spec.key) !== safeJSONString(rows)) {
+      changed.push(spec.key);
+    }
+  }
+  return changed;
+}
+
+async function saveStateChangesToTables(conn, state, changedKeys = []) {
+  state.meta = state.meta || {};
+  state.meta.updatedAt = new Date().toISOString();
+  state.meta.version = Number(state.meta.version || 2);
+  await saveStoreMeta(conn, state.meta);
+
+  const keySet = new Set(Array.isArray(changedKeys) ? changedKeys : []);
+  for (const spec of ALL_COLLECTION_SPECS) {
+    if (!keySet.has(spec.key)) continue;
+    const rows = Array.isArray(state[spec.key]) ? state[spec.key] : [];
+    await replaceCollectionRows(conn, spec, rows);
+  }
+}
+
 async function loadStateFromTables(conn) {
   const state = createEmptyState();
   state.meta = await loadStoreMeta(conn);
   for (const spec of ALL_COLLECTION_SPECS) {
     state[spec.key] = await loadCollectionRows(conn, spec);
   }
+  const missingMigrations = missingRequiredStoreMigrations(state);
   normalizeStoreShape(state);
+  Object.defineProperty(state, "__needsMigrationPersist", {
+    value: missingMigrations.length > 0,
+    enumerable: false,
+    configurable: true,
+  });
   return state;
 }
 
@@ -2212,6 +2762,41 @@ async function migrateLegacyStateToMysqlTables(conn) {
   }
   await saveStateToTables(conn, legacy);
   return true;
+}
+
+const LEGACY_MEDIA_BACKFILL_KEYS = ["tfFiles", "imageAssets", "e6RenderedAssets"];
+
+async function backfillLegacyMediaRowsIfNeeded(conn, state) {
+  if (String(process.env.LEGACY_MEDIA_BACKFILL || "1") === "0") return false;
+  const legacy = await loadLegacyState(conn);
+  if (!legacy) return false;
+  normalizeStoreShape(legacy);
+
+  let changed = false;
+  for (const key of LEGACY_MEDIA_BACKFILL_KEYS) {
+    const currentRows = Array.isArray(state[key]) ? state[key] : [];
+    const legacyRows = Array.isArray(legacy[key]) ? legacy[key] : [];
+    if (!legacyRows.length) continue;
+
+    const currentIds = new Set(currentRows.map((row) => String(row?.id || "")).filter(Boolean));
+    const missingRows = legacyRows.filter((row) => {
+      const id = String(row?.id || "");
+      return id && !currentIds.has(id);
+    });
+    if (!missingRows.length) continue;
+
+    state[key] = [...currentRows, ...missingRows];
+    missingRows.forEach((row) => currentIds.add(String(row?.id || "")));
+    changed = true;
+    // eslint-disable-next-line no-console
+    console.warn(`[store] legacy media backfill key=${key} added=${missingRows.length}`);
+  }
+
+  if (changed) {
+    normalizeStoreShape(state);
+    await saveStateToTables(conn, state);
+  }
+  return changed;
 }
 
 async function loadStoreFromDBWithRetry() {
@@ -2233,9 +2818,11 @@ async function loadStoreFromDBWithRetry() {
       }
 
       const loaded = await loadStateFromTables(conn);
-      if (await migrateDefaultCredentialIfNeeded(loaded)) {
+      const credentialMigrated = await migrateDefaultCredentialIfNeeded(loaded);
+      if (loaded.__needsMigrationPersist || credentialMigrated) {
         await saveStateToTables(conn, loaded);
       }
+      await backfillLegacyMediaRowsIfNeeded(conn, loaded);
       return loaded;
     } catch (error) {
       lastError = error;
@@ -2251,9 +2838,13 @@ async function loadStoreFromDBWithRetry() {
   throw lastError || new Error("db init failed");
 }
 
-async function initStore() {
-  if (initialized && cache && initializedFromDB) return clone(cache);
-  if (initialized && cache && !initializedFromDB && shouldBypassDB()) return clone(cache);
+async function ensureStoreInitialized() {
+  if (process.env.NODE_ENV === "test" && process.env.STORE_TEST_MEMORY_ONLY === "1") {
+    await ensureMemoryStore();
+    return cache;
+  }
+  if (initialized && cache && initializedFromDB) return cache;
+  if (initialized && cache && !initializedFromDB && shouldBypassDB()) return cache;
 
   try {
     cache = await loadStoreFromDBWithRetry();
@@ -2262,7 +2853,7 @@ async function initStore() {
     warnedReadFallback = false;
     warnedWriteFallback = false;
     disableCacheReadMode();
-    return clone(cache);
+    return cache;
   } catch (error) {
     await ensureMemoryStore();
     initializedFromDB = false;
@@ -2271,13 +2862,18 @@ async function initStore() {
       warnedReadFallback = true;
     }
     enableCacheReadMode();
-    return clone(cache);
+    return cache;
   }
+}
+
+async function initStore() {
+  await ensureStoreInitialized();
+  return clone(cache);
 }
 
 async function readDB() {
   try {
-    await initStore();
+    await ensureStoreInitialized();
     // Serve from in-process snapshot by default to keep API latency stable
     // even when remote DB has jitter. Snapshot is refreshed on startup and
     // every successful updateDB commit.
@@ -2298,7 +2894,7 @@ async function readDB() {
 // returns in-process snapshot without round-tripping MySQL each call.
 async function readDBCached() {
   try {
-    await initStore();
+    await ensureStoreInitialized();
     warnedReadFallback = false;
     return clone(cache);
   } catch (error) {
@@ -2312,44 +2908,440 @@ async function readDBCached() {
   }
 }
 
-async function updateMemoryOnly(mutator) {
+// Clone only the requested top-level collections. `meta` is always included so
+// callers retain the store version/timestamp needed for cache validation.
+async function readDBView(keys = []) {
+  const requestedKeys = typeof keys === "string" ? [keys] : keys;
+  if (!Array.isArray(requestedKeys)) {
+    throw new TypeError("readDBView keys must be a string or an array of strings");
+  }
+
+  try {
+    await ensureStoreInitialized();
+    warnedReadFallback = false;
+  } catch (error) {
+    await ensureMemoryStore();
+    if (!warnedReadFallback) {
+      warnFallback("readDBView", error);
+      warnedReadFallback = true;
+    }
+    enableCacheReadMode();
+  }
+
+  const view = { meta: clone(cache?.meta || {}) };
+  const seen = new Set(["meta"]);
+  for (const rawKey of requestedKeys) {
+    if (typeof rawKey !== "string") {
+      throw new TypeError("readDBView keys must contain only strings");
+    }
+    const key = rawKey.trim();
+    if (!key || seen.has(key)) continue;
+    if (key === "__proto__" || key === "prototype" || key === "constructor") continue;
+    seen.add(key);
+    if (cache && Object.prototype.hasOwnProperty.call(cache, key)) {
+      view[key] = clone(cache[key]);
+    }
+  }
+  return view;
+}
+
+async function updateMemoryOnly(mutator, options = {}) {
   await ensureMemoryStore();
+  const generationAtStart =
+    options.generationAtStart === undefined ? cacheGeneration : Number(options.generationAtStart);
   const draft = clone(cache);
   const result = await mutator(draft);
   normalizeStoreShape(draft);
   draft.meta = draft.meta || {};
   draft.meta.updatedAt = new Date().toISOString();
+  if (options.skipIfStale && cacheGeneration !== generationAtStart) {
+    return result;
+  }
   cache = draft;
+  cacheGeneration += 1;
   return result;
 }
 
-async function updateDB(mutator) {
+async function persistSnapshot(snapshot, label = "optimistic update", dirtyKeys = []) {
+  if (!initializedFromDB || shouldBypassDB()) {
+    const reason = !initializedFromDB
+      ? "database snapshot has not been initialized"
+      : "database retry cooldown is active";
+    return {
+      ok: false,
+      skipped: true,
+      error: new StoreInfrastructureError(`db persist(${label})`, new Error(reason)),
+    };
+  }
+  let conn = null;
+  try {
+    conn = await withTimeout(getPool(), dbOpTimeoutMs, `db connect(${label})`);
+    await withTimeout(conn.beginTransaction(), dbOpTimeoutMs, `db beginTransaction(${label})`);
+    await saveStateChangesToTables(conn, clone(snapshot), dirtyKeys);
+    await withTimeout(conn.commit(), dbOpTimeoutMs, `db commit(${label})`);
+    warnedWriteFallback = false;
+    disableCacheReadMode();
+    return { ok: true, skipped: false, error: null };
+  } catch (error) {
+    try {
+      if (conn) await withTimeout(conn.rollback(), dbOpTimeoutMs, `db rollback(${label})`);
+    } catch (_) {
+      // ignore rollback errors
+    }
+    if (!warnedWriteFallback) {
+      warnFallback(label, error);
+      warnedWriteFallback = true;
+    }
+    enableCacheReadMode();
+    return {
+      ok: false,
+      skipped: false,
+      error: error instanceof StoreInfrastructureError
+        ? error
+        : new StoreInfrastructureError(`db persist(${label})`, error),
+    };
+  } finally {
+    await closeConn(conn);
+  }
+}
+
+function serializeOptimisticPersistError(error) {
+  if (!error) return null;
+  return {
+    name: String(error.name || "Error"),
+    code: String(error.code || ""),
+    operation: String(error.operation || ""),
+    message: String(error.message || error),
+  };
+}
+
+function getOptimisticPersistStatus() {
+  return {
+    pending: Boolean(pendingOptimisticSnapshot || optimisticPersistScheduled || optimisticPersistTimer),
+    hasPendingSnapshot: Boolean(pendingOptimisticSnapshot),
+    scheduled: Boolean(optimisticPersistScheduled || optimisticPersistTimer),
+    inFlight: optimisticInFlightVersion > 0,
+    pendingVersion: Number(pendingOptimisticVersion || 0),
+    pendingDirtyKeys: [...pendingOptimisticDirtyKeys],
+    inFlightVersion: Number(optimisticInFlightVersion || 0),
+    latestVersion: Number(optimisticLatestVersion || 0),
+    persistedVersion: Number(optimisticPersistedVersion || 0),
+    durable: optimisticPersistedVersion >= optimisticLatestVersion,
+    lastOutcome: optimisticLastOutcome,
+    lastAttemptAt: optimisticLastAttemptAt,
+    lastSuccessAt: optimisticLastSuccessAt,
+    lastFailureAt: optimisticLastFailureAt,
+    lastError: clone(optimisticLastError),
+  };
+}
+
+function schedulePendingOptimisticPersist(delayMs = optimisticPersistDelayMs) {
+  if (!pendingOptimisticSnapshot || optimisticPersistScheduled || optimisticPersistTimer) {
+    return writeQueue;
+  }
+
+  const attach = () => {
+    optimisticPersistTimer = null;
+    if (!pendingOptimisticSnapshot || optimisticPersistScheduled) return;
+    optimisticPersistScheduled = true;
+    writeQueue = writeQueue
+      .catch(() => undefined)
+      .then(async () => {
+        try {
+          // Drain all snapshots queued while persistence is running. Each new
+          // optimistic snapshot supersedes the older one and already contains
+          // all in-process mutations made before it.
+          while (pendingOptimisticSnapshot) {
+            const snapshot = pendingOptimisticSnapshot;
+            const label = pendingOptimisticLabel;
+            const version = pendingOptimisticVersion;
+            const dirtyKeys = [...pendingOptimisticDirtyKeys];
+            pendingOptimisticSnapshot = null;
+            pendingOptimisticLabel = "optimistic update";
+            pendingOptimisticVersion = 0;
+            pendingOptimisticDirtyKeys = new Set();
+            optimisticInFlightVersion = version;
+            optimisticLastAttemptAt = new Date().toISOString();
+            optimisticLastOutcome = "in_flight";
+
+            let outcome;
+            try {
+              outcome = await persistSnapshot(snapshot, label, dirtyKeys);
+            } catch (error) {
+              outcome = { ok: false, skipped: false, error };
+            }
+
+            if (outcome?.ok) {
+              optimisticPersistedVersion = Math.max(optimisticPersistedVersion, version);
+              optimisticLastSuccessAt = new Date().toISOString();
+              optimisticLastError = null;
+              optimisticLastOutcome = "persisted";
+              continue;
+            }
+
+            optimisticLastFailureAt = new Date().toISOString();
+            optimisticLastError = serializeOptimisticPersistError(outcome?.error);
+            optimisticLastOutcome = outcome?.skipped ? "skipped" : "failed";
+            // Do not silently drop a failed write. Preserve it for a later
+            // explicit flush or let a newer snapshot supersede it.
+            if (!pendingOptimisticSnapshot || pendingOptimisticVersion < version) {
+              pendingOptimisticSnapshot = snapshot;
+              pendingOptimisticLabel = label;
+              pendingOptimisticVersion = version;
+              pendingOptimisticDirtyKeys = new Set(dirtyKeys);
+            } else {
+              dirtyKeys.forEach((key) => pendingOptimisticDirtyKeys.add(key));
+            }
+            break;
+          }
+        } finally {
+          optimisticInFlightVersion = 0;
+          optimisticPersistScheduled = false;
+        }
+      });
+  };
+
+  if (delayMs > 0) {
+    optimisticPersistTimer = setTimeout(attach, delayMs);
+  } else {
+    attach();
+  }
+
+  return writeQueue;
+}
+
+function flushPendingOptimisticPersist(options = {}) {
+  if (optimisticPersistTimer) {
+    clearTimeout(optimisticPersistTimer);
+    optimisticPersistTimer = null;
+  }
+  const drain = schedulePendingOptimisticPersist(0);
+  return Promise.resolve(drain).catch(() => undefined).then(() => {
+    const status = getOptimisticPersistStatus();
+    if (options.throwOnError && status.hasPendingSnapshot && status.lastError) {
+      const error = new Error(status.lastError.message || "optimistic persistence failed");
+      error.name = "OptimisticPersistError";
+      error.code = "OPTIMISTIC_PERSIST_FAILED";
+      error.status = status;
+      throw error;
+    }
+    return status;
+  });
+}
+
+async function closeStore() {
+  let firstError = null;
+  try {
+    await flushPendingOptimisticPersist({ throwOnError: true });
+  } catch (error) {
+    firstError = error;
+  }
+
+  try {
+    await writeQueue;
+  } catch (error) {
+    firstError = firstError || error;
+  }
+
+  // Third-party template cache patches use per-device queues rather than the
+  // global write queue. Let requests already accepted before HTTP shutdown
+  // finish before the pool is released.
+  if (thirdCacheWriteQueues.size > 0) {
+    await Promise.allSettled([...thirdCacheWriteQueues.values()]);
+  }
+
+  await resetPool();
+  if (firstError) throw firstError;
+  return getOptimisticPersistStatus();
+}
+
+function enqueueSnapshotPersist(snapshot, label = "optimistic update", dirtyKeys = []) {
+  optimisticLatestVersion += 1;
+  pendingOptimisticSnapshot = clone(snapshot);
+  pendingOptimisticLabel = label;
+  pendingOptimisticVersion = optimisticLatestVersion;
+  for (const key of dirtyKeys) pendingOptimisticDirtyKeys.add(key);
+  optimisticLastOutcome = "pending";
+  return schedulePendingOptimisticPersist();
+}
+
+function enqueueSyncWrite(runner) {
+  if (optimisticPersistTimer) {
+    clearTimeout(optimisticPersistTimer);
+    optimisticPersistTimer = null;
+  }
+  schedulePendingOptimisticPersist(0);
   writeQueue = writeQueue
     .catch(() => undefined)
-    .then(async () => {
+    .then(runner);
+  return writeQueue;
+}
+
+async function updateDBOptimistic(mutator) {
+  await ensureMemoryStore();
+  const draft = clone(cache);
+  const beforeFingerprints = captureCollectionFingerprints(draft);
+  const result = await mutator(draft);
+  normalizeStoreShape(draft);
+  draft.meta = draft.meta || {};
+  draft.meta.updatedAt = new Date().toISOString();
+  cache = draft;
+  cacheGeneration += 1;
+  const dirtyKeys = detectChangedCollectionKeys(beforeFingerprints, draft);
+  enqueueSnapshotPersist(draft, "updateDBOptimistic", dirtyKeys).catch(() => undefined);
+  return result;
+}
+
+async function patchThirdCacheInMemoryOnly({ deviceId, slug, updater, now }) {
+  await ensureMemoryStore();
+  const safeDeviceId = String(deviceId || "").trim();
+  const safeSlug = String(slug || "").trim();
+  if (!safeDeviceId) throw new Error("deviceId required");
+  if (!safeSlug) throw new Error("slug required");
+  if (typeof updater !== "function") throw new Error("updater must be function");
+
+  const draft = clone(cache);
+  const devices = Array.isArray(draft.devices) ? draft.devices : [];
+  const target = devices.find((item) => {
+    const id = String(item?.id || "").trim();
+    const did = String(item?.deviceId || "").trim();
+    return id === safeDeviceId || did === safeDeviceId;
+  });
+  if (!target) throw new Error(`device not found: ${safeDeviceId}`);
+
+  target.thirdApiCache =
+    target.thirdApiCache && typeof target.thirdApiCache === "object" && !Array.isArray(target.thirdApiCache)
+      ? target.thirdApiCache
+      : {};
+  const currentEntry = target.thirdApiCache[safeSlug];
+  const nextEntry = await updater(clone(currentEntry));
+  if (nextEntry === null) {
+    delete target.thirdApiCache[safeSlug];
+  } else if (nextEntry !== undefined) {
+    target.thirdApiCache[safeSlug] = nextEntry;
+  }
+  target.updatedAt = String(now || new Date().toISOString());
+  draft.meta = draft.meta || {};
+  draft.meta.updatedAt = String(now || new Date().toISOString());
+  normalizeStoreShape(draft);
+  cache = draft;
+  return clone(target.thirdApiCache[safeSlug] ?? null);
+}
+
+async function patchDeviceThirdApiCache(options = {}) {
+  const safeDeviceId = String(options.deviceId || "").trim();
+  const safeSlug = String(options.slug || "").trim();
+  const updater =
+    typeof options.updater === "function"
+      ? options.updater
+      : () => options.entry;
+  if (!safeDeviceId) throw new Error("deviceId required");
+  if (!safeSlug) throw new Error("slug required");
+  const queueKey = resolveThirdCacheQueueKey(safeDeviceId);
+
+  return enqueueThirdCacheWrite(queueKey, async () => {
+      const startedAt = Date.now();
+      const now = new Date().toISOString();
       try {
         await initStore();
         if (shouldBypassDB()) {
-          return updateMemoryOnly(mutator);
+          const output = await patchThirdCacheInMemoryOnly({
+            deviceId: safeDeviceId,
+            slug: safeSlug,
+            updater,
+            now,
+          });
+          // eslint-disable-next-line no-console
+          console.info(
+            `[api-template-refresh] cache-write mode=memory-only device=${safeDeviceId} slug=${safeSlug} ms=${Date.now() - startedAt}`
+          );
+          return output;
         }
-        const conn = await withTimeout(getPool(), dbOpTimeoutMs, "db connect(update)");
+
+        const conn = await withTimeout(getPool(), thirdCacheDbOpTimeoutMs, "db connect(patchThirdCache)");
         try {
-          await withTimeout(conn.beginTransaction(), dbOpTimeoutMs, "db beginTransaction");
-          const draft = await loadStateFromTables(conn);
-          const result = await mutator(draft);
-          normalizeStoreShape(draft);
-          draft.meta = draft.meta || {};
-          draft.meta.updatedAt = new Date().toISOString();
-          await saveStateToTables(conn, draft);
-          await withTimeout(conn.commit(), dbOpTimeoutMs, "db commit");
-          cache = draft;
+          await withTimeout(conn.beginTransaction(), thirdCacheDbOpTimeoutMs, "db beginTransaction(patchThirdCache)");
+          const [rows] = await withTimeout(
+            conn.query(
+              "SELECT id, device_id, payload_json, metadata_json FROM devices WHERE id = ? OR device_id = ? LIMIT 1",
+              [safeDeviceId, safeDeviceId]
+            ),
+            thirdCacheDbOpTimeoutMs,
+            "db select device for third cache patch"
+          );
+          if (!Array.isArray(rows) || !rows.length) {
+            throw new Error(`device not found: ${safeDeviceId}`);
+          }
+
+          const row = rows[0];
+          const payload = safeJSONParse(row.payload_json, {});
+          const metadata = safeJSONParse(row.metadata_json, {});
+          const device = { ...metadata, ...payload };
+          device.id = normalizeStringField(device.id || row.id || "");
+          device.deviceId = normalizeStringField(device.deviceId || row.device_id || row.id || "");
+          device.thirdApiCache =
+            device.thirdApiCache && typeof device.thirdApiCache === "object" && !Array.isArray(device.thirdApiCache)
+              ? device.thirdApiCache
+              : {};
+          const currentEntry = device.thirdApiCache[safeSlug];
+          const nextEntry = await updater(clone(currentEntry));
+          if (nextEntry === null) {
+            delete device.thirdApiCache[safeSlug];
+          } else if (nextEntry !== undefined) {
+            device.thirdApiCache[safeSlug] = nextEntry;
+          }
+          device.updatedAt = now;
+
+          const nextMeta = {
+            ...metadata,
+            name: device.name || metadata.name || "",
+            displayName: device.displayName || metadata.displayName || "",
+            defaultView: device.defaultView || metadata.defaultView || "",
+            remark: device.remark || metadata.remark || "",
+            bindState: device.bindState || metadata.bindState || "",
+            boundAt: device.boundAt || metadata.boundAt || "",
+            boundBy: device.boundBy || metadata.boundBy || "",
+            simulated: Boolean(device.simulated || metadata.simulated),
+            apiKeys: normalizeObjectField(device.apiKeys || metadata.apiKeys),
+            thirdApiParams: normalizeObjectField(device.thirdApiParams || metadata.thirdApiParams),
+            thirdApiCache: normalizeObjectField(device.thirdApiCache),
+          };
+
+          await withTimeout(
+            conn.query(
+              "UPDATE devices SET payload_json = ?, metadata_json = ?, updated_at = ? WHERE id = ?",
+              [safeJSONString(device), safeJSONString(nextMeta), toDbDateTime(now, true), normalizeStringField(row.id || "")]
+            ),
+            thirdCacheDbOpTimeoutMs,
+            "db update device third cache patch"
+          );
+
+          await withTimeout(conn.commit(), thirdCacheDbOpTimeoutMs, "db commit(patchThirdCache)");
+
+          if (cache && typeof cache === "object" && Array.isArray(cache.devices)) {
+            const target = cache.devices.find((item) => {
+              const id = String(item?.id || "").trim();
+              const did = String(item?.deviceId || "").trim();
+              return id === String(row.id || "").trim() || did === safeDeviceId;
+            });
+            if (target) {
+              target.thirdApiCache = normalizeObjectField(device.thirdApiCache);
+              target.updatedAt = now;
+            }
+            cache.meta = cache.meta || {};
+            cache.meta.updatedAt = now;
+          }
           initializedFromDB = true;
           warnedWriteFallback = false;
           disableCacheReadMode();
-          return result;
+          // eslint-disable-next-line no-console
+          console.info(
+            `[api-template-refresh] cache-write mode=partial-direct queue=${queueKey} device=${safeDeviceId} slug=${safeSlug} ms=${Date.now() - startedAt}`
+          );
+          return clone(device.thirdApiCache[safeSlug] ?? null);
         } catch (error) {
           try {
-            await withTimeout(conn.rollback(), dbOpTimeoutMs, "db rollback");
+            await withTimeout(conn.rollback(), thirdCacheDbOpTimeoutMs, "db rollback(patchThirdCache)");
           } catch (_) {
             // ignore rollback errors
           }
@@ -2359,23 +3351,164 @@ async function updateDB(mutator) {
         }
       } catch (error) {
         if (!warnedWriteFallback) {
-          warnFallback("updateDB", error);
+          warnFallback("patchDeviceThirdApiCache", error);
           warnedWriteFallback = true;
         }
         initializedFromDB = false;
         enableCacheReadMode();
-        return updateMemoryOnly(mutator);
+        const output = await patchThirdCacheInMemoryOnly({
+          deviceId: safeDeviceId,
+          slug: safeSlug,
+          updater,
+          now,
+        });
+        // eslint-disable-next-line no-console
+        console.info(
+          `[api-template-refresh] cache-write mode=fallback-memory device=${safeDeviceId} slug=${safeSlug} ms=${Date.now() - startedAt}`
+        );
+        return output;
       }
     });
+}
 
-  return writeQueue;
+async function updateDB(mutator) {
+  return enqueueSyncWrite(async () => {
+    const generationAtStart = cacheGeneration;
+    await ensureStoreInitialized();
+    if (shouldBypassDB()) {
+      // This branch is intentionally outside an infrastructure catch: a
+      // mutator/HttpError must propagate unchanged and execute exactly once.
+      return updateMemoryOnly(mutator, { skipIfStale: true, generationAtStart });
+    }
+
+    let conn = null;
+    let draft = null;
+    let result;
+    let mutationCompleted = false;
+    try {
+      conn = await runStoreInfrastructureOperation(
+        "db connect(update)",
+        () => withTimeout(getPool(), dbOpTimeoutMs, "db connect(update)")
+      );
+      await runStoreInfrastructureOperation(
+        "db beginTransaction(update)",
+        () => withTimeout(conn.beginTransaction(), dbOpTimeoutMs, "db beginTransaction")
+      );
+      draft = await runStoreInfrastructureOperation(
+        "db load state(update)",
+        () => loadStateFromTables(conn)
+      );
+      const beforeFingerprints = captureCollectionFingerprints(draft);
+
+      // Do not wrap application code as an infrastructure operation. This
+      // preserves the original Error/HttpError identity for Express handlers.
+      result = await mutator(draft);
+      normalizeStoreShape(draft);
+      draft.meta = draft.meta || {};
+      draft.meta.updatedAt = new Date().toISOString();
+      const dirtyKeys = detectChangedCollectionKeys(beforeFingerprints, draft);
+      mutationCompleted = true;
+
+      await runStoreInfrastructureOperation(
+        "db save changed state(update)",
+        () => saveStateChangesToTables(conn, draft, dirtyKeys)
+      );
+      await runStoreInfrastructureOperation(
+        "db commit(update)",
+        () => withTimeout(conn.commit(), dbOpTimeoutMs, "db commit")
+      );
+      if (cacheGeneration === generationAtStart) {
+        cache = draft;
+        cacheGeneration += 1;
+      }
+      initializedFromDB = true;
+      warnedWriteFallback = false;
+      disableCacheReadMode();
+      return result;
+    } catch (error) {
+      try {
+        if (conn) await withTimeout(conn.rollback(), dbOpTimeoutMs, "db rollback(update)");
+      } catch (_) {
+        // ignore rollback errors
+      }
+
+      if (!(error instanceof StoreInfrastructureError)) {
+        throw error;
+      }
+
+      if (!warnedWriteFallback) {
+        warnFallback("updateDB", error);
+        warnedWriteFallback = true;
+      }
+      initializedFromDB = false;
+      enableCacheReadMode();
+
+      if (mutationCompleted) {
+        // Persistence failed after the mutator already completed. Reuse that
+        // prepared draft instead of executing potentially side-effecting
+        // application code a second time.
+        if (cacheGeneration === generationAtStart) {
+          cache = draft;
+          cacheGeneration += 1;
+        }
+        return result;
+      }
+
+      // The infrastructure failed before application code ran, so applying it
+      // once to the in-process snapshot preserves the existing fallback API.
+      return updateMemoryOnly(mutator, { skipIfStale: true, generationAtStart });
+    } finally {
+      await closeConn(conn);
+    }
+    });
 }
 
 module.exports = {
   initStore,
   readDB,
   readDBCached,
+  readDBView,
   updateDB,
+  updateDBOptimistic,
+  flushPendingOptimisticPersist,
+  getOptimisticPersistStatus,
+  closeStore,
+  patchDeviceThirdApiCache,
 };
+
+if (process.env.NODE_ENV === "test") {
+  module.exports.__testing = {
+    captureCollectionFingerprints,
+    detectChangedCollectionKeys,
+    configureRuntime({ state, pool = null, fromDB = false } = {}) {
+      cache = clone(state || {});
+      normalizeStoreShape(cache);
+      initialized = true;
+      initializedFromDB = Boolean(fromDB);
+      mysqlPool = pool;
+      forceCacheReads = false;
+      dbRetryAfterTs = 0;
+      warnedReadFallback = false;
+      warnedWriteFallback = false;
+      cacheGeneration += 1;
+      writeQueue = Promise.resolve();
+      if (optimisticPersistTimer) clearTimeout(optimisticPersistTimer);
+      pendingOptimisticSnapshot = null;
+      pendingOptimisticLabel = "optimistic update";
+      pendingOptimisticVersion = 0;
+      pendingOptimisticDirtyKeys = new Set();
+      optimisticPersistScheduled = false;
+      optimisticPersistTimer = null;
+      optimisticLatestVersion = 0;
+      optimisticPersistedVersion = 0;
+      optimisticInFlightVersion = 0;
+      optimisticLastAttemptAt = "";
+      optimisticLastSuccessAt = "";
+      optimisticLastFailureAt = "";
+      optimisticLastError = null;
+      optimisticLastOutcome = "idle";
+    },
+  };
+}
 
 

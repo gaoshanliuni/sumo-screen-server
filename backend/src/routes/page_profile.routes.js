@@ -11,9 +11,16 @@ const { publishDeviceEvent } = require("../utils/realtime.hub");
 const { logOperation } = require("../utils/logging");
 const { renderAndPersistForDevice: renderAndPersistForDeviceShared, publishPagePushEvents } = require("../services/page_push.service");
 const { normalizeAutoRenderPushConfig } = require("../services/homepage_auto_push_time.service");
+const { refreshTemplatesForPageRequest } = require("../services/api_template_refresh.service");
+const {
+  cleanupUnusedPageCacheFilesInDraft,
+  prunePageImageHistoryInDraft,
+  scheduleGridFileDeletion,
+} = require("../services/tf_file_cleanup.service");
 const {
   configKeyForPage,
   imageKeyForPage,
+  normalizeTargetDeviceTypes,
   uploadTfBlob,
 } = require("../services/page_profile.service");
 
@@ -92,17 +99,42 @@ function collectTemplateVariables(model) {
   const MAX_DEPTH = 6;
   const MAX_ROWS = 2000;
 
+  const classifyPath = (path) => {
+    const raw = String(path || "");
+    if (
+      raw === "deviceVariables" ||
+      raw.startsWith("deviceVariables.") ||
+      raw === "device_variables" ||
+      raw.startsWith("device_variables.")
+    ) {
+      return { source: "device", sourceLabel: "设备变量" };
+    }
+    if (
+      raw.startsWith("api.") ||
+      raw.startsWith("third.") ||
+      raw.startsWith("third_formatted.") ||
+      raw.startsWith("third_raw.") ||
+      raw.startsWith("formatted_by_slug.") ||
+      raw.startsWith("raw_by_slug.")
+    ) {
+      return { source: "api", sourceLabel: "API模板变量" };
+    }
+    return { source: "base", sourceLabel: "基础变量" };
+  };
+
   const pushPath = (path, value) => {
     if (!path || seen.has(path) || out.length >= MAX_ROWS) {
       return;
     }
     seen.add(path);
     const type = Array.isArray(value) ? "array" : value === null ? "null" : typeof value;
+    const meta = classifyPath(path);
     out.push({
       path,
       placeholder: `{{${path}}}`,
       type,
       example: buildVariableExample(value),
+      ...meta,
     });
   };
 
@@ -212,7 +244,7 @@ function createPageRouter(options) {
   }
 
   async function renderPreviewForDevice({ auth, deviceId, dataPatch, configPatch, templatePatch }) {
-    const db = await readDB();
+    let db = await readDB();
     const device = ensureDeviceAccess(db, auth, deviceId);
     if (!device.ownerId) {
       throw new HttpError(400, "设备未绑定用户，无法生成页面图片");
@@ -220,8 +252,25 @@ function createPageRouter(options) {
 
     service.ensureDefaultTemplate(db);
 
+    try {
+      await refreshTemplatesForPageRequest({
+        auth,
+        deviceId: device.id,
+        pageType,
+        requestSource: `${pageType}.preview`,
+      });
+      db = await readDB();
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.warn(`[${pageType}] preview refresh skipped: ${String(error?.message || error)}`);
+    }
+
     const resolved = service.resolveConfig(db, device.ownerId, device.id);
-    const mergedConfig = configPatch ? service.normalizeConfig(service.deepMerge(resolved.config, configPatch)) : resolved.config;
+    const baseConfig = configPatch ? service.normalizeConfig(service.deepMerge(resolved.config, configPatch)) : resolved.config;
+    const mergedConfig =
+      typeof service.applyDeviceProfileToConfig === "function"
+        ? service.normalizeConfig(service.applyDeviceProfileToConfig(baseConfig, device))
+        : baseConfig;
 
     const template = resolveTemplateForRender({ db, mergedConfig, auth, templatePatch });
     const model = service.buildDataModel(db, device, dataPatch);
@@ -268,7 +317,7 @@ function createPageRouter(options) {
   }
 
   async function renderAndPersistForDevice({ auth, deviceId, dataPatch, configPatch, templatePatch }) {
-    const db = await readDB();
+    let db = await readDB();
     const device = ensureDeviceAccess(db, auth, deviceId);
     if (!device.ownerId) {
       throw new HttpError(400, "设备未绑定用户，无法生成页面图片");
@@ -276,8 +325,25 @@ function createPageRouter(options) {
 
     service.ensureDefaultTemplate(db);
 
+    try {
+      await refreshTemplatesForPageRequest({
+        auth,
+        deviceId: device.id,
+        pageType,
+        requestSource: `${pageType}.render`,
+      });
+      db = await readDB();
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.warn(`[${pageType}] render refresh skipped: ${String(error?.message || error)}`);
+    }
+
     const resolved = service.resolveConfig(db, device.ownerId, device.id);
-    const mergedConfig = configPatch ? service.normalizeConfig(service.deepMerge(resolved.config, configPatch)) : resolved.config;
+    const baseConfig = configPatch ? service.normalizeConfig(service.deepMerge(resolved.config, configPatch)) : resolved.config;
+    const mergedConfig =
+      typeof service.applyDeviceProfileToConfig === "function"
+        ? service.normalizeConfig(service.applyDeviceProfileToConfig(baseConfig, device))
+        : baseConfig;
 
     const template = resolveTemplateForRender({ db, mergedConfig, auth, templatePatch });
     const model = service.buildDataModel(db, device, dataPatch);
@@ -302,9 +368,9 @@ function createPageRouter(options) {
     const imageRecord = await uploadTfBlob({
       ownerId: device.ownerId,
       category: "background",
-      fileName: `${pageType}_${device.id}_${version}.epd4`,
-      mime: "application/x-epd4",
-      buffer: rendered.epd4Buffer,
+      fileName: `${pageType}_${device.id}_${version}.${rendered.binaryFormat || "epd4"}`,
+      mime: rendered.binaryMime || "application/x-epd4",
+      buffer: rendered.binaryBuffer || rendered.epd4Buffer,
       source: pageType,
     });
 
@@ -314,7 +380,7 @@ function createPageRouter(options) {
       ownerId: device.ownerId,
       configVersion: Number(mergedConfig.version || 1),
       version,
-      format: "epd4",
+      format: rendered.binaryFormat || "epd4",
       width: rendered.width,
       height: rendered.height,
       etag: rendered.etag,
@@ -325,6 +391,7 @@ function createPageRouter(options) {
       createdAt: now,
     };
 
+    let pageCacheDeleteJobs = [];
     await updateDB((draft) => {
       draft.tfFiles = Array.isArray(draft.tfFiles) ? draft.tfFiles : [];
       draft.tfFiles.unshift(previewRecord);
@@ -334,15 +401,18 @@ function createPageRouter(options) {
       draft[imageKey].unshift(imageRow);
 
       const maxVersions = Number(mergedConfig.cache_policy?.max_versions || 3);
-      const rows = draft[imageKey].filter((item) => String(item.deviceId || "") === String(device.id || ""));
-      if (rows.length > maxVersions) {
-        const keep = new Set(rows.slice(0, maxVersions).map((item) => String(item.id || "")));
-        draft[imageKey] = draft[imageKey].filter((item) => {
-          if (String(item.deviceId || "") !== String(device.id || "")) return true;
-          return keep.has(String(item.id || ""));
-        });
-      }
+      const prune = prunePageImageHistoryInDraft({
+        draft,
+        imageKey,
+        deviceId: device.id,
+        maxVersions,
+      });
+      const cleanup = cleanupUnusedPageCacheFilesInDraft(draft, {
+        candidateFileIds: prune.candidateFileIds,
+      });
+      pageCacheDeleteJobs = cleanup.deleteJobs;
     });
+    scheduleGridFileDeletion(pageCacheDeleteJobs);
 
     const payload = service.buildDevicePayload({
       deviceId: device.id,
@@ -418,6 +488,9 @@ function createPageRouter(options) {
       const html = String(body.html || "").trim();
       const type = String(body.type || "custom_html").trim() || "custom_html";
       const templateId = String(body.id || "").trim();
+      const targetDeviceTypes = normalizeTargetDeviceTypes(
+        body.targetDeviceTypes || body.targetDeviceType || body.deviceTypes
+      );
 
       if (!name) throw new HttpError(400, "name不能为空");
       if (!html) throw new HttpError(400, "html不能为空");
@@ -440,6 +513,7 @@ function createPageRouter(options) {
           target.name = name;
           target.type = type;
           target.html = html;
+          target.targetDeviceTypes = targetDeviceTypes;
           target.updatedAt = now;
           row = { ...target };
         } else {
@@ -450,6 +524,7 @@ function createPageRouter(options) {
             type,
             html,
             builtin: false,
+            targetDeviceTypes,
             createdAt: now,
             updatedAt: now,
           };

@@ -796,6 +796,11 @@ function parseCalendarTermStartDateFromHtml(html = "", termCode = "") {
     return { termStartDate: "", currentWeek: null, matchedRow: "", method: "empty_html" };
   }
 
+  const explicitStartMatch = raw.match(
+    /(?:学期开始日期|学期开始日|开学日期|开学日|xqkssj|kssj|¿ªÊ¼ÈÕÆÚ)\D{0,20}(\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{4}年\d{1,2}月\d{1,2}日)/i
+  );
+  const explicitStartDate = normalizeFlexibleDate((explicitStartMatch || [])[1] || "");
+
   const directDateCandidates = [];
   const semKeyRegex = /(?:termStartDate|semesterStart|startDate|xqkssj|kssj)\s*[:=]\s*["']?([0-9]{4}[-/.][0-9]{1,2}[-/.][0-9]{1,2})["']?/gi;
   let semMatch;
@@ -857,13 +862,32 @@ function parseCalendarTermStartDateFromHtml(html = "", termCode = "") {
   const top = ranked[0];
   const topDate = top?.dateMatches?.[0] || "";
   const fallbackDirect = directDateCandidates.map((d) => normalizeFlexibleDate(d)).filter(Boolean)[0] || "";
-  const termStartDate = normalizeFlexibleDate(topDate || fallbackDirect || "");
+  const allDateCandidates = [
+    ...Array.from(raw.matchAll(/(\d{4}[-/.]\d{1,2}[-/.]\d{1,2})/g)).map((m) => normalizeFlexibleDate(m[1])),
+    ...Array.from(raw.matchAll(/(\d{4}年\d{1,2}月\d{1,2}日)/g)).map((m) => normalizeFlexibleDate(m[1])),
+  ]
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
+  const earliestDate = allDateCandidates[0] || "";
+  const termStartDate = normalizeFlexibleDate(
+    explicitStartDate || topDate || fallbackDirect || earliestDate || ""
+  );
   const currentWeek = extractCurrentWeekFromText(raw);
+  const method =
+    explicitStartDate
+      ? "calendar_explicit_start"
+      : topDate
+        ? "calendar_row_match"
+        : fallbackDirect
+          ? "calendar_direct_key"
+          : earliestDate
+            ? "calendar_earliest_date"
+            : "not_found";
   return {
     termStartDate,
     currentWeek: Number.isFinite(Number(currentWeek || 0)) ? Math.floor(Number(currentWeek)) : null,
     matchedRow: top?.text || "",
-    method: topDate ? "calendar_row_match" : fallbackDirect ? "calendar_direct_key" : "not_found",
+    method,
   };
 }
 
@@ -1368,6 +1392,26 @@ function normalizeScheduleRowForImport(item, defaults = {}) {
     updatedAt: now,
   };
 }
+
+function getScheduleSourceKeyAliases(row = {}) {
+  const keys = new Set();
+  const sourceKey = trimString(row.sourceKey || row.xiqueClassKey || "");
+  if (sourceKey) keys.add(sourceKey);
+  const courseId = trimString(row.xiqueCourseId || row.courseId || "");
+  const weekday = Number(row.weekday || 0);
+  const startPeriod = Number(row.startPeriod || row.orderIndex || 0);
+  const endPeriod = Number(row.endPeriod || row.periodEnd || startPeriod || 0);
+  const location = trimString(row.location || row.sourceMeta?.location || "");
+  if (courseId && weekday && startPeriod) {
+    keys.add(`${courseId}:${weekday}:${startPeriod}-${Math.max(startPeriod, endPeriod || startPeriod)}:${location}`);
+  }
+  const match = sourceKey.match(/^([^:]+):(\d+):(\d+-\d+):(all|odd|even|[\d.]*):(.*)$/);
+  if (match) {
+    keys.add(`${match[1]}:${match[2]}:${match[3]}:${match[5] || ""}`);
+  }
+  return Array.from(keys).filter(Boolean);
+}
+
 function ensureCollections(draft) {
   draft.scheduleSyncConfigs = Array.isArray(draft.scheduleSyncConfigs) ? draft.scheduleSyncConfigs : [];
   draft.xiqueSessionVault = Array.isArray(draft.xiqueSessionVault) ? draft.xiqueSessionVault : [];
@@ -1574,7 +1618,7 @@ async function createXiqueClient(configRow = {}, vaultRow = {}, options = {}) {
       return createRemoteCaptchaChallenge(configRow, vaultRow);
     },
 
-    async completeLogin({ captchaAnswer = "", captchaSession = "" } = {}) {
+    async completeLogin({ captchaAnswer = "", captchaSession = "", refreshOnInvalid = false } = {}) {
       const existing = validSession();
       if (existing && !options.forceCaptcha && !vaultRow.needCaptchaReverify) {
         return { loginRequired: false, captchaRequired: false, session: existing };
@@ -1588,6 +1632,9 @@ async function createXiqueClient(configRow = {}, vaultRow = {}, options = {}) {
         if (captchaSession && vaultRow.captchaSession && captchaSession !== vaultRow.captchaSession) throw new HttpError(400, "captcha session mismatch");
         if (!captchaAnswer) return challenge;
         if (sha(captchaAnswer) !== vaultRow.captchaAnswerHash) {
+          if (!refreshOnInvalid) {
+            throw makeXiqueError(XIQUE_ERROR.CAPTCHA_INVALID, "captcha invalid", 400);
+          }
           return createCaptchaChallenge(configRow, vaultRow);
         }
         return { loginRequired: false, captchaRequired: false, session: issueSession() };
@@ -1715,6 +1762,13 @@ async function createXiqueClient(configRow = {}, vaultRow = {}, options = {}) {
       }
       return {
         termKey: trimString(remotePayload.termKey || configRow.currentTermKey || getCurrentSemesterKey()),
+        termStartDate: normalizeTermStartDate(remotePayload.termStartDate || configRow.termStartDate || ""),
+        currentWeek: Number.isFinite(Number(remotePayload.currentWeek || 0)) && Number(remotePayload.currentWeek || 0) > 0
+          ? Math.floor(Number(remotePayload.currentWeek))
+          : null,
+        currentWeekSource: trimString(remotePayload.currentWeekSource || ""),
+        termStartDateSource: trimString(remotePayload.termStartDateSource || ""),
+        weekFilteringApplied: Boolean(remotePayload.weekFilteringApplied),
         courses: Array.isArray(remotePayload.courses) ? remotePayload.courses : [],
         sourceMeta: sanitizeDetail(remotePayload.sourceMeta || { adapterMode: "remote" }),
       };
@@ -1884,6 +1938,7 @@ async function resolveLoginSessionWithCaptchaStrategy({
         const nextChallenge = await client.completeLogin({
           captchaAnswer: "0",
           captchaSession: trimString(challenge.captchaSession || ""),
+          refreshOnInvalid: true,
         });
         if (nextChallenge?.credentialRequired) {
           return {
@@ -1924,6 +1979,7 @@ async function resolveLoginSessionWithCaptchaStrategy({
     const loginResult = await client.completeLogin({
       captchaAnswer: trimString(ocrResult.text),
       captchaSession: trimString(challenge.captchaSession || ""),
+      refreshOnInvalid: true,
     });
     if (loginResult?.credentialRequired) {
       return {
@@ -1987,7 +2043,12 @@ function importXiqueCoursesToDraft(draft, configRow, payload, options = {}) {
   const existing = draft.schedules.filter(
     (item) => item.deviceId === deviceId && item.source === "xique" && item.termKey === termKey
   );
-  const existingMap = new Map(existing.map((row) => [String(row.sourceKey || ""), row]));
+  const existingMap = new Map();
+  existing.forEach((row) => {
+    getScheduleSourceKeyAliases(row).forEach((key) => {
+      if (!existingMap.has(key)) existingMap.set(key, row);
+    });
+  });
   const result = { added: 0, updated: 0, skipped: 0, overwritten: 0, imported: 0, totalIncoming: 0, termKey };
 
   const dedupMap = new Map();
@@ -2005,7 +2066,7 @@ function importXiqueCoursesToDraft(draft, configRow, payload, options = {}) {
     }
     dedupMap.set(key, row);
 
-    const current = existingMap.get(key);
+    const current = getScheduleSourceKeyAliases(row).map((alias) => existingMap.get(alias)).find(Boolean);
     if (!current) {
       result.added += 1;
       return;
@@ -2062,8 +2123,11 @@ function importXiqueCoursesToDraft(draft, configRow, payload, options = {}) {
 
   // 覆盖导入：仅保留用户手工日程，当前 term 的 xique 记录整体替换。
   const incomingRows = Array.from(dedupMap.values());
-  const incomingKeys = new Set(incomingRows.map((row) => String(row.sourceKey || "")));
-  result.overwritten = existing.filter((row) => !incomingKeys.has(String(row.sourceKey || ""))).length;
+  const incomingKeys = new Set();
+  incomingRows.forEach((row) => {
+    getScheduleSourceKeyAliases(row).forEach((key) => incomingKeys.add(key));
+  });
+  result.overwritten = existing.filter((row) => !getScheduleSourceKeyAliases(row).some((key) => incomingKeys.has(key))).length;
   draft.schedules = draft.schedules.filter(
     (item) => !(item.deviceId === deviceId && item.source === "xique" && item.termKey === termKey)
   );
@@ -2603,25 +2667,84 @@ async function runXiqueSchedulerTick(now = new Date()) {
   return { skipped: false, count: results.length, results };
 }
 
-function startXiqueScheduler() {
-  if (global.__xiqueSchedulerStarted) return global.__xiqueSchedulerStarted;
-  const state = { startedAt: nowIso(), timer: null, lastTickAt: "", lastTickResult: null };
-  const tick = async () => {
-    state.lastTickAt = nowIso();
-    state.lastTickResult = await runXiqueSchedulerTick(new Date());
+function getXiqueSchedulerRuntime() {
+  const state = global.__xiqueSchedulerStarted || null;
+  if (!state) {
+    return {
+      started: false,
+      startedAt: "",
+      intervalMs: 0,
+      lastTickAt: "",
+      running: false,
+      skippedTicks: 0,
+      lastTickResult: null,
+    };
+  }
+  return {
+    started: true,
+    startedAt: String(state.startedAt || ""),
+    intervalMs: Number(state.intervalMs || 0),
+    lastTickAt: String(state.lastTickAt || ""),
+    running: Boolean(state.running),
+    skippedTicks: Number(state.skippedTicks || 0),
+    lastTickResult: state.lastTickResult || null,
   };
-  tick().catch((error) => console.warn(`[xique-scheduler] initial tick failed: ${String(error?.message || error)}`));
+}
+
+function startXiqueScheduler(options = {}) {
+  if (global.__xiqueSchedulerStarted) return global.__xiqueSchedulerStarted;
+  const requestedIntervalMs = Number(options.intervalMs || config.xiqueSchedulerIntervalMs || 60000);
+  const intervalMs = Number.isFinite(requestedIntervalMs)
+    ? Math.max(1000, requestedIntervalMs)
+    : 60000;
+  const runTick = typeof options.runTick === "function" ? options.runTick : runXiqueSchedulerTick;
+  const state = {
+    startedAt: nowIso(),
+    intervalMs,
+    timer: null,
+    lastTickAt: "",
+    lastTickResult: null,
+    running: false,
+    skippedTicks: 0,
+    tick: null,
+  };
+  const tick = async () => {
+    if (state.running) {
+      state.skippedTicks += 1;
+      return { skipped: true, reason: "previous_tick_running" };
+    }
+    state.running = true;
+    state.lastTickAt = nowIso();
+    try {
+      state.lastTickResult = await runTick(new Date());
+    } catch (error) {
+      state.lastTickResult = { status: "failed", error: String(error?.message || error) };
+      // eslint-disable-next-line no-console
+      console.warn(`[xique-scheduler] tick failed: ${String(error?.message || error)}`);
+    } finally {
+      state.running = false;
+    }
+    return state.lastTickResult;
+  };
+  state.tick = tick;
   state.timer = setInterval(() => {
     tick().catch((error) => console.warn(`[xique-scheduler] tick failed: ${String(error?.message || error)}`));
-  }, Number(config.xiqueSchedulerIntervalMs || 60000));
+  }, intervalMs);
   if (typeof state.timer.unref === "function") state.timer.unref();
   global.__xiqueSchedulerStarted = state;
+  if (options.runImmediately !== false) {
+    tick().catch((error) => console.warn(`[xique-scheduler] initial tick failed: ${String(error?.message || error)}`));
+  }
   return state;
 }
 
 function stopXiqueScheduler() {
   const state = global.__xiqueSchedulerStarted;
   if (state?.timer) clearInterval(state.timer);
+  if (state) {
+    state.timer = null;
+    state.running = false;
+  }
   delete global.__xiqueSchedulerStarted;
 }
 
@@ -2657,6 +2780,7 @@ module.exports = {
   runXiqueSchedulerTick,
   startXiqueScheduler,
   stopXiqueScheduler,
+  getXiqueSchedulerRuntime,
   markNeedCaptchaReverify,
   sanitizeDetail,
 };

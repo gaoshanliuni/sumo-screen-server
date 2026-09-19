@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div class="homepage-studio">
     <el-card class="card">
       <template #header>
@@ -73,12 +73,14 @@
           <el-form label-width="120px" size="small">
             <el-form-item label="目标设备">
               <el-select v-model="deviceId" filterable style="width: 100%" @change="loadConfig">
-                <el-option v-for="item in devices" :key="item.id" :label="deviceLabel(item)" :value="item.id" />
+                <el-option-group v-for="group in groupedDevices" :key="group.type" :label="group.label">
+                  <el-option v-for="item in group.devices" :key="item.id" :label="deviceLabel(item)" :value="item.id" />
+                </el-option-group>
               </el-select>
             </el-form-item>
             <el-form-item label="模板 ID">
               <el-select v-model="configModel.template.template_id" filterable style="width: 100%">
-                <el-option v-for="tpl in templates" :key="tpl.id" :label="tpl.name" :value="tpl.id" />
+                <el-option v-for="tpl in filteredTemplatesForDevice" :key="tpl.id" :label="templateOptionLabel(tpl)" :value="tpl.id" />
               </el-select>
             </el-form-item>
             <el-form-item label="渲染模式">
@@ -132,6 +134,19 @@
               </el-select>
             </el-form-item>
             <el-form-item label="名称"><el-input v-model="templateDraft.name" /></el-form-item>
+            <el-form-item label="设备类型">
+              <el-select
+                v-model="templateDraft.targetDeviceTypes"
+                multiple
+                clearable
+                collapse-tags
+                collapse-tags-tooltip
+                style="width: 100%"
+                placeholder="通用型，或选择一个/多个设备类型"
+              >
+                <el-option v-for="item in deviceTypeOptions" :key="item.value" :label="item.label" :value="item.value" />
+              </el-select>
+            </el-form-item>
             <el-form-item label="HTML">
               <el-input ref="templateHtmlInputRef" v-model="templateDraft.html" type="textarea" :rows="20" />
             </el-form-item>
@@ -175,15 +190,24 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { ElMessage } from "element-plus";
+import { ElMessage } from "element-plus/es/components/message/index.mjs";
 import { useAuthStore, type AppRole } from "../stores/auth";
 import { apiRequest } from "../services/api";
 
 type DeviceRow = {
   id: string;
   mac: string;
+  type?: string;
+  deviceType?: string;
   displayName?: string;
   ownerId?: string;
+};
+
+type DeviceTypeRow = {
+  type?: string;
+  id?: string;
+  label?: string;
+  name?: string;
 };
 
 type HomepageTemplateRow = {
@@ -192,6 +216,7 @@ type HomepageTemplateRow = {
   type: string;
   html: string;
   builtin?: boolean;
+  targetDeviceTypes?: string[];
 };
 
 type TemplateVariableRow = {
@@ -207,6 +232,7 @@ const loginLoading = ref(false);
 const loginForm = reactive({ username: "", password: "" });
 
 const devices = ref<DeviceRow[]>([]);
+const deviceTypes = ref<DeviceTypeRow[]>([]);
 const deviceId = ref("");
 const templates = ref<HomepageTemplateRow[]>([]);
 const templateVariables = ref<TemplateVariableRow[]>([]);
@@ -314,6 +340,52 @@ const templateDraft = reactive<HomepageTemplateRow>({
   type: "custom_html",
   html: "",
   builtin: false,
+  targetDeviceTypes: [],
+});
+
+const deviceTypeOptions = computed(() => {
+  const map = new Map<string, string>();
+  deviceTypes.value.forEach((item) => {
+    const value = String(item.type || item.id || "").trim();
+    if (!value) return;
+    map.set(value, String(item.label || item.name || value));
+  });
+  devices.value.forEach((item) => {
+    const value = deviceTypeOf(item);
+    if (value && !map.has(value)) map.set(value, value);
+  });
+  return [...map.entries()].map(([value, label]) => ({ value, label }));
+});
+
+const deviceTypeLabelMap = computed(() => new Map(deviceTypeOptions.value.map((item) => [item.value, item.label])));
+
+const groupedDevices = computed(() => {
+  const groups = new Map<string, DeviceRow[]>();
+  devices.value.forEach((item) => {
+    const type = deviceTypeOf(item) || "unknown";
+    if (!groups.has(type)) groups.set(type, []);
+    groups.get(type)?.push(item);
+  });
+  return [...groups.entries()]
+    .sort((a, b) => deviceTypeLabel(a[0]).localeCompare(deviceTypeLabel(b[0])))
+    .map(([type, rows]) => ({
+      type,
+      label: `${deviceTypeLabel(type)} · ${rows.length} 台`,
+      devices: rows,
+    }));
+});
+
+const currentDeviceType = computed(() => deviceTypeOf(devices.value.find((item) => item.id === deviceId.value) || {}));
+
+const filteredTemplatesForDevice = computed(() => {
+  const type = currentDeviceType.value;
+  const rows = templates.value.filter((tpl) => {
+    const targets = normalizeTargetDeviceTypes(tpl.targetDeviceTypes);
+    return !targets.length || !type || targets.includes(type);
+  });
+  if (rows.some((item) => item.id === configModel?.template?.template_id)) return rows;
+  const selected = templates.value.find((item) => item.id === configModel?.template?.template_id);
+  return selected ? [selected, ...rows] : rows;
 });
 
 function defaultTemplateHtml() {
@@ -356,6 +428,30 @@ function clearPreviewRef(target: typeof previewUrl | typeof editPreviewUrl) {
 function deviceLabel(row: DeviceRow) {
   const name = String(row.displayName || "").trim();
   return name ? `${name} (${row.id})` : `${row.mac} (${row.id})`;
+}
+
+function deviceTypeOf(row: Partial<DeviceRow>) {
+  return String(row.type || row.deviceType || "").trim();
+}
+
+function deviceTypeLabel(type: string) {
+  const value = String(type || "").trim();
+  if (!value || value === "unknown") return "未标记类型";
+  return deviceTypeLabelMap.value.get(value) || value;
+}
+
+function normalizeTargetDeviceTypes(input: unknown) {
+  if (Array.isArray(input)) return [...new Set(input.map((item) => String(item || "").trim()).filter(Boolean))];
+  if (typeof input === "string") {
+    return [...new Set(input.split(",").map((item) => item.trim()).filter(Boolean))];
+  }
+  return [];
+}
+
+function templateOptionLabel(tpl: HomepageTemplateRow) {
+  const targets = normalizeTargetDeviceTypes(tpl.targetDeviceTypes);
+  if (!targets.length) return `${tpl.name} · 通用型`;
+  return `${tpl.name} · ${targets.map(deviceTypeLabel).join("、")}`;
 }
 
 async function doLogin() {
@@ -410,6 +506,10 @@ async function loadDevices() {
   }
 }
 
+async function loadDeviceTypes() {
+  deviceTypes.value = await apiRequest<DeviceTypeRow[]>("/api/device-types", { token: auth.token });
+}
+
 async function loadTemplates() {
   templates.value = await apiRequest<HomepageTemplateRow[]>("/api/homepages/templates", { token: auth.token });
   if (templateDraft.id) {
@@ -443,7 +543,7 @@ async function loadConfig() {
 
 async function loadAll() {
   if (!auth.token) return;
-  await loadDevices();
+  await Promise.all([loadDevices(), loadDeviceTypes()]);
   await Promise.all([loadTemplates(), loadConfig()]);
 }
 
@@ -544,6 +644,7 @@ function onSelectTemplate(id: string) {
   templateDraft.type = row.type;
   templateDraft.html = row.html;
   templateDraft.builtin = Boolean(row.builtin);
+  templateDraft.targetDeviceTypes = normalizeTargetDeviceTypes(row.targetDeviceTypes);
 }
 
 function newTemplate() {
@@ -552,6 +653,7 @@ function newTemplate() {
   templateDraft.type = "custom_html";
   templateDraft.builtin = false;
   templateDraft.html = defaultTemplateHtml();
+  templateDraft.targetDeviceTypes = [];
   scheduleEditPreview();
 }
 
@@ -590,6 +692,7 @@ async function saveTemplate() {
       name: templateDraft.name.trim(),
       type: templateDraft.builtin ? "default_html" : "custom_html",
       html: templateDraft.html,
+      targetDeviceTypes: normalizeTargetDeviceTypes(templateDraft.targetDeviceTypes),
     }),
   });
   templateDraft.id = row.id;
@@ -610,6 +713,7 @@ async function deleteTemplate() {
   templateDraft.name = "";
   templateDraft.type = "custom_html";
   templateDraft.html = "";
+  templateDraft.targetDeviceTypes = [];
   await loadTemplates();
   scheduleEditPreview();
 }
@@ -627,6 +731,7 @@ function buildTemplatePatchForRender() {
       name: String(templateDraft.name || "").trim() || "Homepage Template",
       type: templateDraft.builtin ? "default_html" : "custom_html",
       html,
+      targetDeviceTypes: normalizeTargetDeviceTypes(templateDraft.targetDeviceTypes),
     };
   }
 
@@ -637,6 +742,7 @@ function buildTemplatePatchForRender() {
       name: String(selectedRow.name || "Homepage Template"),
       type: String(selectedRow.type || "custom_html"),
       html: String(selectedRow.html || ""),
+      targetDeviceTypes: normalizeTargetDeviceTypes(selectedRow.targetDeviceTypes),
     };
   }
 
@@ -647,6 +753,7 @@ function buildTemplatePatchForRender() {
     name: String(templateDraft.name || "").trim() || "Homepage Template",
     type: templateDraft.builtin ? "default_html" : "custom_html",
     html,
+    targetDeviceTypes: normalizeTargetDeviceTypes(templateDraft.targetDeviceTypes),
   };
 }
 

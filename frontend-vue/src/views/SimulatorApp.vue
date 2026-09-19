@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div class="page">
     <el-card class="panel">
       <template #header>
@@ -138,7 +138,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, reactive, ref } from "vue";
-import { ElMessage } from "element-plus";
+import { ElMessage } from "element-plus/es/components/message/index.mjs";
 import { useRouter } from "vue-router";
 import { apiRequest } from "../services/api";
 import { useAuthStore } from "../stores/auth";
