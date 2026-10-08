@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'source/import-ready.txt'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -21,7 +22,7 @@ jobs:
         run: |
           cat source/sumo-core-source.tar.zst.b64.part-* > /tmp/sumo-core-source.tar.zst.b64
           base64 --decode /tmp/sumo-core-source.tar.zst.b64 > /tmp/sumo-core-source.tar.zst
-          echo "ff61e47a99aec096173e624f1838a3b80dd111d4bfe0b4e88d4c94e7fe6a7e1d  /tmp/sumo-core-source.tar.zst" | sha256sum --check --strict
+          echo "e2f78b0180643c313c0f3668d1d25de2c84e60dd80ae8fa8f66e8a8308da48d8  /tmp/sumo-core-source.tar.zst" | sha256sum --check --strict
 
       - name: Extract source tree
         run: |
