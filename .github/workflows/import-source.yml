@@ -3,7 +3,7 @@ name: Import clean source snapshot
 on:
   push:
     paths:
-      - 'source/sumo-core-source.tar.zst.b64.part-*'
+      - 'source/import-ready.txt'
 
 permissions:
   contents: write
@@ -21,11 +21,15 @@ jobs:
         run: |
           cat source/sumo-core-source.tar.zst.b64.part-* > /tmp/sumo-core-source.tar.zst.b64
           base64 --decode /tmp/sumo-core-source.tar.zst.b64 > /tmp/sumo-core-source.tar.zst
-          echo "ced42c9943d747dd84304aa34b3b5994da156e2f617b576c02ab79c465b04f7b  /tmp/sumo-core-source.tar.zst" | sha256sum --check --strict
+          echo "ff61e47a99aec096173e624f1838a3b80dd111d4bfe0b4e88d4c94e7fe6a7e1d  /tmp/sumo-core-source.tar.zst" | sha256sum --check --strict
 
       - name: Extract source tree
         run: |
           zstd -d -c /tmp/sumo-core-source.tar.zst | tar -x -C .
+
+      - name: Remove import transport files
+        run: |
+          rm -rf source
 
       - name: Commit expanded source tree
         run: |
