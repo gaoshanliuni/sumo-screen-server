@@ -1,0 +1,52 @@
+name: Import clean source snapshot
+
+on:
+  push:
+    paths:
+      - 'source/sumo-screen-source.zip'
+
+permissions:
+  contents: write
+
+jobs:
+  import-source:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract tracked source files
+        shell: python
+        run: |
+          from pathlib import PurePosixPath
+          import zipfile
+
+          archive = 'source/sumo-screen-source.zip'
+          protected = {'README.md', 'LICENSE'}
+          protected_prefixes = ('docs/images/', '.github/workflows/')
+
+          with zipfile.ZipFile(archive) as zf:
+              for info in zf.infolist():
+                  path = PurePosixPath(info.filename)
+                  path_text = path.as_posix()
+                  if info.is_dir():
+                      continue
+                  if path_text in protected or path_text.startswith(protected_prefixes):
+                      continue
+                  if path.is_absolute() or '..' in path.parts:
+                      raise RuntimeError(f'Unsafe archive entry: {path_text}')
+                  zf.extract(info, '.')
+
+      - name: Commit expanded source tree
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No source changes to commit."
+            exit 0
+          fi
+          git commit -m "feat: import 素墨屏语 source tree"
+          git push
