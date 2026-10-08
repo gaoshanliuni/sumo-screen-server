@@ -34,6 +34,10 @@
 
 ![主页渲染预览](docs/images/homepage-studio.png)
 
+### 主页配置与推送
+
+![主页配置与推送](docs/images/homepage-configuration.png)
+
 ### 相册与集合管理
 
 ![相册与集合管理](docs/images/album-management.png)
