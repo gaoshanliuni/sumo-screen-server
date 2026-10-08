@@ -20,23 +20,23 @@
 
 ### 平台入口
 
-![素墨屏语平台入口](docs/images/platform-home.webp)
+![素墨屏语平台入口](docs/images/platform-home.png)
 
 ### 管理端概览
 
-![管理端概览](docs/images/dashboard-overview.webp)
+![管理端概览](docs/images/dashboard-overview.png)
 
 ### 设备管理
 
-![设备管理](docs/images/device-management.webp)
+![设备管理](docs/images/device-management.png)
 
-### 主页配置与下发
+### 主页渲染预览
 
-![主页配置与下发](docs/images/homepage-studio.webp)
+![主页渲染预览](docs/images/homepage-studio.png)
 
 ### 相册与集合管理
 
-![相册与集合管理](docs/images/album-management.webp)
+![相册与集合管理](docs/images/album-management.png)
 
 ## 实机演示
 
@@ -44,11 +44,11 @@
 
 ### 实机演示图 1
 
-![素墨屏语实机演示图 1](docs/images/real-device-demo-1.jpg)
+![素墨屏语实机演示图 1](docs/images/real-device-demo-1.png)
 
 ### 实机演示图 2
 
-![素墨屏语实机演示图 2](docs/images/real-device-demo-2.jpg)
+![素墨屏语实机演示图 2](docs/images/real-device-demo-2.png)
 
 ## 核心能力
 
