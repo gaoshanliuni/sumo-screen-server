@@ -1,0 +1,141 @@
+{
+  "meta": {
+    "createdAt": "2026-02-26T02:17:29.155Z",
+    "updatedAt": "2026-02-26T02:42:58.065Z",
+    "version": 1
+  },
+  "users": [
+    {
+      "id": "u_admin",
+      "username": "admin",
+      "passwordHash": "$2a$10$Jk.4snuiSPtleWmzInbwN.w/x0z9qldglTBKzoSORRLT1jcRrzda6",
+      "role": "admin",
+      "nickname": "超级管理员",
+      "createdAt": "2026-02-26T02:17:29.155Z"
+    },
+    {
+      "id": "u_demo",
+      "username": "demo",
+      "passwordHash": "$2a$10$Blu06SlMMCvTd0wQy.dV.unpQ/MWm5hOZq9tMGuagkP3c8aYhPh7e",
+      "role": "user",
+      "nickname": "演示用户",
+      "createdAt": "2026-02-26T02:17:29.155Z"
+    }
+  ],
+  "devices": [],
+  "clusters": [],
+  "firmwares": [],
+  "upgradeJobs": [],
+  "todos": [],
+  "schedules": [],
+  "apiTemplates": [
+    {
+      "id": "tpl_weather",
+      "name": "和风天气",
+      "slug": "weather",
+      "method": "GET",
+      "url": "https://devapi.qweather.com/v7/weather/now",
+      "keyField": "key",
+      "keyIn": "query",
+      "deviceKeyRequired": true,
+      "defaultParams": {
+        "location": "101010100"
+      },
+      "enabled": true,
+      "builtin": true,
+      "createdAt": "2026-02-26T02:17:29.155Z",
+      "updatedAt": "2026-02-26T02:17:29.155Z"
+    },
+    {
+      "id": "tpl_zaoan",
+      "name": "早安心语",
+      "slug": "zaoan",
+      "method": "GET",
+      "url": "https://apis.whyta.cn/tx-zaoan",
+      "keyField": "",
+      "keyIn": "query",
+      "deviceKeyRequired": false,
+      "defaultParams": {},
+      "enabled": true,
+      "builtin": true,
+      "createdAt": "2026-02-26T02:17:29.155Z",
+      "updatedAt": "2026-02-26T02:17:29.155Z"
+    },
+    {
+      "id": "tpl_wanan",
+      "name": "晚安心语",
+      "slug": "wanan",
+      "method": "GET",
+      "url": "https://apis.whyta.cn/tx-wanan",
+      "keyField": "",
+      "keyIn": "query",
+      "deviceKeyRequired": false,
+      "defaultParams": {},
+      "enabled": true,
+      "builtin": true,
+      "createdAt": "2026-02-26T02:17:29.155Z",
+      "updatedAt": "2026-02-26T02:17:29.155Z"
+    },
+    {
+      "id": "tpl_bulletin",
+      "name": "每日简报",
+      "slug": "bulletin",
+      "method": "GET",
+      "url": "https://apis.whyta.cn/tx-bulletin",
+      "keyField": "",
+      "keyIn": "query",
+      "deviceKeyRequired": false,
+      "defaultParams": {},
+      "enabled": true,
+      "builtin": true,
+      "createdAt": "2026-02-26T02:17:29.155Z",
+      "updatedAt": "2026-02-26T02:17:29.155Z"
+    },
+    {
+      "id": "tpl_addressparse",
+      "name": "物流地址解析",
+      "slug": "addressparse",
+      "method": "GET",
+      "url": "https://apis.whyta.cn/tx-addressparse",
+      "keyField": "",
+      "keyIn": "query",
+      "deviceKeyRequired": false,
+      "defaultParams": {},
+      "enabled": true,
+      "builtin": true,
+      "createdAt": "2026-02-26T02:17:29.155Z",
+      "updatedAt": "2026-02-26T02:17:29.155Z"
+    }
+  ],
+  "operationLogs": [
+    {
+      "id": "oplog_b664025981fa4615",
+      "actorId": "u_admin",
+      "actorRole": "admin",
+      "action": "auth.login",
+      "targetType": "user",
+      "targetId": "u_admin",
+      "detail": {
+        "username": "admin",
+        "role": "admin"
+      },
+      "status": "success",
+      "createdAt": "2026-02-26T02:42:58.065Z"
+    },
+    {
+      "id": "oplog_26de94ab0cf94493",
+      "actorId": "u_admin",
+      "actorRole": "admin",
+      "action": "auth.login",
+      "targetType": "user",
+      "targetId": "u_admin",
+      "detail": {
+        "username": "admin",
+        "role": "admin"
+      },
+      "status": "success",
+      "createdAt": "2026-02-26T02:40:43.640Z"
+    }
+  ],
+  "apiLogs": []
+}

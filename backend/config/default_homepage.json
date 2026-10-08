@@ -1,0 +1,83 @@
+{
+  "id": "homepage_default",
+  "name": "Default Homepage",
+  "enabled": true,
+  "version": 1,
+  "screen": {
+    "width": 2560,
+    "height": 1600
+  },
+  "template": {
+    "type": "default_html",
+    "template_id": "tpl_home_default",
+    "template_name": "Default Homepage HTML",
+    "template_path": "builtin://homepage/default",
+    "render_engine": "auto",
+    "render_mode": "hybrid"
+  },
+  "image": {
+    "format": "epd4",
+    "preview_format": "png",
+    "image_url": "",
+    "image_key": "",
+    "render_source": "server",
+    "refresh_policy": "on-demand",
+    "cache_ttl_sec": 3600
+  },
+  "auto_render_push": {
+    "enabled": false,
+    "interval_enabled": true,
+    "window_start_time": "07:30",
+    "window_end_time": "23:59",
+    "fixed_times": [],
+    "daily_start_time": "07:30",
+    "interval_minutes": 60,
+    "next_run_at": "",
+    "last_run_at": "",
+    "last_result": "idle",
+    "last_error": "",
+    "last_reason": ""
+  },
+  "time_overlay": {
+    "enabled": true,
+    "x": 1820,
+    "y": 80,
+    "width": 680,
+    "height": 180,
+    "format": "HH:mm",
+    "font_size": 88,
+    "align": "right",
+    "refresh_interval_sec": 60,
+    "color": "black"
+  },
+  "data_sources": {
+    "profile": true,
+    "todo_summary": true,
+    "schedule_summary": true,
+    "custom_fields": true
+  },
+  "data_bindings": {
+    "name": "profile.name",
+    "title": "profile.title",
+    "department": "profile.department",
+    "workstation": "profile.workstation",
+    "status": "profile.status",
+    "todo": "todo_summary.text",
+    "schedule": "schedule_summary.text"
+  },
+  "refresh_policy": {
+    "pull_interval_sec": 300,
+    "rerender_on_data_change": true,
+    "rerender_on_template_change": true
+  },
+  "cache_policy": {
+    "cache_ttl_sec": 3600,
+    "max_versions": 3,
+    "use_etag": true
+  },
+  "fallback": {
+    "enabled": true,
+    "mode": "local_text_home"
+  }
+}
+

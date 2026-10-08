@@ -1,0 +1,63 @@
+﻿{
+  "id": "badgepage_default",
+  "name": "Default Badge Page",
+  "enabled": true,
+  "version": 1,
+  "screen": {
+    "width": 2560,
+    "height": 1600
+  },
+  "template": {
+    "type": "default_html",
+    "template_id": "tpl_badge_default",
+    "template_name": "Default Badge HTML",
+    "template_path": "builtin://badgepage/default"
+  },
+  "image": {
+    "format": "epd4",
+    "preview_format": "png",
+    "render_source": "server",
+    "refresh_policy": "on-demand",
+    "cache_ttl_sec": 3600
+  },
+  "time_overlay": {
+    "enabled": false,
+    "x": 1880,
+    "y": 100,
+    "width": 620,
+    "height": 160,
+    "format": "HH:mm",
+    "font_size": 80,
+    "align": "right",
+    "refresh_interval_sec": 60,
+    "background_clear_mode": "fill-white",
+    "invert": false
+  },
+  "data_sources": {
+    "profile": true,
+    "todo_summary": false,
+    "schedule_summary": false,
+    "custom_fields": true
+  },
+  "refresh_control": {
+    "partial_refresh_enabled": true,
+    "partial_refresh_region": {
+      "x": 0,
+      "y": 0,
+      "width": 2560,
+      "height": 1600
+    },
+    "full_refresh_every_n_partials": 8,
+    "force_full_refresh_on_image_version_change": true,
+    "max_partial_age_sec": 900
+  },
+  "cache_policy": {
+    "cache_ttl_sec": 3600,
+    "max_versions": 3,
+    "use_etag": true
+  },
+  "fallback": {
+    "enabled": true,
+    "mode": "local_text_badge"
+  }
+}

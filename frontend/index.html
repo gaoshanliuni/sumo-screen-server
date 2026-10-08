@@ -1,0 +1,72 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>智能墨水屏平台</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/assets/style.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="headline">
+        <div>
+          <h1 class="title">智能墨水屏平台</h1>
+          <p class="subtitle">统一入口：用户端、管理端、设备模拟、API 文档</p>
+        </div>
+        <span class="pill">E-Ink Device Platform</span>
+      </header>
+
+      <section class="board">
+        <article class="card">
+          <h3>用户端（Vue）</h3>
+          <p class="muted">设备绑定、TODO/日程、第三方 API 参数、桌牌下发。</p>
+          <a href="/vue-app/#/user"><button type="button">进入用户端</button></a>
+        </article>
+
+        <article class="card">
+          <h3>管理端（Vue）</h3>
+          <p class="muted">设备/设备池/固件/API 模板/日志与远程控制。</p>
+          <a href="/vue-app/#/admin"><button class="secondary" type="button">进入管理端</button></a>
+        </article>
+
+        <article class="card">
+          <h3>设备模拟（Vue）</h3>
+          <p class="muted">按真机同链路：login -> auto-register -> bind/status -> login -> stream。</p>
+          <a href="/vue-app/#/simulator"><button class="ghost" type="button">打开设备模拟</button></a>
+        </article>
+
+        <article class="card">
+          <h3>API 文档（Vue）</h3>
+          <p class="muted">OpenAPI 调试、统一启动链路说明和错误码提示。</p>
+          <a href="/vue-app/#/docs"><button type="button">打开 API 文档</button></a>
+        </article>
+
+        <article class="card">
+          <h3>小程序入口</h3>
+          <p class="muted">微信扫码进入小程序。</p>
+          <figure class="miniapp-entry">
+            <img
+              class="miniapp-qr"
+              src="/assets/wechat-mini-program-entry.jpg"
+              alt="微信小程序码"
+              loading="lazy"
+              onerror="this.onerror=null;this.src='/assets/wechat-mini-program-entry.svg';"
+            />
+            <figcaption class="miniapp-caption">请使用微信扫一扫</figcaption>
+          </figure>
+          <a
+            href="/assets/wechat-mini-program-entry.jpg"
+            target="_blank"
+            rel="noopener"
+            onclick="this.href=document.querySelector('.miniapp-qr').currentSrc;"
+          >
+            <button class="secondary" type="button">查看小程序码</button>
+          </a>
+        </article>
+      </section>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,2452 @@
+﻿openapi: 3.0.3
+info:
+  title: 智能墨水屏平台 API
+  version: 1.0.0
+  description: |
+    用户端/管理端/设备端统一接口文档。
+    设备（真机与模拟）推荐统一启动链路：login -> auto-register -> bind/status -> login -> stream。
+servers:
+  - url: /
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    ApiResponse:
+      type: object
+      properties:
+        code:
+          type: integer
+          example: 200
+        msg:
+          type: string
+          example: ok
+        data:
+          nullable: true
+    DashboardOverview:
+      type: object
+      properties:
+        role: { type: string, enum: [admin, user] }
+        deviceTotal: { type: integer }
+        deviceBound: { type: integer }
+        deviceUnbound: { type: integer }
+        deviceOnline: { type: integer }
+        deviceOffline: { type: integer }
+        blockedDevices: { type: integer }
+        todoCount: { type: integer }
+        scheduleCount: { type: integer }
+        firmwareCount: { type: integer }
+        clusterTotal: { type: integer }
+        firmwareTotal: { type: integer }
+        userTotal: { type: integer }
+        apiStats: { type: object }
+        firmwareDistribution: { type: object }
+        counts: { type: object }
+    User:
+      type: object
+      properties:
+        id: { type: string }
+        username: { type: string }
+        role: { type: string }
+        nickname: { type: string }
+        status: { type: string }
+        createdAt: { type: string }
+        updatedAt: { type: string }
+        deviceCount: { type: integer }
+    TfFile:
+      type: object
+      properties:
+        id: { type: string }
+        ownerId: { type: string }
+        category: { type: string }
+        name: { type: string }
+        originalName: { type: string }
+        size: { type: integer }
+        mime: { type: string }
+        sha256: { type: string }
+        gridId: { type: string }
+        url: { type: string }
+        deliverStatus:
+          type: string
+          description: pending|delivered
+        createdAt: { type: string }
+        updatedAt: { type: string }
+    Device:
+      type: object
+      properties:
+        id:
+          type: string
+          example: dev_xxx
+        mac:
+          type: string
+          example: AA:BB:CC:DD:EE:FF
+        ownerId:
+          type: string
+        type:
+          type: string
+        remark:
+          type: string
+        status:
+          type: string
+        simulated:
+          type: boolean
+        firmwareVersion:
+          type: string
+        apiKeys:
+          type: object
+          additionalProperties:
+            type: string
+        bindState:
+          type: string
+          example: bound
+        boundAt:
+          type: string
+        boundBy:
+          type: string
+        lastLoginAt:
+          type: string
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+    Todo:
+      type: object
+      properties:
+        id: { type: string }
+        deviceId: { type: string }
+        content: { type: string }
+        done: { type: boolean }
+        priority: { type: integer, nullable: true }
+        createdAt: { type: string }
+        updatedAt: { type: string }
+    Schedule:
+      type: object
+      properties:
+        id: { type: string }
+        deviceId: { type: string }
+        mode: { type: string }
+        weekday: { type: integer }
+        orderIndex: { type: integer }
+        title: { type: string }
+        content: { type: string }
+        courseName: { type: string }
+        note: { type: string }
+        source: { type: string }
+        sourceKey: { type: string }
+        termKey: { type: string }
+        xiqueCourseId: { type: string }
+        xiqueClassKey: { type: string }
+        sourceMeta: { type: object }
+        createdAt: { type: string }
+        updatedAt: { type: string }
+    XiqueScheduleConfig:
+      type: object
+      properties:
+        id: { type: string }
+        deviceId: { type: string }
+        source: { type: string, example: xique }
+        enabled: { type: boolean }
+        intervalMinutes:
+          type: integer
+          enum: [10, 30, 60]
+        currentTermKey: { type: string }
+        adapterMode: { type: string, example: mock }
+        baseUrl: { type: string }
+        sampleUrl: { type: string }
+        sampleHtml: { type: string }
+        requireCaptcha: { type: boolean }
+        needRelogin: { type: boolean }
+        needCaptchaReverify: { type: boolean }
+        paused: { type: boolean }
+        pauseReason: { type: string }
+        pauseUntil: { type: string }
+        failureCount: { type: integer }
+        lastAttemptAt: { type: string }
+        lastSuccessAt: { type: string }
+        lastSyncAt: { type: string }
+        lastSyncStatus: { type: string }
+        lastSyncErrorCode: { type: string }
+        lastError: { type: string }
+        nextRunAt: { type: string }
+        loginUsername: { type: string }
+        loginDisplayName: { type: string }
+        createdAt: { type: string }
+        updatedAt: { type: string }
+    XiqueVault:
+      type: object
+      properties:
+        id: { type: string }
+        configId: { type: string }
+        deviceId: { type: string }
+        state: { type: string }
+        sessionId: { type: string }
+        sessionExpiresAt: { type: string }
+        captchaSession: { type: string }
+        captchaImage: { type: string }
+        captchaExpiresAt: { type: string }
+        needCaptchaReverify: { type: boolean }
+        lastVerifiedAt: { type: string }
+        lastLoginAt: { type: string }
+        lastSyncAt: { type: string }
+        lastSyncStatus: { type: string }
+        lastSyncErrorCode: { type: string }
+        lastError: { type: string }
+        hasCredential: { type: boolean }
+        hasSession: { type: boolean }
+    XiqueStatus:
+      type: object
+      properties:
+        deviceId: { type: string }
+        config: { $ref: '#/components/schemas/XiqueScheduleConfig' }
+        session: { $ref: '#/components/schemas/XiqueVault' }
+        logs:
+          type: array
+          items: { type: object }
+    XiqueLoginResponse:
+      type: object
+      properties:
+        deviceId: { type: string }
+        configId: { type: string }
+        loginRequired: { type: boolean }
+        captchaRequired: { type: boolean }
+        captchaSession: { type: string }
+        captchaImage: { type: string }
+        captchaExpiresAt: { type: string }
+    XiqueImportResponse:
+      type: object
+      properties:
+        status: { type: string }
+        deviceId: { type: string }
+        configId: { type: string }
+        termKey: { type: string }
+        nextRunAt: { type: string }
+        result:
+          type: object
+          properties:
+            added: { type: integer }
+            updated: { type: integer }
+            skipped: { type: integer }
+            overwritten: { type: integer }
+            imported: { type: integer }
+    Template:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        slug: { type: string }
+        method: { type: string }
+        url: { type: string }
+        keyField: { type: string }
+        keyIn:
+          type: array
+          items: { type: string }
+        deviceKeyRequired: { type: boolean }
+        enabled: { type: boolean }
+        advancedEnabled: { type: boolean }
+        advancedConfig: { type: object }
+    Firmware:
+      type: object
+      properties:
+        id: { type: string }
+        version: { type: string }
+        releaseNote: { type: string }
+        deviceType: { type: string }
+        fileName: { type: string }
+        fileUrl: { type: string }
+        gridId: { type: string }
+        fileSize: { type: integer }
+        mime: { type: string }
+        sha256: { type: string }
+        createdAt: { type: string }
+        updatedAt: { type: string }
+    UpgradeJob:
+      type: object
+      properties:
+        id: { type: string }
+        deviceId: { type: string }
+        firmwareId: { type: string }
+        status: { type: string }
+        progress: { type: integer }
+        scheduledAt: { type: string }
+        createdAt: { type: string }
+        finishedAt: { type: string }
+        force: { type: boolean }
+        result: { type: string }
+        createdBy:
+          type: object
+          properties:
+            role: { type: string }
+            id: { type: string }
+    Cluster:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        rule: { type: string }
+        deviceIds:
+          type: array
+          items: { type: string }
+        createdAt: { type: string }
+        updatedAt: { type: string }
+    OperationLog:
+      type: object
+      properties:
+        id: { type: string }
+        action: { type: string }
+        targetType: { type: string }
+        targetId: { type: string }
+        status: { type: string }
+        actorId: { type: string }
+        actorRole: { type: string }
+        detail: { type: object }
+        createdAt: { type: string }
+    ApiLog:
+      type: object
+      properties:
+        id: { type: string }
+        templateSlug: { type: string }
+        deviceId: { type: string }
+        callerRole: { type: string }
+        callerId: { type: string }
+        success: { type: boolean }
+        statusCode: { type: integer }
+        latencyMs: { type: integer }
+        error: { type: string }
+        createdAt: { type: string }
+    AutoRegisterResponse:
+      oneOf:
+        - type: object
+          properties:
+            mode: { type: string, example: pending_bind }
+            deprecated: { type: boolean }
+            warnings:
+              type: array
+              items: { type: string }
+            device: { $ref: '#/components/schemas/Device' }
+            bind:
+              type: object
+              properties:
+                pin: { type: string }
+                expiresAt: { type: string }
+                ttlSeconds: { type: integer }
+                attemptsLeft: { type: integer }
+            bootstrap:
+              type: object
+              properties:
+                token: { type: string }
+                expiresAt: { type: string }
+        - type: object
+          properties:
+            mode: { type: string, example: already_bound }
+            deprecated: { type: boolean }
+            warnings:
+              type: array
+              items: { type: string }
+            device: { $ref: '#/components/schemas/Device' }
+            hardwareAuth:
+              type: object
+              properties:
+                token: { type: string }
+                templates:
+                  type: array
+                  items: { type: object }
+    BindStatus:
+      oneOf:
+        - type: object
+          properties:
+            bound: { type: boolean, example: true }
+            device: { $ref: '#/components/schemas/Device' }
+            hardwareAuth:
+              type: object
+              properties:
+                token: { type: string }
+                templates:
+                  type: array
+                  items: { type: object }
+        - type: object
+          properties:
+            bound: { type: boolean, example: false }
+            pinExpiresAt: { type: string }
+            attemptsLeft: { type: integer }
+
+paths:
+  /api/health:
+    get:
+      summary: 健康检查
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiResponse' }
+
+  /api/health/live:
+    get:
+      summary: 存活检查
+      description: 进程能够处理 HTTP 请求时返回 200，不依赖 Store readiness。
+      responses:
+        '200':
+          description: process is alive
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiResponse' }
+
+  /api/health/ready:
+    get:
+      summary: 就绪检查
+      description: Store 已初始化且 optimistic persistence 未处于持续失败状态时返回 200。
+      responses:
+        '200':
+          description: service is ready
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiResponse' }
+        '503':
+          description: Store 未初始化或持久化状态 degraded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiResponse' }
+
+  /api/dashboard/overview:
+    get:
+      summary: Dashboard 聚合概览
+      description: 按当前 admin/user 权限一次返回设备、在线状态、TODO、课表、固件等统计。
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: '#/components/schemas/ApiResponse' }
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/DashboardOverview' }
+        '401':
+          description: 未认证
+        '403':
+          description: 角色无权限
+
+  /api/auth/user/login:
+    post:
+      summary: 用户登录
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username: { type: string }
+                password: { type: string }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiResponse' }
+
+  /api/auth/admin/login:
+    post:
+      summary: 管理员登录
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username: { type: string }
+                password: { type: string }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiResponse' }
+
+  /api/auth/me:
+    get:
+      summary: 当前用户信息
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiResponse' }
+
+  /api/auth/logout:
+    post:
+      summary: 退出登录
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+
+  /api/auth/change-password:
+    post:
+      summary: 修改密码
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                oldPassword: { type: string }
+                newPassword: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/admin/users:
+    get:
+      summary: 管理员获取用户列表
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: query
+          name: role
+          schema: { type: string }
+        - in: query
+          name: status
+          schema: { type: string }
+        - in: query
+          name: keyword
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+    post:
+      summary: 管理员创建账号
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username: { type: string }
+                password: { type: string }
+                role: { type: string }
+                nickname: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/admin/users/{userId}:
+    post:
+      summary: 管理员更新账号
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                nickname: { type: string }
+                status: { type: string }
+                role: { type: string }
+                password: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/admin/users/{userId}/resources:
+    post:
+      summary: 管理员处理账号绑定资源
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                action: { type: string }
+                targetUserId: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/admin/users/{userId}/delete:
+    post:
+      summary: 管理员删除账号
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mode: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/admin/dashboard:
+    get:
+      summary: 系统概览
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+
+  /api/clusters:
+    get:
+      summary: 集群列表
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+    post:
+      summary: 新增集群
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                description: { type: string }
+                rule: { type: string }
+                deviceIds: { type: array, items: { type: string } }
+      responses:
+        '200':
+          description: ok
+
+  /api/clusters/{clusterId}:
+    post:
+      summary: 更新集群
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: clusterId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '200':
+          description: ok
+
+  /api/clusters/{clusterId}/devices:
+    post:
+      summary: 管理集群设备
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: clusterId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceIds: { type: array, items: { type: string } }
+                mode: { type: string, example: append }
+      responses:
+        '200':
+          description: ok
+
+  /api/clusters/{clusterId}/delete:
+    post:
+      summary: 删除集群
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: clusterId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/devices:
+    get:
+      summary: 设备列表
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: query
+          name: status
+          schema: { type: string }
+        - in: query
+          name: mac
+          schema: { type: string }
+        - in: query
+          name: ownerId
+          description: 管理员可用
+          schema: { type: string }
+        - in: query
+          name: simulated
+          schema: { type: string }
+        - in: query
+          name: bound
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/devices/register:
+    post:
+      summary: 管理员手工注册设备（兼容接口）
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mac: { type: string }
+                ownerId: { type: string }
+                type: { type: string }
+                remark: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/devices/bind-pin:
+    post:
+      summary: 绑定PIN设备
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                pin: { type: string }
+                ownerId: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/devices/{deviceId}:
+    get:
+      summary: 设备详情
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: deviceId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+    post:
+      summary: 更新设备
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: deviceId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: ok
+
+  /api/devices/{deviceId}/delete:
+    post:
+      summary: 删除设备
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: deviceId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/devices/{deviceId}/keys:
+    get:
+      summary: 设备密钥
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: deviceId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+    post:
+      summary: 更新设备密钥
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: deviceId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                keys: { type: object }
+      responses:
+        '200':
+          description: ok
+
+  /api/devices/batch/config:
+    post:
+      summary: 批量下发Key配置
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceIds: { type: array, items: { type: string } }
+                clusterIds: { type: array, items: { type: string } }
+                keys: { type: object }
+      responses:
+        '200':
+          description: ok
+
+  /api/devices/batch/third-params:
+    post:
+      summary: 批量下发第三方参数
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceIds: { type: array, items: { type: string } }
+                clusterIds: { type: array, items: { type: string } }
+                slug: { type: string }
+                params: { type: object }
+      responses:
+        '200':
+          description: ok
+
+  /api/templates:
+    get:
+      summary: 模板列表
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+    post:
+      summary: 新增模板
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Template'
+      responses:
+        '200':
+          description: ok
+
+  /api/templates/{templateId}:
+    post:
+      summary: 更新模板
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: templateId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '200':
+          description: ok
+
+  /api/templates/{templateId}/delete:
+    post:
+      summary: 删除模板
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: templateId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/templates/device/{deviceId}/keys:
+    get:
+      summary: 获取设备全部Key
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: deviceId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+    post:
+      summary: 覆盖更新设备全部Key
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: deviceId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                keys: { type: object }
+      responses:
+        '200':
+          description: ok
+
+  /api/todos:
+    get:
+      summary: TODO列表
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: query
+          name: deviceId
+          schema: { type: string }
+        - in: query
+          name: done
+          schema: { type: string }
+        - in: query
+          name: orderBy
+          schema: { type: string }
+        - in: query
+          name: order
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+    post:
+      summary: 新增TODO
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Todo' }
+      responses:
+        '200':
+          description: ok
+
+  /api/todos/{todoId}:
+    post:
+      summary: 更新TODO
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: todoId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '200':
+          description: ok
+
+  /api/todos/{todoId}/delete:
+    post:
+      summary: 删除TODO
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: todoId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/todos/batch-upsert:
+    post:
+      summary: TODO批量保存
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                rows: { type: array, items: { $ref: '#/components/schemas/Todo' } }
+                deletedIds: { type: array, items: { type: string } }
+      responses:
+        '200':
+          description: ok
+
+  /api/todos/batch-delete:
+    post:
+      summary: TODO批量删除
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ids: { type: array, items: { type: string } }
+      responses:
+        '200':
+          description: ok
+
+  /api/schedules:
+    get:
+      summary: 课程表列表
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: query
+          name: deviceId
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+    post:
+      summary: 新增课程
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Schedule' }
+      responses:
+        '200':
+          description: ok
+
+  /api/schedules/{scheduleId}:
+    post:
+      summary: 更新课程
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: scheduleId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '200':
+          description: ok
+
+  /api/schedules/{scheduleId}/delete:
+    post:
+      summary: 删除课程
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: scheduleId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/schedules/batch-upsert:
+    post:
+      summary: 课程表批量保存
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                rows: { type: array, items: { $ref: '#/components/schemas/Schedule' } }
+                deletedIds: { type: array, items: { type: string } }
+      responses:
+        '200':
+          description: ok
+
+  /api/schedules/batch-delete:
+    post:
+      summary: 课程表批量删除
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ids: { type: array, items: { type: string } }
+      responses:
+        '200':
+          description: ok
+
+  /api/schedules/xique/status:
+    get:
+      summary: 喜鹊课程表状态
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: query
+          name: deviceId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/schedules/xique/config:
+    post:
+      summary: 保存喜鹊课程表自动更新配置
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                enabled: { type: boolean }
+                intervalMinutes: { type: integer, enum: [10, 30, 60] }
+                currentTermKey: { type: string }
+                adapterMode: { type: string }
+                baseUrl: { type: string }
+                sampleUrl: { type: string }
+                sampleHtml: { type: string }
+                sampleJson: { type: object }
+                requireCaptcha: { type: boolean }
+                loginUsername: { type: string }
+                loginDisplayName: { type: string }
+                password: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/schedules/xique/init-login:
+    post:
+      summary: 初始化喜鹊登录
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                loginUsername: { type: string }
+                password: { type: string }
+                adapterMode: { type: string }
+                requireCaptcha: { type: boolean }
+                currentTermKey: { type: string }
+                sampleUrl: { type: string }
+                sampleHtml: { type: string }
+                sampleJson: { type: object }
+      responses:
+        '200':
+          description: ok
+
+  /api/schedules/xique/import:
+    post:
+      summary: 提交喜鹊课程表导入
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                captchaSession: { type: string }
+                captchaAnswer: { type: string }
+                forceCaptcha: { type: boolean }
+      responses:
+        '200':
+          description: ok
+
+  /api/schedules/xique/reverify:
+    post:
+      summary: 重新验证喜鹊登录态
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                captchaSession: { type: string }
+                captchaAnswer: { type: string }
+                forceCaptcha: { type: boolean }
+      responses:
+        '200':
+          description: ok
+
+  /api/firmware:
+    get:
+      summary: 固件列表
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+    post:
+      summary: 新增固件
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Firmware' }
+      responses:
+        '200':
+          description: ok
+
+  /api/firmware/upload:
+    post:
+      summary: 上传固件文件并创建记录
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                version: { type: string }
+                deviceType: { type: string }
+                releaseNote: { type: string }
+                file: { type: string, format: binary }
+      responses:
+        '200':
+          description: ok
+
+  /api/firmware/upgrade:
+    post:
+      summary: 单设备升级
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                firmwareId: { type: string }
+                force: { type: boolean }
+                scheduledAt: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/firmware/upgrades:
+    get:
+      summary: 升级任务列表
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: query
+          name: deviceId
+          schema: { type: string }
+        - in: query
+          name: status
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/firmware/batch-upgrade:
+    post:
+      summary: 批量升级
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceIds: { type: array, items: { type: string } }
+                clusterIds: { type: array, items: { type: string } }
+                firmwareId: { type: string }
+                force: { type: boolean }
+                scheduledAt: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/firmware/upgrades/{jobId}/run:
+    post:
+      summary: 执行定时升级
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/firmware/{firmwareId}/delete:
+    post:
+      summary: 删除固件
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: firmwareId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/firmware/{firmwareId}/download:
+    get:
+      summary: 下载固件文件
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: firmwareId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/hardware/auto-register:
+    post:
+      summary: 设备自动注册（PIN）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mac: { type: string }
+                type: { type: string }
+                simulated: { type: boolean }
+                remark: { type: string }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AutoRegisterResponse' }
+
+  /api/hardware/bind/status:
+    get:
+      summary: 设备绑定状态轮询
+      parameters:
+        - in: query
+          name: bootstrapToken
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BindStatus' }
+
+  /api/hardware/login:
+    post:
+      summary: 硬件鉴权登录
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mac: { type: string }
+      responses:
+        '200':
+          description: ok
+        '403':
+          description: 设备未绑定用户或设备已封禁
+        '404':
+          description: 设备未注册
+
+  /api/hardware/config:
+    get:
+      summary: 硬件设备配置
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+
+  /api/hardware/homepage:
+    get:
+      summary: 设备端获取主页配置与主页图片元信息
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+
+  /api/hardware/badgepage:
+    get:
+      summary: 设备端获取桌牌页配置与图片元信息
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+
+  /api/hardware/weatherpage:
+    get:
+      summary: 设备端获取天气页配置与图片元信息
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+
+  /api/hardware/stream/sse:
+    get:
+      summary: SSE事件通道
+      description: "认证可通过 query token 或 Authorization: Bearer 传递"
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: query
+          name: deviceId
+          required: true
+          schema: { type: string }
+        - in: query
+          name: token
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/hardware/simulate/register:
+    post:
+      summary: 模拟设备注册（兼容入口，已弃用）
+      deprecated: true
+      description: 已弃用。该入口会按真机同链路处理并返回与 auto-register 对齐的数据结构。
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mac: { type: string }
+                ownerId: { type: string }
+                type: { type: string }
+                remark: { type: string }
+                autoLogin: { type: boolean }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AutoRegisterResponse' }
+
+  /api/hardware/tf/report:
+    post:
+      summary: 设备上报本地TF文件清单
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                files:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      name: { type: string }
+                      category: { type: string }
+                      size: { type: integer }
+                      updatedAt: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/hardware/tf/pending:
+    get:
+      summary: 设备获取待下发TF文件列表
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+
+  /api/hardware/tf/download/{fileId}:
+    get:
+      summary: 设备下载TF文件
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: fileId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: file stream
+
+  /api/hardware/upgrade/pending:
+    get:
+      summary: 设备查询待执行升级任务
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+
+  /api/hardware/upgrade/report:
+    post:
+      summary: 设备上报升级执行状态
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                jobId: { type: string }
+                status: { type: string }
+                progress: { type: integer }
+                message: { type: string }
+                currentVersion: { type: string }
+                targetVersion: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/hardware/remote/ack:
+    post:
+      summary: 设备端回传远程命令 ACK（OpenAPI 补充）
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                commandId: { type: string }
+                eventType: { type: string }
+                status: { type: string, enum: [success, failed, pending] }
+                message: { type: string }
+                payload: { type: object }
+      responses:
+        '200':
+          description: ok
+
+  /api/third/{slug}:
+    post:
+      summary: 第三方API封装调用
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: slug
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                params: { type: object }
+      responses:
+        '200':
+          description: ok
+
+  /api/logs/operations:
+    get:
+      summary: 操作日志
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: query
+          name: action
+          schema: { type: string }
+        - in: query
+          name: targetType
+          schema: { type: string }
+        - in: query
+          name: status
+          schema: { type: string }
+        - in: query
+          name: actorId
+          schema: { type: string }
+        - in: query
+          name: keyword
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema: { type: integer }
+      responses:
+        '200':
+          description: ok
+
+  /api/logs/apis:
+    get:
+      summary: API调用日志
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: query
+          name: templateSlug
+          schema: { type: string }
+        - in: query
+          name: success
+          schema: { type: string }
+        - in: query
+          name: deviceId
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema: { type: integer }
+      responses:
+        '200':
+          description: ok
+
+  /api/logs/cleanup:
+    post:
+      summary: 日志中心清理（操作日志/API日志/调试文件）
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mode:
+                  type: string
+                  enum: [all, range]
+                startAt:
+                  type: string
+                  description: range 模式必填，ISO 时间
+                endAt:
+                  type: string
+                  description: range 模式必填，ISO 时间
+                includeOperationLogs: { type: boolean }
+                includeApiLogs: { type: boolean }
+                includeFiles: { type: boolean }
+                dryRun: { type: boolean }
+      responses:
+        '200':
+          description: ok
+
+  /api/tf:
+    get:
+      summary: TF卡文件列表
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: query
+          name: ownerId
+          schema: { type: string }
+        - in: query
+          name: category
+          schema: { type: string }
+        - in: query
+          name: deviceId
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/tf/device/{deviceId}:
+    get:
+      summary: 获取设备上报的本地文件清单
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: deviceId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/tf/device/{deviceId}/download:
+    get:
+      summary: 下载设备本地文件（云端同名文件）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: deviceId
+          required: true
+          schema: { type: string }
+        - in: query
+          name: name
+          required: true
+          schema: { type: string }
+        - in: query
+          name: category
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/tf/device/{deviceId}/delete:
+    post:
+      summary: 远程删除设备本地文件
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: deviceId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                category: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/tf/device:
+    get:
+      summary: 获取设备上报的本地文件清单（query 版本）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: query
+          name: deviceId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/tf/upload:
+    post:
+      summary: 上传TF卡文件
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                category: { type: string }
+                ownerId: { type: string }
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: ok
+
+  /api/tf/{fileId}/delete:
+    post:
+      summary: 删除TF卡文件
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: fileId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/tf/{fileId}/download:
+    get:
+      summary: 下载TF卡文件
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: fileId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: file stream
+
+  /api/remote/show-text:
+    post:
+      summary: 远程显示文本
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                deviceIds: { type: array, items: { type: string } }
+                clusterIds: { type: array, items: { type: string } }
+                randomCount: { type: integer, minimum: 1 }
+                text: { type: string }
+                durationSec: { type: number }
+                saveToTf: { type: boolean }
+      responses:
+        '200':
+          description: ok
+
+  /api/remote/show-image:
+    post:
+      summary: 远程显示图片
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                deviceIds: { type: array, items: { type: string } }
+                clusterIds: { type: array, items: { type: string } }
+                randomCount: { type: integer, minimum: 1 }
+                saveToTf: { type: boolean }
+                file: { type: string, format: binary }
+      responses:
+        '200':
+          description: ok
+
+  /api/remote/switch-view:
+    post:
+      summary: 远程切换界面
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                deviceIds: { type: array, items: { type: string } }
+                clusterIds: { type: array, items: { type: string } }
+                randomCount: { type: integer, minimum: 1 }
+                view: { type: string }
+                saveToTf: { type: boolean }
+      responses:
+        '200':
+          description: ok
+
+  /api/remote/refresh-page-image:
+    post:
+      summary: 远程触发页面图片刷新（home/weather/badge 等）
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                pageType: { type: string, example: homepage }
+                deviceId: { type: string }
+                deviceIds: { type: array, items: { type: string } }
+                clusterIds: { type: array, items: { type: string } }
+                randomCount: { type: integer, minimum: 1 }
+                ackTimeoutMs: { type: integer }
+      responses:
+        '200':
+          description: ok
+
+  /api/remote/request-screen-state:
+    post:
+      summary: 远程请求设备上报当前屏幕状态
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                deviceIds: { type: array, items: { type: string } }
+                clusterIds: { type: array, items: { type: string } }
+                randomCount: { type: integer, minimum: 1 }
+                include: { type: array, items: { type: string } }
+                ackTimeoutMs: { type: integer }
+      responses:
+        '200':
+          description: ok
+
+  /api/remote/cast-frame:
+    post:
+      summary: 投屏帧上传
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                imageData: { type: string }
+                width: { type: number }
+                height: { type: number }
+      responses:
+        '200':
+          description: ok
+
+  /api/remote/cast-stop:
+    post:
+      summary: 结束投屏
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                deviceIds: { type: array, items: { type: string } }
+                clusterIds: { type: array, items: { type: string } }
+                randomCount: { type: integer, minimum: 1 }
+                reason: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/nameplates/layouts:
+    get:
+      summary: 获取桌牌布局列表
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: query
+          name: deviceType
+          schema: { type: string }
+        - in: query
+          name: ownerId
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+    post:
+      summary: 新建桌牌布局
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ownerId: { type: string }
+                deviceType: { type: string }
+                layoutName: { type: string }
+                nameFontSize: { type: integer }
+                titleFontSize: { type: integer }
+                titleOffsetY: { type: integer }
+                align: { type: string, enum: [left, center, right] }
+                margin: { type: integer }
+      responses:
+        '200':
+          description: ok
+
+  /api/nameplates/layouts/{layoutId}:
+    post:
+      summary: 更新桌牌布局
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: layoutId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: ok
+
+  /api/nameplates/layouts/{layoutId}/delete:
+    post:
+      summary: 删除桌牌布局
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: layoutId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/nameplates/history:
+    get:
+      summary: 获取桌牌下发历史
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: query
+          name: deviceType
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/nameplates/render-push:
+    post:
+      summary: 服务端渲染桌牌并批量下发
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [layoutId, name]
+              properties:
+                layoutId: { type: string }
+                name: { type: string }
+                title: { type: string }
+                deviceId: { type: string }
+                deviceIds: { type: array, items: { type: string } }
+                clusterIds: { type: array, items: { type: string } }
+                randomCount: { type: integer, minimum: 1 }
+                switchView: { type: boolean }
+      responses:
+        '200':
+          description: ok
+
+  /api/homepages/default:
+    get:
+      summary: 获取默认主页配置基线
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+
+  /api/homepages/config:
+    get:
+      summary: 获取设备主页配置（管理端）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: query
+          name: deviceId
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+    post:
+      summary: 更新主页配置（支持全局或按设备）
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                ownerId: { type: string }
+                config: { type: object }
+      responses:
+        '200':
+          description: ok
+
+  /api/homepages/templates:
+    get:
+      summary: 获取主页模板列表
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+    post:
+      summary: 新建/更新主页HTML模板
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id: { type: string }
+                name: { type: string }
+                type: { type: string }
+                html: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/homepages/templates/{templateId}/delete:
+    post:
+      summary: 删除主页模板
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: templateId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/homepages/render:
+    post:
+      summary: 渲染指定设备主页图片（不推送）
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                config: { type: object }
+                data: { type: object }
+      responses:
+        '200':
+          description: ok
+
+  /api/homepages/push:
+    post:
+      summary: 渲染并推送主页更新到设备
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                deviceIds: { type: array, items: { type: string } }
+                clusterIds: { type: array, items: { type: string } }
+                randomCount: { type: integer, minimum: 1 }
+                config: { type: object }
+                data: { type: object }
+      responses:
+        '200':
+          description: ok
+
+  /api/homepages/auto-render/status:
+    get:
+      summary: 获取主页自动渲染下发状态
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: query
+          name: deviceId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/homepages/auto-render/run:
+    post:
+      summary: 立即执行一次主页自动渲染并下发
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/badgepages/default:
+    get:
+      summary: 获取默认桌牌页配置基线
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+
+  /api/badgepages/config:
+    get:
+      summary: 获取设备桌牌页配置（管理端）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: query
+          name: deviceId
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+    post:
+      summary: 更新桌牌页配置（支持全局或按设备）
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                ownerId: { type: string }
+                config: { type: object }
+      responses:
+        '200':
+          description: ok
+
+  /api/badgepages/templates:
+    get:
+      summary: 获取桌牌页模板列表
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+    post:
+      summary: 新建/更新桌牌页 HTML 模板
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id: { type: string }
+                name: { type: string }
+                type: { type: string }
+                html: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/badgepages/templates/{templateId}/delete:
+    post:
+      summary: 删除桌牌页模板
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: templateId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/badgepages/render:
+    post:
+      summary: 渲染指定设备桌牌页图片（不推送）
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                config: { type: object }
+                data: { type: object }
+      responses:
+        '200':
+          description: ok
+
+  /api/badgepages/push:
+    post:
+      summary: 渲染并推送桌牌页更新到设备
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                deviceIds: { type: array, items: { type: string } }
+                clusterIds: { type: array, items: { type: string } }
+                randomCount: { type: integer, minimum: 1 }
+                config: { type: object }
+                data: { type: object }
+      responses:
+        '200':
+          description: ok
+
+  /api/weatherpages/default:
+    get:
+      summary: 获取默认天气页配置基线
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+
+  /api/weatherpages/config:
+    get:
+      summary: 获取设备天气页配置（管理端）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: query
+          name: deviceId
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+    post:
+      summary: 更新天气页配置（支持全局或按设备）
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                ownerId: { type: string }
+                config: { type: object }
+      responses:
+        '200':
+          description: ok
+
+  /api/weatherpages/templates:
+    get:
+      summary: 获取天气页模板列表
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+    post:
+      summary: 新建/更新天气页 HTML 模板
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id: { type: string }
+                name: { type: string }
+                type: { type: string }
+                html: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/weatherpages/templates/{templateId}/delete:
+    post:
+      summary: 删除天气页模板
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: templateId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+
+  /api/weatherpages/render:
+    post:
+      summary: 渲染指定设备天气页图片（不推送）
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                config: { type: object }
+                data: { type: object }
+      responses:
+        '200':
+          description: ok
+
+  /api/weatherpages/push:
+    post:
+      summary: 渲染并推送天气页更新到设备
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: { type: string }
+                deviceIds: { type: array, items: { type: string } }
+                clusterIds: { type: array, items: { type: string } }
+                randomCount: { type: integer, minimum: 1 }
+                config: { type: object }
+                data: { type: object }
+      responses:
+        '200':
+          description: ok
+
+  /api/weatherpages/qweather-assets:
+    get:
+      summary: 查看 QWeather 资源接入状态（字体/映射/演示资源）
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+
+x-ws:
+  description: WebSocket 通道
+  endpoint: wss://{host}/ws/hardware?token=JWT&deviceId=dev_xxx

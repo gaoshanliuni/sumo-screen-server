@@ -1,0 +1,24 @@
+{
+  "name": "ink-screen-platform-web-vue",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test:contracts": "node scripts/check_ai_stream_contract.cjs && node scripts/check_e6_album_panel_contract.cjs && node scripts/check_e6_preview_dialog_contract.cjs && node scripts/check_frontend_performance_contract.cjs && node scripts/check_upload_usb_nvs_contract.cjs && node scripts/check_web_dark_contract.cjs"
+  },
+  "dependencies": {
+    "element-plus": "^2.9.5",
+    "pinia": "^3.0.3",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.3"
+  }
+}
