@@ -18,15 +18,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Reassemble and verify clean source snapshot
+      - name: Decode and verify clean source snapshot
         run: |
-          cat source/sumo-core-source.tar.zst.b64.part-* > /tmp/sumo-core-source.tar.zst.b64
-          base64 --decode /tmp/sumo-core-source.tar.zst.b64 > /tmp/sumo-core-source.tar.zst
-          echo "e2f78b0180643c313c0f3668d1d25de2c84e60dd80ae8fa8f66e8a8308da48d8  /tmp/sumo-core-source.tar.zst" | sha256sum --check --strict
+          base64 --decode source/sumo-core-source.tar.xz.b64 > /tmp/sumo-core-source.tar.xz
+          echo "15d8ec1d4a08eaf7633c2d65a500050320b3d0340d0f6fdca0b279f88314c078  /tmp/sumo-core-source.tar.xz" | sha256sum --check --strict
 
       - name: Extract source tree
         run: |
-          zstd -d -c /tmp/sumo-core-source.tar.zst | tar -x -C .
+          tar -xJf /tmp/sumo-core-source.tar.xz -C .
 
       - name: Remove import transport files
         run: |
