@@ -3,7 +3,7 @@ name: Import clean source snapshot
 on:
   push:
     paths:
-      - 'source/sumo-screen-source.zip'
+      - 'source/sumo-core-source.tar.zst.b64.part-*'
 
 permissions:
   contents: write
@@ -17,27 +17,15 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Extract tracked source files
-        shell: python
+      - name: Reassemble and verify clean source snapshot
         run: |
-          from pathlib import PurePosixPath
-          import zipfile
+          cat source/sumo-core-source.tar.zst.b64.part-* > /tmp/sumo-core-source.tar.zst.b64
+          base64 --decode /tmp/sumo-core-source.tar.zst.b64 > /tmp/sumo-core-source.tar.zst
+          echo "ced42c9943d747dd84304aa34b3b5994da156e2f617b576c02ab79c465b04f7b  /tmp/sumo-core-source.tar.zst" | sha256sum --check --strict
 
-          archive = 'source/sumo-screen-source.zip'
-          protected = {'README.md', 'LICENSE'}
-          protected_prefixes = ('docs/images/', '.github/workflows/')
-
-          with zipfile.ZipFile(archive) as zf:
-              for info in zf.infolist():
-                  path = PurePosixPath(info.filename)
-                  path_text = path.as_posix()
-                  if info.is_dir():
-                      continue
-                  if path_text in protected or path_text.startswith(protected_prefixes):
-                      continue
-                  if path.is_absolute() or '..' in path.parts:
-                      raise RuntimeError(f'Unsafe archive entry: {path_text}')
-                  zf.extract(info, '.')
+      - name: Extract source tree
+        run: |
+          zstd -d -c /tmp/sumo-core-source.tar.zst | tar -x -C .
 
       - name: Commit expanded source tree
         run: |
